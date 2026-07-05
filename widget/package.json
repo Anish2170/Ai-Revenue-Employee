@@ -1,0 +1,16 @@
+{
+  "name": "ai-revenue-employee-widget",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Sprint 1 embeddable widget SDK: behaviour tracking + proactive AI popup + chat",
+  "type": "module",
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "watch": "node esbuild.config.mjs --watch",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.2",
+    "typescript": "^5.7.3"
+  }
+}

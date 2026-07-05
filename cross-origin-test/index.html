@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Cross-Origin Widget Test — thecolourtrading.in</title>
+  <style>
+    body { margin: 0; font-family: 'Segoe UI', sans-serif; background: #f8f9fa; color: #222; }
+    header { padding: 48px 24px; text-align: center; background: #fff; border-bottom: 1px solid #e0e0e0; }
+    h1 { margin: 0 0 8px; font-size: 28px; }
+    header p { margin: 0; color: #666; }
+    main { max-width: 720px; margin: 0 auto; padding: 32px 24px 800px; }
+    section { background: #fff; border: 1px solid #e0e0e0; border-radius: 10px; padding: 24px; margin-bottom: 24px; }
+    h2 { margin-top: 0; }
+    .btn { display: inline-block; background: #4f46e5; color: #fff; border: none; padding: 10px 20px; border-radius: 8px; font-size: 15px; cursor: pointer; margin-right: 8px; }
+    input, textarea { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 8px; font-size: 15px; margin-top: 6px; box-sizing: border-box; }
+    label { font-weight: 600; font-size: 14px; display: block; margin-top: 12px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>The Colour Trading</h1>
+    <p>Cross-origin widget test — served from port 9999, widget loaded from Cloudflare Tunnel</p>
+  </header>
+
+  <main>
+    <section>
+      <h2>About Us</h2>
+      <p>We offer premium quality paints, coatings, and color solutions for residential and commercial projects.</p>
+    </section>
+
+    <section>
+      <h2>Our Products</h2>
+      <p>Explore our wide range of colors and finishes.</p>
+      <button class="btn" data-track="view-products">View Products</button>
+      <button class="btn" data-track="book-demo">Book a Demo</button>
+    </section>
+
+    <section>
+      <h2>Contact Us</h2>
+      <label>Name</label>
+      <input type="text" placeholder="Your name" />
+      <label>Email</label>
+      <input type="email" placeholder="you@example.com" />
+      <label>Message</label>
+      <textarea rows="3" placeholder="How can we help?"></textarea>
+    </section>
+
+    <section>
+      <h2>Keep scrolling…</h2>
+      <p>The widget launcher (chat bubble) should appear in the bottom-right corner.</p>
+    </section>
+  </main>
+
+  <!-- Cross-origin widget embed — exactly what WordPress would have -->
+  <script src="https://resistant-therefore-unexpected-fuzzy.trycloudflare.com/widget.js"
+          data-site-id="site_f41dc8a91ef1"
+          data-debug="true"
+          defer></script>
+</body>
+</html>

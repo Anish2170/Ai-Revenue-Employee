@@ -1,0 +1,351 @@
+﻿<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI Revenue Employee â€” Dev Harness</title>
+    <style>
+      /*
+       * DEV HARNESS ONLY â€” not a product page. Its sole purpose is to give the
+       * widget a real page with scrollable content + a form so behaviour
+       * tracking has something to observe during local testing.
+       */
+      :root { color-scheme: light dark; }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        line-height: 1.6; color: #1e293b; background: #f8fafc;
+      }
+      header { padding: 48px 24px; text-align: center; background: #fff; border-bottom: 1px solid #e2e8f0; }
+      header h1 { margin: 0 0 8px; font-size: 28px; }
+      header p { margin: 0; color: #64748b; }
+      main { max-width: 720px; margin: 0 auto; padding: 32px 24px 800px; }
+      section { background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 24px; margin: 0 0 24px; }
+      h2 { margin-top: 0; }
+      button.demo, a.demo {
+        display: inline-block; background: #4f46e5; color: #fff; border: none;
+        padding: 10px 18px; border-radius: 8px; font-size: 15px; cursor: pointer; text-decoration: none;
+      }
+      input, textarea { width: 100%; padding: 10px 12px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 15px; margin-top: 6px; }
+      label { font-weight: 600; font-size: 14px; }
+      .hint { font-size: 13px; color: #64748b; }
+      .dev-pipeline {
+        position: fixed; right: 16px; bottom: 16px; width: min(460px, calc(100vw - 32px));
+        max-height: 72vh; overflow: auto; z-index: 2147482999; background: #0f172a;
+        color: #e2e8f0; border: 1px solid #334155; border-radius: 10px; box-shadow: 0 18px 40px rgba(15, 23, 42, .32);
+        font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      .dev-pipeline header { padding: 10px 12px; text-align: left; background: #111827; border-bottom: 1px solid #334155; }
+      .dev-pipeline strong { display: block; font-size: 13px; color: #fff; }
+      .dev-pipeline .status { color: #93c5fd; }
+      .dev-pipeline .body { padding: 10px 12px; }
+      .dev-pipeline .ok { color: #86efac; }
+      .dev-pipeline .fail { color: #fca5a5; }
+      .dev-pipeline .muted { color: #94a3b8; }
+      .dev-pipeline pre { white-space: pre-wrap; word-break: break-word; margin: 8px 0 0; color: #cbd5e1; }
+      .dev-run {
+        display: inline-flex; align-items: center; margin-top: 10px; padding: 7px 10px;
+        border: 1px solid #475569; border-radius: 8px; background: #1e293b; color: #e2e8f0;
+        font: inherit; cursor: pointer;
+      }
+      .dev-run:hover { background: #334155; }
+      .dev-pipeline.with-popup { bottom: 210px; }
+      .dev-visitor-layer {
+        --aire-accent: #4f46e5;
+        --aire-accent-hover: #4338ca;
+        --aire-bg: #ffffff;
+        --aire-surface: #f8fafc;
+        --aire-text: #0f172a;
+        --aire-muted: #64748b;
+        --aire-border: #e2e8f0;
+        --aire-shadow: 0 12px 32px rgba(15, 23, 42, 0.18);
+        --aire-radius: 16px;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        position: fixed; right: 20px; bottom: 20px; z-index: 2147483000;
+        display: flex; flex-direction: column; align-items: flex-end; gap: 14px;
+      }
+      .dev-visitor-layer * { box-sizing: border-box; }
+      .dev-visitor-layer button { font-family: inherit; cursor: pointer; border: none; background: none; }
+      .aire-popup {
+        width: 320px; max-width: calc(100vw - 32px); background: var(--aire-bg); color: var(--aire-text);
+        border: 1px solid var(--aire-border); border-radius: var(--aire-radius); box-shadow: var(--aire-shadow);
+        padding: 18px 18px 16px; position: relative; animation: aire-pop-in .42s cubic-bezier(.16,1,.3,1);
+        transform-origin: bottom right;
+      }
+      .aire-popup.aire-leaving { animation: aire-pop-out .25s ease forwards; }
+      .aire-popup__close {
+        position: absolute; top: 10px; right: 10px; width: 26px; height: 26px; border-radius: 50%;
+        color: var(--aire-muted); font-size: 18px; line-height: 1; display: flex; align-items: center; justify-content: center;
+        transition: background .15s ease, color .15s ease;
+      }
+      .aire-popup__close:hover { background: var(--aire-surface); color: var(--aire-text); }
+      .aire-popup__brand { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; color: var(--aire-muted); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 8px; }
+      .aire-popup__dot { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; box-shadow: 0 0 0 3px rgba(34,197,94,.18); }
+      .aire-popup__title { font-size: 15.5px; line-height: 1.35; font-weight: 700; margin: 0 28px 8px 0; color: var(--aire-text); }
+      .aire-popup__msg { font-size: 14.5px; line-height: 1.5; margin: 0 0 14px; padding-right: 18px; }
+      .aire-popup__cta { display: inline-flex; align-items: center; gap: 8px; background: var(--aire-accent); color: #fff; padding: 10px 16px; border-radius: 10px; font-size: 14px; font-weight: 600; transition: background .18s ease, transform .18s ease; }
+      .aire-popup__cta:hover { background: var(--aire-accent-hover); transform: translateY(-1px); }
+      .aire-popup__cta svg { width: 16px; height: 16px; }
+      @keyframes aire-pop-in { from { opacity: 0; transform: translateY(12px) scale(.96); } to { opacity: 1; transform: translateY(0) scale(1); } }
+      @keyframes aire-pop-out { to { opacity: 0; transform: translateY(8px) scale(.96); } }
+      .spacer { height: 60vh; }
+      @media (prefers-color-scheme: dark) {
+        body { background: #0b1220; color: #e2e8f0; }
+        header, section { background: #111827; border-color: #1f2937; }
+        header p, .hint { color: #94a3b8; }
+        input, textarea { background: #0b1220; color: #e2e8f0; border-color: #334155; }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Dev Harness</h1>
+      <p>Scroll, click things, or focus the form to emit semantic events for shadow perception.</p>
+    </header>
+
+    <aside id="sprint42-panel" class="dev-pipeline" aria-live="polite">
+      <header>
+        <strong>Sprint 4.2 Dev Pipeline</strong>
+        <span class="status">Waiting for semantic events...</span>
+      </header>
+      <div class="body">
+        <div class="muted">Interact with pricing, CTA buttons, scroll, or the form. This playground only opts into the dev pipeline trace; production widget behavior is unchanged.</div>
+        <button id="run-sprint42-happy" class="dev-run" type="button">Run Sprint 4.2 happy path</button>
+      </div>
+    </aside>
+
+    <div id="dev-popup-layer" class="dev-visitor-layer" aria-live="polite"></div>
+
+    <main>
+      <section>
+        <h2>How to test</h2>
+        <p class="hint">
+          Open DevTools Network to watch batched <code>POST /events</code> requests, and the Console for
+          the widget's <code>[AIRE]</code> debug logs (debug is enabled below). Sprint 4.1 is shadow mode:
+          the backend may log a perception decision, but the page should show no launcher, popup, or chat.
+        </p>
+      </section>
+
+      <section>
+        <h2>Pricing</h2>
+        <p>This block exists only so there is content to scroll through and elements to click.</p>
+        <p>
+          <button class="demo" data-track="pricing-faq">Pricing FAQ</button>
+          <button class="demo" data-track="book-demo">Book a demo</button>
+        </p>
+      </section>
+
+      <section>
+        <h2>Contact (form interaction signal)</h2>
+        <label for="name">Name</label>
+        <input id="name" name="name" placeholder="Focusing this field signals form interaction" />
+        <label for="msg" style="display:block;margin-top:12px;">Message</label>
+        <textarea id="msg" name="msg" rows="3" placeholder="Type hereâ€¦"></textarea>
+      </section>
+
+      <div class="spacer"></div>
+      <section>
+        <h2>Keep scrollingâ€¦</h2>
+        <p>Reaching 60% scroll depth is one of the engagement milestones.</p>
+      </section>
+    </main>
+
+    <script>
+      (() => {
+        const panel = document.getElementById('sprint42-panel');
+        const status = panel.querySelector('.status');
+        const body = panel.querySelector('.body');
+        const popupLayer = document.getElementById('dev-popup-layer');
+        let activePopup = null;
+        let manualTraceLockedUntil = 0;
+        const originalFetch = window.fetch.bind(window);
+        const originalBeacon = navigator.sendBeacon ? navigator.sendBeacon.bind(navigator) : null;
+
+        function escapeHtml(value) {
+          return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+        }
+
+        function setText(parent, tag, className, value) {
+          const el = document.createElement(tag);
+          if (className) el.className = className;
+          el.textContent = value || '';
+          parent.appendChild(el);
+          return el;
+        }
+
+        function clearDevPopup() {
+          if (!activePopup) return;
+          const popup = activePopup;
+          activePopup = null;
+          popup.classList.add('aire-leaving');
+          setTimeout(() => popup.remove(), 240);
+          panel.classList.remove('with-popup');
+        }
+
+        function renderDevPopup(popup) {
+          if (!popup || !popup.title || !popup.body || !popup.cta) {
+            clearDevPopup();
+            return;
+          }
+          clearDevPopup();
+          const card = document.createElement('div');
+          card.className = 'aire-popup';
+          card.setAttribute('role', 'dialog');
+          card.setAttribute('aria-label', 'Message from assistant');
+
+          const close = setText(card, 'button', 'aire-popup__close', 'x');
+          close.setAttribute('aria-label', 'Dismiss');
+
+          const brand = document.createElement('div');
+          brand.className = 'aire-popup__brand';
+          const dot = document.createElement('span');
+          dot.className = 'aire-popup__dot';
+          brand.appendChild(dot);
+          setText(brand, 'span', '', 'AI Assistant');
+          card.appendChild(brand);
+
+          setText(card, 'h3', 'aire-popup__title', popup.title);
+          setText(card, 'p', 'aire-popup__msg', popup.body);
+
+          const cta = document.createElement('button');
+          cta.className = 'aire-popup__cta';
+          setText(cta, 'span', '', popup.cta);
+          const arrow = document.createElement('span');
+          arrow.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>';
+          cta.appendChild(arrow);
+          card.appendChild(cta);
+
+          close.addEventListener('click', clearDevPopup);
+          cta.addEventListener('click', clearDevPopup);
+          popupLayer.appendChild(card);
+          activePopup = card;
+          panel.classList.add('with-popup');
+        }
+
+        function extractPopupArtifact(payload) {
+          const popupResult = payload && payload.sprint42 && payload.sprint42.popup;
+          if (!popupResult || !popupResult.ok || !popupResult.popup) return null;
+          return popupResult.popup;
+        }
+
+        function summarizeTrace(payload) {
+          const sprint42 = payload && payload.sprint42;
+          const brain = payload && payload.debug;
+          const action = brain ? `${brain.action}${brain.suppressedBy ? ` (${brain.suppressedBy})` : ''}` : 'not available';
+          if (!sprint42) {
+            return {
+              ok: false,
+              headline: `Perception only: Sales Brain ${action}`,
+              details: payload,
+            };
+          }
+
+          const stages = sprint42.trace && sprint42.trace.stages ? sprint42.trace.stages.join(' -> ') : 'unknown';
+          if (sprint42.ok) {
+            return {
+              ok: true,
+              headline: `Popup artifact generated after: ${stages}`,
+              details: sprint42.popup,
+            };
+          }
+          return {
+            ok: false,
+            headline: `Stopped at ${sprint42.stoppedAt || 'unknown'}: ${sprint42.reason || 'unknown reason'} | stages: ${stages}`,
+            details: sprint42,
+          };
+        }
+
+        function render(payload, options = {}) {
+          const summary = summarizeTrace(payload);
+          status.textContent = new Date().toLocaleTimeString();
+          const popup = extractPopupArtifact(payload);
+          if (popup) renderDevPopup(popup);
+          else clearDevPopup();
+          if (options.lockManualTrace && popup) {
+            manualTraceLockedUntil = Date.now() + 30000;
+          }
+          body.innerHTML = `
+            <div class="${summary.ok ? 'ok' : 'fail'}">${escapeHtml(summary.headline)}</div>
+            <div class="muted">accepted=${escapeHtml(payload.accepted ?? '-')}, status=${escapeHtml(payload.status ?? '-')}</div>
+            <pre>${escapeHtml(JSON.stringify(summary.details, null, 2))}</pre>
+            <button id="run-sprint42-happy" class="dev-run" type="button">Run Sprint 4.2 happy path</button>
+          `;
+        }
+
+        async function runHappyPath() {
+          const sessionId = `playground-sprint42-${Date.now()}`;
+          const payload = {
+            siteId: '',
+            sessionId,
+            returning: false,
+            surface: 'desktop',
+            events: [
+              { type: 'content_dwell', zone: 'pricing', intensity: 0.9, ts: 10000, surface: 'desktop' },
+              { type: 'pricing_focus', zone: 'pricing', intensity: 0.9, ts: 18000, surface: 'desktop' },
+              { type: 'zone_revisit', zone: 'pricing', intensity: 0.9, ts: 28000, surface: 'desktop' },
+              { type: 'pricing_focus', zone: 'pricing', intensity: 0.9, ts: 36000, surface: 'desktop' }
+            ],
+            botSignal: { webdriver: false }
+          };
+          status.textContent = 'Running Sprint 4.2 happy path...';
+          try {
+            const response = await originalFetch('/events?sprint42=1', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload),
+            });
+            render(await response.json(), { lockManualTrace: true });
+          } catch (err) {
+            clearDevPopup();
+            body.innerHTML = `<div class="fail">Happy path request failed</div><pre>${escapeHtml(err.message || err)}</pre><button id="run-sprint42-happy" class="dev-run" type="button">Run Sprint 4.2 happy path</button>`;
+          }
+        }
+
+        panel.addEventListener('click', (event) => {
+          if (event.target && event.target.id === 'run-sprint42-happy') runHappyPath();
+        });
+        if (originalBeacon) {
+          navigator.sendBeacon = (url, data) => {
+            if (String(url).includes('/events')) return false;
+            return originalBeacon(url, data);
+          };
+        }
+
+        window.fetch = async (input, init) => {
+          const rawUrl = typeof input === 'string' ? input : input && input.url ? input.url : String(input);
+          const isEvents = rawUrl.includes('/events');
+          let nextInput = input;
+
+          if (isEvents) {
+            const url = new URL(rawUrl, window.location.origin);
+            url.searchParams.set('sprint42', '1');
+            nextInput = typeof input === 'string' ? url.toString() : new Request(url.toString(), input);
+          }
+
+          const response = await originalFetch(nextInput, init);
+          if (isEvents) {
+            response.clone().json().then((payload) => {
+              if (Date.now() < manualTraceLockedUntil) return;
+              render(payload);
+            }).catch((err) => {
+              body.innerHTML = `<div class="fail">Could not parse /events dev trace</div><pre>${escapeHtml(err.message || err)}</pre>`;
+            });
+          }
+          return response;
+        };
+      })();
+    </script>
+
+    <!-- The widget. data-backend defaults to this origin; data-debug turns on console logs. -->
+    <script src="/widget.js" data-site-id="" data-debug="true"></script>
+  </body>
+</html>
+
+
+
+

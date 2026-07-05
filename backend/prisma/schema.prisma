@@ -1,0 +1,259 @@
+// Sprint 3 — SaaS foundation schema (multi-tenant).
+// Tenancy model: shared DB, shared schema, `organizationId` discriminator.
+// The ownership chain every isolation check walks: Widget.siteId -> Website -> Organization.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Identity & tenancy
+// ---------------------------------------------------------------------------
+
+model User {
+  id           String   @id @default(uuid()) @db.Uuid
+  email        String   @unique
+  passwordHash String? // nullable-ready for future social login
+  name         String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  deletedAt    DateTime?
+
+  memberships OrganizationMember[]
+  sessions    Session[]
+  auditLogs   AuditLog[]
+
+  @@index([email])
+}
+
+/// The tenant boundary. Everything a business owns hangs off an Organization.
+model Organization {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String
+  slug      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  deletedAt DateTime?
+
+  members            OrganizationMember[]
+  sessions           Session[]
+  websites           Website[]
+  knowledgeSnapshots KnowledgeSnapshot[]
+  knowledgeBuilds    KnowledgeBuild[]
+  auditLogs          AuditLog[]
+}
+
+enum MemberRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+/// Join of User <-> Organization. Prepared for future teams/roles (role unused this sprint).
+model OrganizationMember {
+  id             String       @id @default(uuid()) @db.Uuid
+  organizationId String       @db.Uuid
+  userId         String       @db.Uuid
+  role           MemberRole   @default(OWNER)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId])
+  @@index([userId])
+}
+
+/// DB-backed auth session. Token is stored HASHED; the raw token lives only in the cookie.
+model Session {
+  id             String   @id @default(uuid()) @db.Uuid
+  userId         String   @db.Uuid
+  organizationId String   @db.Uuid // the active org for this session
+  tokenHash      String   @unique
+  expiresAt      DateTime
+  createdAt      DateTime @default(now())
+  revokedAt      DateTime?
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+/// Architecture-ready for forgot-password (endpoints stubbed 501 this sprint).
+model PasswordResetToken {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @db.Uuid
+  tokenHash String   @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Tenant resources
+// ---------------------------------------------------------------------------
+
+model Website {
+  id              String   @id @default(uuid()) @db.Uuid
+  organizationId  String   @db.Uuid
+  name            String
+  url             String
+  industry        String?
+  primaryLanguage String   @default("English")
+  description     String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  deletedAt       DateTime?
+
+  organization Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  instruction  BusinessInstruction?
+  widget       Widget?
+  snapshots    KnowledgeSnapshot[]
+  builds       KnowledgeBuild[]
+
+  @@index([organizationId])
+}
+
+/// Replaces business-instructions.json. 1:1 with Website.
+model BusinessInstruction {
+  id                 String   @id @default(uuid()) @db.Uuid
+  websiteId          String   @unique @db.Uuid
+  businessName       String
+  companyDescription String?
+  role               String?  // e.g. "Friendly sales assistant for a SaaS product"
+  tone               String   @default("Professional, helpful, and concise.")
+  goal               String?  // e.g. "Help visitors understand pricing and book a demo"
+  context            String?  // Additional business context
+  rules              String?  // e.g. "Never mention competitors"
+  fallbackMessage    String?  // e.g. "I'm not sure, but our team can help!"
+  language           String   @default("English")
+  alwaysBookDemo     Boolean  @default(false)
+  avoidDiscounts     Boolean  @default(false)
+  allowedLinks       Json     @default("[]") // [{label,url}] — CTA allowlist
+  preferredCta       String?
+  supportEmail       String?
+  supportPhone       String?
+  websiteUrl         String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  website Website @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+}
+
+enum WidgetStatus {
+  ACTIVE
+  DISABLED
+}
+
+/// Public identity of a website's widget. `siteId` is the handle in the embed snippet.
+model Widget {
+  id             String       @id @default(uuid()) @db.Uuid
+  websiteId      String       @unique @db.Uuid
+  siteId         String       @unique // e.g. "site_x83kf92" — public handle
+  widgetPublicKey String      @unique // NEW: independently-rotatable public token (verification not yet implemented)
+  status         WidgetStatus @default(ACTIVE)
+  installedAt    DateTime?
+  lastRequestAt  DateTime?
+  requestCount   Int          @default(0)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  website Website @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+
+  @@index([siteId])
+}
+
+// ---------------------------------------------------------------------------
+// Knowledge base
+// ---------------------------------------------------------------------------
+
+enum SnapshotStatus {
+  BUILDING
+  READY
+  FAILED
+}
+
+/// Metadata of a knowledge ARTIFACT (what is actually live/queryable). One row per successful build.
+model KnowledgeSnapshot {
+  id             String         @id @default(uuid()) @db.Uuid
+  websiteId      String         @db.Uuid
+  organizationId String         @db.Uuid
+  version        Int            @default(1)
+  embeddingModel String
+  dimensions     Int
+  pagesCrawled   Int
+  chunkCount     Int
+  sourceUrl      String
+  status         SnapshotStatus @default(BUILDING)
+  storageKey     String // e.g. data/knowledge/<websiteId>.json
+  error          String?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  website      Website      @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  builds       KnowledgeBuild[]
+
+  @@index([websiteId, version])
+}
+
+enum BuildStatus {
+  RUNNING
+  SUCCESS
+  FAILED
+}
+
+/// Append-only EVENT LOG of every KB build attempt (incl. failures). `currentPhase` powers live progress.
+model KnowledgeBuild {
+  id             String      @id @default(uuid()) @db.Uuid
+  websiteId      String      @db.Uuid
+  organizationId String      @db.Uuid
+  snapshotId     String?     @db.Uuid
+  status         BuildStatus @default(RUNNING)
+  currentPhase   String? // crawling | extracting | chunking | embedding | indexing | saving
+  pages          Int?
+  chunks         Int?
+  error          String?
+  startedAt      DateTime    @default(now())
+  finishedAt     DateTime?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  website      Website           @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  snapshot     KnowledgeSnapshot? @relation(fields: [snapshotId], references: [id], onDelete: SetNull)
+
+  @@index([websiteId, startedAt])
+}
+
+// ---------------------------------------------------------------------------
+// Audit
+// ---------------------------------------------------------------------------
+
+/// Security/debug audit trail. Generic shape so any event can be recorded.
+model AuditLog {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String?  @db.Uuid
+  userId         String?  @db.Uuid
+  action         String // e.g. "user.signup", "website.created", "knowledge.built"
+  targetType     String?
+  targetId       String?
+  metadata       Json     @default("{}")
+  ip             String?
+  createdAt      DateTime @default(now())
+
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+  user         User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt])
+}
