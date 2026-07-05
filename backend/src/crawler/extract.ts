@@ -42,6 +42,13 @@ export interface ExtractedPage {
   links: string[];
 }
 
+export interface HtmlInspection {
+  bodyText: string;
+  headingCount: number;
+  paragraphCount: number;
+  linkCount: number;
+}
+
 /** Collapse whitespace, normalize newlines, trim. */
 export function normalizeText(input: string): string {
   return input
@@ -52,6 +59,16 @@ export function normalizeText(input: string): string {
     .map((line) => line.trim())
     .join('\n')
     .trim();
+}
+
+export function inspectHtml(html: string): HtmlInspection {
+  const $ = cheerio.load(html);
+  return {
+    bodyText: normalizeText($('body').text()),
+    headingCount: $('h1, h2, h3, h4, h5, h6').length,
+    paragraphCount: $('p').length,
+    linkCount: $('a[href]').length,
+  };
 }
 
 export function extract(html: string, pageUrl: string): ExtractedPage {

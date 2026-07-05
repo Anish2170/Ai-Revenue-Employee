@@ -3,13 +3,15 @@
  * per-request timeout, with small wave-based concurrency. Produces clean
  * {@link CrawledPage}s (text extracted, content hashed) for the chunker.
  *
- * It does NOT implement incremental crawling — every run is a full crawl. The
- * per-page `contentHash`/`lastCrawled` it records exist so a future sprint can
- * add "skip unchanged page" without changing this interface.
+ * Static HTML is tried first for speed and WordPress-style sites. If a page has
+ * too little readable text, the crawler falls back to a headless browser render
+ * so React/Vite/Next/Vue/Angular pages can execute client-side JavaScript before
+ * extraction.
  */
 import { createHash } from 'node:crypto';
 import { config } from '../config/index.js';
-import { extract } from './extract.js';
+import { extract, inspectHtml, type HtmlInspection } from './extract.js';
+import { renderPage, type RenderedPage } from './browserRenderer.js';
 import { classifyPage, isCrawlablePath, isSameOrigin, normalizeUrl } from './links.js';
 import type { CrawledPage } from '../context/types.js';
 
@@ -25,23 +27,39 @@ export interface CrawlResult {
   skipped: string[];
 }
 
+interface FetchResult {
+  ok: boolean;
+  url: string;
+  status: number | null;
+  contentType: string;
+  html: string | null;
+  error: string | null;
+}
+
+const MIN_READABLE_CHARS = 50;
+
 function sha256(input: string): string {
   return createHash('sha256').update(input).digest('hex');
 }
 
-async function fetchHtml(url: string, timeoutMs: number): Promise<string | null> {
+async function fetchHtml(url: string, timeoutMs: number): Promise<FetchResult> {
   try {
     const res = await fetch(url, {
       redirect: 'follow',
       signal: AbortSignal.timeout(timeoutMs),
       headers: { 'User-Agent': 'AIRevenueEmployee-Crawler/1.0' },
     });
-    if (!res.ok) return null;
     const type = res.headers.get('content-type') ?? '';
-    if (!type.includes('text/html')) return null;
-    return await res.text();
-  } catch {
-    return null;
+    if (!res.ok) {
+      return { ok: false, url: res.url || url, status: res.status, contentType: type, html: null, error: `http_status_${res.status}` };
+    }
+    if (!type.includes('text/html')) {
+      return { ok: false, url: res.url || url, status: res.status, contentType: type, html: null, error: `non_html_content_type:${type || 'missing'}` };
+    }
+    return { ok: true, url: res.url || url, status: res.status, contentType: type, html: await res.text(), error: null };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { ok: false, url, status: null, contentType: '', html: null, error: `fetch_error:${message}` };
   }
 }
 
@@ -70,36 +88,21 @@ export async function crawl(startUrl: string, opts: CrawlOptions = {}): Promise<
     const results = await Promise.all(
       wave.map(async (url) => {
         visited.add(url);
-        const html = await fetchHtml(url, timeoutMs);
-        return { url, html };
+        return crawlOnePage(url, timeoutMs);
       }),
     );
 
     const nextFrontier: string[] = frontier;
-    for (const { url, html } of results) {
-      if (!html) {
-        skipped.push(url);
-        continue;
-      }
-      const { title, text, links } = extract(html, url);
-
-      if (text.length >= 50) {
-        const path = new URL(url).pathname || '/';
-        pages.push({
-          url,
-          path,
-          title: title || path,
-          text,
-          pageType: classifyPage(path),
-          contentHash: sha256(text),
-          lastCrawled: new Date().toISOString(),
-        });
-      } else {
-        skipped.push(url);
+    for (const result of results) {
+      if (!result.page) {
+        skipped.push(result.url);
+      } else if (pages.length < maxPages) {
+        pages.push(result.page);
       }
 
-      // Enqueue new same-origin links.
-      for (const raw of links) {
+      // Enqueue new same-origin links even from pages rejected for low text; a
+      // shell page may still expose crawlable nav links after rendering.
+      for (const raw of result.links) {
         const norm = normalizeUrl(raw);
         if (!norm || queued.has(norm) || visited.has(norm)) continue;
         if (!isSameOrigin(norm, origin) || !isCrawlablePath(norm)) continue;
@@ -111,4 +114,140 @@ export async function crawl(startUrl: string, opts: CrawlOptions = {}): Promise<
   }
 
   return { pages: pages.slice(0, maxPages), skipped };
+}
+
+async function crawlOnePage(url: string, timeoutMs: number): Promise<{ url: string; page: CrawledPage | null; links: string[] }> {
+  const fetched = await fetchHtml(url, timeoutMs);
+  if (!fetched.ok || !fetched.html) {
+    logCrawlPage({
+      phase: 'static_fetch',
+      requestedUrl: url,
+      status: fetched.status,
+      finalUrl: fetched.url,
+      readyState: 'not_loaded',
+      bodyTextLength: 0,
+      bodyTextFirst500: '',
+      headingCount: 0,
+      paragraphCount: 0,
+      linkCount: 0,
+      extractedTextLength: 0,
+      accepted: false,
+      rejectionReason: fetched.error ?? 'fetch_failed',
+    });
+    return { url, page: null, links: [] };
+  }
+
+  const staticInspection = inspectHtml(fetched.html);
+  const staticExtracted = extract(fetched.html, fetched.url);
+  const staticReason = staticExtracted.text.length < MIN_READABLE_CHARS
+    ? `minimum_content_validation:text_length_${staticExtracted.text.length}_below_${MIN_READABLE_CHARS}`
+    : null;
+
+  logCrawlPage({
+    phase: 'static_fetch',
+    requestedUrl: url,
+    status: fetched.status,
+    finalUrl: fetched.url,
+    readyState: 'static_html_no_js',
+    bodyTextLength: staticInspection.bodyText.length,
+    bodyTextFirst500: staticInspection.bodyText.slice(0, 500),
+    headingCount: staticInspection.headingCount,
+    paragraphCount: staticInspection.paragraphCount,
+    linkCount: staticInspection.linkCount,
+    extractedTextLength: staticExtracted.text.length,
+    accepted: staticReason === null,
+    rejectionReason: staticReason,
+  });
+
+  if (!staticReason) {
+    return { url, page: toCrawledPage(fetched.url, staticExtracted.title, staticExtracted.text), links: staticExtracted.links };
+  }
+
+  try {
+    const rendered = await renderPage(fetched.url, timeoutMs);
+    const renderedExtracted = extract(rendered.html, rendered.url);
+    const renderedReason = renderedExtracted.text.length < MIN_READABLE_CHARS
+      ? `minimum_content_validation:text_length_${renderedExtracted.text.length}_below_${MIN_READABLE_CHARS}`
+      : null;
+
+    logRenderedCrawlPage(url, rendered, renderedExtracted.text.length, renderedReason);
+
+    if (!renderedReason) {
+      return { url, page: toCrawledPage(rendered.url, renderedExtracted.title, renderedExtracted.text), links: renderedExtracted.links };
+    }
+    return { url, page: null, links: renderedExtracted.links };
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    logCrawlPage({
+      phase: 'browser_render',
+      requestedUrl: url,
+      status: fetched.status,
+      finalUrl: fetched.url,
+      readyState: 'render_failed',
+      bodyTextLength: staticInspection.bodyText.length,
+      bodyTextFirst500: staticInspection.bodyText.slice(0, 500),
+      headingCount: staticInspection.headingCount,
+      paragraphCount: staticInspection.paragraphCount,
+      linkCount: staticInspection.linkCount,
+      extractedTextLength: staticExtracted.text.length,
+      accepted: false,
+      rejectionReason: `browser_render_failed:${reason}`,
+    });
+    return { url, page: null, links: staticExtracted.links };
+  }
+}
+
+function toCrawledPage(url: string, title: string, text: string): CrawledPage {
+  const path = new URL(url).pathname || '/';
+  return {
+    url,
+    path,
+    title: title || path,
+    text,
+    pageType: classifyPage(path),
+    contentHash: sha256(text),
+    lastCrawled: new Date().toISOString(),
+  };
+}
+
+function logRenderedCrawlPage(
+  requestedUrl: string,
+  rendered: RenderedPage,
+  extractedTextLength: number,
+  rejectionReason: string | null,
+): void {
+  logCrawlPage({
+    phase: `browser_render:${rendered.waitStrategy.join('+')}`,
+    requestedUrl,
+    status: rendered.status,
+    finalUrl: rendered.url,
+    readyState: rendered.readyState,
+    bodyTextLength: rendered.bodyText.length,
+    bodyTextFirst500: rendered.bodyText.slice(0, 500),
+    headingCount: rendered.headingCount,
+    paragraphCount: rendered.paragraphCount,
+    linkCount: rendered.linkCount,
+    extractedTextLength,
+    accepted: rejectionReason === null,
+    rejectionReason,
+  });
+}
+
+function logCrawlPage(detail: {
+  phase: string;
+  requestedUrl: string;
+  status: number | null;
+  finalUrl: string;
+  readyState: string;
+  bodyTextLength: number;
+  bodyTextFirst500: string;
+  headingCount: number;
+  paragraphCount: number;
+  linkCount: number;
+  extractedTextLength: number;
+  accepted: boolean;
+  rejectionReason: string | null;
+}): void {
+  if (!config.debugTrace) return;
+  console.log('[crawl:page]', JSON.stringify(detail));
 }

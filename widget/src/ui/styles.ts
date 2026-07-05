@@ -91,6 +91,7 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
   text-transform: uppercase; letter-spacing: .04em; margin-bottom: 8px;
 }
 .aire-popup__dot { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; box-shadow: 0 0 0 3px rgba(34,197,94,.18); }
+.aire-popup__title { font-size: 15.5px; line-height: 1.35; font-weight: 700; color: var(--aire-text); margin: 0 28px 8px 0; }
 .aire-popup__msg { font-size: 14.5px; line-height: 1.5; margin: 0 0 14px; padding-right: 18px; }
 .aire-popup__cta {
   display: inline-flex; align-items: center; gap: 8px;

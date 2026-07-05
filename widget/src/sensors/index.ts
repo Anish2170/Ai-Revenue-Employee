@@ -1,13 +1,16 @@
 /**
- * Sensor engine — the widget-side entry point for Sprint 4 perception.
+ * Sensor engine - the widget-side entry point for Sprint 4 perception.
  *
  * Picks the device profile, wires the batching emitter to POST /events, and
  * streams a low-rate SEMANTIC feed. This is the ONLY device-aware code in the
- * whole system (§9); everything above the wire is device-blind.
+ * whole system (�9); everything above the wire is device-blind.
  *
- * Sprint 4.1 is SHADOW MODE: the engine only observes and streams. It never
- * shows anything and never changes the existing popup/chat behaviour.
+ * Sprint 4 production integration: /events may return a validated popup artifact
+ * when the deterministic backend pipeline decides to speak. The sensor engine
+ * only transports that artifact to the orchestrator; it never decides whether
+ * to interrupt on its own.
  */
+import type { EventsClientState, EventsResponse, PopupArtifact } from '../types.js';
 import type { SemanticEvent, SensorAdapter, Surface } from './types.js';
 import { DesktopSensors } from './desktop.js';
 import { MobileSensors } from './mobile.js';
@@ -18,9 +21,11 @@ export interface SensorEngineOptions {
   siteId: string;
   backendUrl: string;
   debug: boolean;
+  getClientState: () => EventsClientState;
+  onPopup: (popup: PopupArtifact) => void;
 }
 
-/** Coarse surface detection — pointer + viewport. Only affects which sensors run. */
+/** Coarse surface detection - pointer + viewport. Only affects which sensors run. */
 function detectSurface(): Surface {
   const coarse = typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches;
   const narrow = window.innerWidth < 768;
@@ -63,36 +68,44 @@ export class SensorEngine {
     this.emitter = null;
   }
 
-  /** Fire-and-forget batch send. Uses sendBeacon on unload paths when possible. */
+  /** Send a semantic batch and consume the optional validated popup artifact. */
   private send(events: SemanticEvent[]): void {
     const body = JSON.stringify({
       siteId: this.opts.siteId,
       sessionId: this.sessionId,
       returning: this.returning,
       surface: this.surface,
+      clientState: this.opts.getClientState(),
       events,
       botSignal: { webdriver: navigatorWebdriver() },
     });
 
-    const url = `${this.opts.backendUrl}/events`;
-    // Prefer sendBeacon (survives page unload); fall back to fetch keepalive.
-    const beacon = (navigator as Navigator & { sendBeacon?: (u: string, d: BodyInit) => boolean }).sendBeacon;
-    if (beacon) {
-      try {
-        if (beacon.call(navigator, url, new Blob([body], { type: 'application/json' }))) return;
-      } catch {
-        /* fall through to fetch */
-      }
-    }
-    void fetch(url, {
+    void fetch(`${this.opts.backendUrl}/events`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body,
       keepalive: true,
-    }).catch(() => {
-      /* shadow mode: transport failures are silent */
-    });
+    })
+      .then(async (res) => {
+        if (!res.ok) return;
+        const payload = (await res.json().catch(() => null)) as EventsResponse | null;
+        const popup = payload?.popup;
+        if (isPopupArtifact(popup)) this.opts.onPopup(popup);
+      })
+      .catch(() => {
+        /* transport failures are silent */
+      });
   }
+}
+
+function isPopupArtifact(value: unknown): value is PopupArtifact {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as Partial<PopupArtifact>;
+  return typeof v.title === 'string'
+    && typeof v.body === 'string'
+    && typeof v.cta === 'string'
+    && typeof v.popupType === 'string'
+    && typeof v.tone === 'string';
 }
 
 function navigatorWebdriver(): boolean {

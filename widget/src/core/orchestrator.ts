@@ -1,11 +1,11 @@
-﻿/**
+/**
  * Orchestrator - the widget's state machine.
  *
  * Sprint 4 streams semantic events to /events while keeping the old
  * tracker-driven /engage popup automation disabled by default. The persistent
  * launcher is mounted independently so the widget shell still appears.
  */
-import type { WidgetConfig, EngageDecision, VisitorBehaviour } from '../types.js';
+import type { WidgetConfig, EngageDecision, EventsClientState, PopupArtifact, VisitorBehaviour } from '../types.js';
 import { ApiClient } from '../api/client.js';
 import { SessionManager } from '../session/state.js';
 import { Tracker, type MilestoneEvent } from '../tracker/state.js';
@@ -17,6 +17,7 @@ import { SensorEngine } from '../sensors/index.js';
 
 /** Client-side cooldown, mirrors the backend policy to avoid wasteful calls. */
 const COOLDOWN_MS = 25_000;
+const MAX_POPUPS_PER_SESSION = 2;
 
 const CHAT_SVG =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-8.5 8.5 8.5 8.5 0 0 1-3.8-.9L3 21l1.9-5.7A8.5 8.5 0 1 1 21 11.5z"/></svg>';
@@ -56,6 +57,7 @@ export class Orchestrator {
 
     this.root = createWidgetRoot();
     this.api = new ApiClient(this.cfg);
+    this.session = this.session ?? new SessionManager();
     this.chat = new ChatWindow(
       this.root.layer,
       this.api,
@@ -85,6 +87,8 @@ export class Orchestrator {
         siteId: this.cfg.siteId,
         backendUrl: this.cfg.backendUrl,
         debug: this.cfg.debug,
+        getClientState: () => this.eventsClientState(),
+        onPopup: (popup) => this.onPipelinePopup(popup),
       });
       this.sensors.start();
     } catch (err) {
@@ -101,7 +105,7 @@ export class Orchestrator {
     if (this.tracker) return;
 
     this.mountUiShell();
-    this.session = new SessionManager();
+    this.session = this.session ?? new SessionManager();
     this.tracker = new Tracker((reason) => this.onMilestone(reason));
 
     this.tracker.start();
@@ -139,29 +143,78 @@ export class Orchestrator {
     const behaviour = tracker.snapshot();
     // Send the PRE-evaluation session so the backend sees the prior timestamps.
     const decision = await api.postEngage(behaviour, s);
-    session.markEngaged();
     this.evaluating = false;
 
     this.log(`engage (${reason}) ->`, decision);
-    if (decision.showPopup) this.showPopup(decision);
+    if (decision.showPopup) {
+      this.showPopup(decision);
+    } else {
+      session.markEngaged();
+    }
+  }
+
+  private onPipelinePopup(artifact: PopupArtifact): void {
+    const decision: EngageDecision = {
+      showPopup: true,
+      title: artifact.title,
+      body: artifact.body,
+      message: artifact.body,
+      cta: artifact.cta,
+      popupType: artifact.popupType,
+      tone: artifact.tone,
+    };
+    this.showPopup(decision);
   }
 
   private showPopup(decision: EngageDecision): void {
     const root = this.root;
     const session = this.session;
-    if (!root || !session) return;
+    const chat = this.chat;
+    if (!root || !session || !chat) return;
 
+    const s = session.get();
+    if (!decision.showPopup) return;
+    if (this.popup || chat.isOpen) {
+      this.log('popup_suppressed', { reason: this.popup ? 'popup_active' : 'chat_open' });
+      return;
+    }
+    if (s.popupShown || s.dismissed) {
+      this.log('popup_suppressed', { reason: s.dismissed ? 'dismissed' : 'already_shown' });
+      return;
+    }
+    if (s.engageCount >= MAX_POPUPS_PER_SESSION) {
+      this.log('popup_suppressed', { reason: 'frequency_budget' });
+      return;
+    }
+    if (s.lastEngageAt && Date.now() - s.lastEngageAt < COOLDOWN_MS) {
+      this.log('popup_suppressed', { reason: 'cooldown' });
+      return;
+    }
+
+    session.markEngaged();
     session.markPopupShown();
+    this.log('popup_displayed', {
+      popupType: decision.popupType ?? null,
+      tone: decision.tone ?? null,
+    });
     this.popup = renderPopup(root.layer, decision, {
       onCta: () => {
+        this.log('popup_clicked', {
+          popupType: decision.popupType ?? null,
+          tone: decision.tone ?? null,
+        });
         this.popup = null;
         // If the backend supplied an (allowlisted) navigation target, go there;
-        // otherwise open the chat, seeded with the popup's message so the
+        // otherwise open the chat, seeded with the popup body so the
         // conversation continues with context already in place.
         if (decision.ctaUrl && this.navigate(decision.ctaUrl)) return;
-        this.openChat(decision.message);
+        this.openChat(decision.body ?? decision.message);
       },
       onDismiss: () => {
+        this.log('popup_dismissed', {
+          popupType: decision.popupType ?? null,
+          tone: decision.tone ?? null,
+        });
         this.popup = null;
         session.markDismissed();
         this.showLauncher();
@@ -169,6 +222,23 @@ export class Orchestrator {
     });
     // Keep the persistent launcher visible, sitting just below the popup card.
     if (this.launcher) root.layer.appendChild(this.launcher);
+  }
+
+  private eventsClientState(): EventsClientState {
+    const s = this.session?.get() ?? {
+      popupShown: false,
+      lastEngageAt: null,
+      engageCount: 0,
+      dismissed: false,
+    };
+    return {
+      popupShown: s.popupShown,
+      lastPopupAt: s.lastEngageAt,
+      dismissed: s.dismissed,
+      chatOpen: this.chat?.isOpen ?? false,
+      popupActive: this.popup !== null,
+      popupCount: s.engageCount,
+    };
   }
 
   private dismissPopup(): void {

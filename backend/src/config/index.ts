@@ -37,6 +37,8 @@ export const config = {
     maxPages: Number(process.env.CRAWL_MAX_PAGES ?? 25),
     concurrency: Number(process.env.CRAWL_CONCURRENCY ?? 4),
     timeoutMs: Number(process.env.CRAWL_TIMEOUT_MS ?? 12000),
+    /** Optional explicit Chrome/Edge executable for JS-rendered sites. */
+    browserPath: process.env.CRAWL_BROWSER_PATH ?? process.env.CHROME_PATH ?? '',
   },
 
   /** Database (Neon Postgres). */

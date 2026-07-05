@@ -22,15 +22,41 @@ export interface SessionState {
   dismissed: boolean;
 }
 
+export interface PopupArtifact {
+  title: string;
+  body: string;
+  cta: string;
+  popupType: string;
+  tone: string;
+}
+
 export interface EngageDecision {
   showPopup: boolean;
   intent?: string;
   confidence?: number;
   message?: string;
+  title?: string;
+  body?: string;
   cta?: string;
+  popupType?: string;
+  tone?: string;
   /** Optional navigation target for the CTA (allowlisted server-side). */
   ctaUrl?: string;
   debug?: Record<string, unknown>;
+}
+
+export interface EventsClientState {
+  popupShown: boolean;
+  lastPopupAt: number | null;
+  dismissed: boolean;
+  chatOpen: boolean;
+  popupActive: boolean;
+  popupCount: number;
+}
+
+export interface EventsResponse {
+  status: 'ack' | 'bot' | 'ignored';
+  popup?: PopupArtifact;
 }
 
 export interface ChatSource {

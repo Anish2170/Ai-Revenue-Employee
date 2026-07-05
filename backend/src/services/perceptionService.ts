@@ -6,9 +6,8 @@
  *   validate (§10.4) → bot-filter (§10.5) → attach to server-side session
  *   → perceive() in SHADOW mode → log the decision trace
  *
- * Shadow mode means: we compute the full Sales Brain decision and log it, but we
- * NEVER enact a popup and NEVER call the LLM. That is Sprint 4.2. The endpoint
- * therefore only ever tells the widget "ack" — it changes nothing the visitor sees.
+ * Sprint 4.2 consumes the deterministic Sales Brain decision after this service
+ * returns. This service still does not call the LLM or render UI itself.
  *
  * Every path is safe: malformed input, bots, and errors all resolve to a benign
  * acknowledgement. The widget can never be broken by this endpoint (§10.6).
@@ -22,6 +21,10 @@ import { config } from '../config/index.js';
 import type { BusinessInstructions } from '../context/types.js';
 import type { BusinessObjective, SalesDecision, Surface } from '../intelligence/types.js';
 
+export interface IngestClientState {
+  dismissed?: boolean;
+}
+
 export interface IngestOptions {
   siteId: string | null;
   sessionId: string;
@@ -30,6 +33,7 @@ export interface IngestOptions {
   rawEvents: unknown[];
   botSignal?: BotSignal;
   instructions?: BusinessInstructions;
+  clientState?: IngestClientState;
 }
 
 export interface IngestResult {
@@ -39,10 +43,12 @@ export interface IngestResult {
   accepted: number;
   /** How many were dropped, and why (dev trace only). */
   dropped: string[];
-  /** The shadow decision (dev trace only; never enacted in 4.1). */
+  /** The deterministic Sales Brain decision. Callers decide whether to enact it. */
   shadowDecision?: SalesDecision;
-  /** Objective used for the shadow decision, needed by dev-only Sprint 4.2 tracing. */
+  /** Objective used for the deterministic decision. */
   objective?: BusinessObjective;
+  /** Latest monotonic session timestamp used by the Sales Brain. */
+  decisionTs?: number;
 }
 
 /**
@@ -58,6 +64,10 @@ export function ingestEvents(opts: IngestOptions): IngestResult {
   // Already flagged as a bot → cheap short-circuit, never perceive again.
   if (session.bot) {
     return { status: 'bot', accepted: 0, dropped: ['session_flagged_bot'] };
+  }
+
+  if (opts.clientState?.dismissed) {
+    sessionStore.markDismissed(opts.sessionId);
   }
 
   // 1. Event-quality validation (cross-batch sequence checks use seenKinds).
@@ -105,8 +115,9 @@ export function ingestEvents(opts: IngestOptions): IngestResult {
     status: 'ack',
     accepted: clean.length,
     dropped,
-    shadowDecision: config.debugTrace ? decision : undefined,
-    objective: config.debugTrace ? objective : undefined,
+    shadowDecision: decision,
+    objective,
+    decisionTs: now,
   };
 }
 

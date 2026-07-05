@@ -17,6 +17,21 @@ export const rawEventSchema = z.object({
   surface: z.string().max(16).optional(),
 });
 
+export const eventsClientStateSchema = z.object({
+  /** Client-side popup has already been shown on this page. */
+  popupShown: z.boolean().default(false),
+  /** Epoch ms of the last visitor-visible popup display. */
+  lastPopupAt: z.number().nullable().optional(),
+  /** Visitor dismissed the popup in this browser session. */
+  dismissed: z.boolean().default(false),
+  /** Chat is currently open; never interrupt an active conversation. */
+  chatOpen: z.boolean().default(false),
+  /** A popup is currently visible; never stack popups. */
+  popupActive: z.boolean().default(false),
+  /** Client-side interruption count, used only as an extra suppression guard. */
+  popupCount: z.number().int().nonnegative().max(10_000).default(0),
+}).partial();
+
 export const eventsRequestSchema = z.object({
   /** Public tenant handle (optional in dev-fallback). */
   siteId: z.string().max(100).optional(),
@@ -28,6 +43,8 @@ export const eventsRequestSchema = z.object({
   events: z.array(rawEventSchema).max(100).default([]),
   /** Dominant surface for the session (tuning constant only). */
   surface: z.enum(['desktop', 'mobile', 'tablet']).default('desktop'),
+  /** Optional client UI state so production /events can preserve suppression rules. */
+  clientState: eventsClientStateSchema.optional(),
   /** Optional bot signals from the client (navigator.webdriver, UA). */
   botSignal: z
     .object({
