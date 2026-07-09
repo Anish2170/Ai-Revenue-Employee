@@ -36,16 +36,26 @@ export const engageRequestSchema = z.object({
   }),
 });
 
+export const chatSourceSchema = z.object({
+  title: z.string().min(1).max(200),
+  url: z.string().url().max(2048),
+});
+
 export const chatMessageSchema = z.object({
   role: z.enum(['user', 'assistant']),
   content: z.string().min(1).max(8000),
+  source: chatSourceSchema.optional(),
 });
 
 export const chatRequestSchema = z.object({
   siteId: z.string().max(100).optional(),
+  conversationId: z.string().uuid().optional(),
+  visitorId: z.string().max(100).optional(),
+  sessionId: z.string().max(100).optional(),
   messages: z.array(chatMessageSchema).min(1).max(50),
   behaviour: visitorBehaviourSchema.optional(),
 });
 
 export type EngageRequest = z.infer<typeof engageRequestSchema>;
+export type ChatMessage = z.infer<typeof chatMessageSchema>;
 export type ChatRequest = z.infer<typeof chatRequestSchema>;

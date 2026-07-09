@@ -15,7 +15,7 @@ import type { SemanticEvent, SensorAdapter, Surface } from './types.js';
 import { DesktopSensors } from './desktop.js';
 import { MobileSensors } from './mobile.js';
 import { EventEmitter } from './emitter.js';
-import { getSessionId, resolveReturning } from './session.js';
+import { getSessionId, getVisitorId, resolveReturning } from './session.js';
 
 export interface SensorEngineOptions {
   siteId: string;
@@ -38,6 +38,7 @@ export class SensorEngine {
   private adapter: SensorAdapter | null = null;
   private emitter: EventEmitter | null = null;
   private readonly sessionId = getSessionId();
+  private readonly visitorId = getVisitorId();
   private readonly returning = resolveReturning();
   private readonly surface = detectSurface();
 
@@ -58,7 +59,7 @@ export class SensorEngine {
 
     this.emitter.begin();
     this.adapter.start();
-    if (this.opts.debug) console.log('[AIRE] sensors started', { surface: this.surface, returning: this.returning });
+    if (this.opts.debug) console.log('[AIRE popup-trace] stage=1_widget_event_collection sensors_started', { surface: this.surface, returning: this.returning, sessionId: this.sessionId.slice(0, 8) });
   }
 
   stop(): void {
@@ -70,11 +71,27 @@ export class SensorEngine {
 
   /** Send a semantic batch and consume the optional validated popup artifact. */
   private send(events: SemanticEvent[]): void {
+    if (this.opts.debug) {
+      console.log('[AIRE popup-trace] stage=1_widget_event_collection sending_batch', {
+        passed: events.length > 0,
+        eventCount: events.length,
+        events: events.map((e) => ({ type: e.type, zone: e.zone, intensity: e.intensity, ts: e.ts })),
+        clientState: this.opts.getClientState(),
+      });
+    }
+
     const body = JSON.stringify({
       siteId: this.opts.siteId,
       sessionId: this.sessionId,
+      visitorId: this.visitorId,
       returning: this.returning,
       surface: this.surface,
+      pageUrl: window.location.href,
+      pagePath: window.location.pathname || '/',
+      pageTitle: document.title || '',
+      referrer: document.referrer || undefined,
+      device: detectDevice(),
+      browser: detectBrowser(),
       clientState: this.opts.getClientState(),
       events,
       botSignal: { webdriver: navigatorWebdriver() },
@@ -110,4 +127,19 @@ function isPopupArtifact(value: unknown): value is PopupArtifact {
 
 function navigatorWebdriver(): boolean {
   return (navigator as Navigator & { webdriver?: boolean }).webdriver === true;
+}
+function detectDevice(): string {
+  const ua = navigator.userAgent.toLowerCase();
+  if (/ipad|tablet/.test(ua)) return 'tablet';
+  if (/mobi|android|iphone/.test(ua)) return 'mobile';
+  return 'desktop';
+}
+
+function detectBrowser(): string {
+  const ua = navigator.userAgent;
+  if (/Edg\//.test(ua)) return 'Edge';
+  if (/Chrome\//.test(ua) && !/Chromium\//.test(ua)) return 'Chrome';
+  if (/Safari\//.test(ua) && !/Chrome\//.test(ua)) return 'Safari';
+  if (/Firefox\//.test(ua)) return 'Firefox';
+  return 'Other';
 }

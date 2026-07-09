@@ -64,6 +64,27 @@ export interface ChatSource {
   url: string;
 }
 
+export interface ChatConversationMeta {
+  id: string;
+  title: string;
+  titleStatus: string;
+  status?: string;
+  lastMessageAt?: string;
+  startedAt?: string;
+  totalMessages?: number;
+  summary?: string | null;
+}
+
+export interface WidgetConversation extends ChatConversationMeta {
+  messages: Array<ChatMessage & { id?: string; timestamp?: string }>;
+  memories?: Array<{ id: string; kind: string; content: string; confidence: number | null }>;
+}
+
+export interface WidgetConversationResponse {
+  conversation: WidgetConversation;
+  conversations: ChatConversationMeta[];
+}
+
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;

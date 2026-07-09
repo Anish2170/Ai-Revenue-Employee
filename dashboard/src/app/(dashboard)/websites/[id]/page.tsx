@@ -4,8 +4,9 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { api, type KnowledgeBuildHandle } from '@/lib/api';
 import { Button, Card, Badge, Spinner } from '@/components/ui';
+import { AnalyticsView } from '@/components/analytics-view';
 
-type Tab = 'instructions' | 'widget' | 'knowledge';
+type Tab = 'analytics' | 'instructions' | 'widget' | 'knowledge';
 
 interface Website {
   id: string;
@@ -21,7 +22,7 @@ type AnyRecord = Record<string, any>;
 export default function WebsiteDetailPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
-  const [tab, setTab] = useState<Tab>('instructions');
+  const [tab, setTab] = useState<Tab>('analytics');
   const [website, setWebsite] = useState<Website | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -33,6 +34,7 @@ export default function WebsiteDetailPage() {
   if (!website) return null;
 
   const tabs: { key: Tab; label: string }[] = [
+    { key: 'analytics', label: 'Analytics' },
     { key: 'instructions', label: 'Instructions' },
     { key: 'widget', label: 'Widget Install' },
     { key: 'knowledge', label: 'Knowledge Base' },
@@ -67,6 +69,7 @@ export default function WebsiteDetailPage() {
         ))}
       </div>
 
+      {tab === 'analytics' && <AnalyticsView websiteId={id} websiteName={website.name} />}
       {tab === 'instructions' && <InstructionsTab websiteId={id} />}
       {tab === 'widget' && <WidgetTab websiteId={id} />}
       {tab === 'knowledge' && <KnowledgeTab websiteId={id} websiteUrl={website.url} />}

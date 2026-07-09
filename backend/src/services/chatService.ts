@@ -11,11 +11,13 @@ import { streamChat } from '../llm/index.js';
 import { config } from '../config/index.js';
 import type { ChatMessage, VisitorBehaviour } from '../types.js';
 import type { BusinessInstructions, ResolvedContext } from '../context/types.js';
+import type { PromptConversationContext } from '../conversations/conversation.service.js';
 
 export interface ChatStreamInput {
   messages: ChatMessage[];
   behaviour?: VisitorBehaviour;
   tenant?: { websiteId: string; instructions: BusinessInstructions };
+  conversation?: PromptConversationContext;
   debug?: { requestId?: string };
 }
 
@@ -267,10 +269,12 @@ export async function streamChatReply(input: ChatStreamInput): Promise<AsyncIter
     })();
   }
 
-  const prompt = promptRegistry.chat.active.build(context, messages, summary, opener);
+  const prompt = promptRegistry.chat.active.build(context, messages, summary, opener, input.conversation);
   chatTrace(input, 'prompt_builder', {
     version: promptRegistry.chat.active.version,
     messages: prompt.messages.length,
+    conversationSummaryChars: input.conversation?.summary?.length ?? 0,
+    conversationMemories: input.conversation?.memories.length ?? 0,
     systemChars: prompt.system.length,
   });
   chatTrace(input, 'system prompt', prompt.system);

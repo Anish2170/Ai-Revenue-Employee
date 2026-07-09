@@ -21,6 +21,8 @@ import { websiteRouter } from './websites/website.routes.js';
 import { instructionRouter } from './instructions/instruction.routes.js';
 import { widgetRouter } from './widgets/widget.routes.js';
 import { knowledgeRouter } from './knowledge/knowledge.routes.js';
+import { analyticsRouter } from './analytics/analytics.routes.js';
+import { conversationRouter, widgetConversationRouter } from './conversations/conversation.routes.js';
 import { knowledgeReady, loadOnBoot } from './vectorstore/index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -50,11 +52,21 @@ app.get('/health', (_req, res) => {
 app.use(engageRouter);
 app.use(eventsRouter);
 app.use(chatRouter);
+app.use(widgetConversationRouter);
 app.use(ingestRouter);
 app.use(debugRouter);
+app.use(analyticsRouter);
 
 // --- Static: /widget.js and /playground.html (before auth routers) ---
-app.use(express.static(publicDir));
+app.use(
+  express.static(publicDir, {
+    setHeaders: (res, filePath) => {
+      if (filePath.endsWith('widget.js')) {
+        res.setHeader('Cache-Control', 'no-store, max-age=0');
+      }
+    },
+  }),
+);
 
 // --- Dashboard routes (auth + ownership) ---
 app.use(authRouter);
@@ -62,6 +74,7 @@ app.use(websiteRouter);
 app.use(instructionRouter);
 app.use(widgetRouter);
 app.use(knowledgeRouter);
+app.use(conversationRouter);
 
 app.use(notFound);
 app.use(errorHandler);

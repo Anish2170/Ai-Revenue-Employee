@@ -14,6 +14,7 @@ import { renderPopup, type PopupHandle } from '../popup/popup.js';
 import { ChatWindow } from '../chat/chat.js';
 import { el } from '../utils/dom.js';
 import { SensorEngine } from '../sensors/index.js';
+import { AnalyticsTracker } from '../analytics/analytics.js';
 
 /** Client-side cooldown, mirrors the backend policy to avoid wasteful calls. */
 const COOLDOWN_MS = 25_000;
@@ -32,11 +33,14 @@ export class Orchestrator {
   private launcher: HTMLButtonElement | null = null;
   private evaluating = false;
   private sensors: SensorEngine | null = null;
+  private analytics: AnalyticsTracker | null = null;
 
   constructor(private readonly cfg: WidgetConfig) {}
 
   start(): void {
+    this.startAnalytics();
     this.mountUiShell();
+    this.analytics?.track('WIDGET', 'widget_initialized');
 
     // Sprint 4.1 (shadow mode): stream semantic events to POST /events for the
     // backend perception loop. Fully isolated so sensor failure cannot affect
@@ -52,6 +56,17 @@ export class Orchestrator {
     this.log('widget started', this.cfg);
   }
 
+  private startAnalytics(): void {
+    if (this.analytics) return;
+    try {
+      this.analytics = new AnalyticsTracker(this.cfg);
+      this.analytics.start();
+    } catch (err) {
+      this.analytics = null;
+      this.log('analytics failed to start (non-fatal)', err);
+    }
+  }
+
   private mountUiShell(): void {
     if (this.root) return;
 
@@ -63,7 +78,15 @@ export class Orchestrator {
       this.api,
       () => this.currentBehaviourSnapshot(),
       () => this.showLauncher(),
+      {
+        onOpen: () => this.analytics?.track('CHAT', 'chat_opened', { flush: true }),
+        onClose: () => this.analytics?.track('CHAT', 'chat_closed'),
+        onMessageSent: (detail) => this.analytics?.track('CHAT', 'message_sent', { numericValue: detail.length, flush: true }),
+        onAiResponseCompleted: (detail) => this.analytics?.track('CHAT', 'ai_response_completed', { numericValue: detail.length, flush: true }),
+        onSourceButtonClicked: (source) => this.analytics?.track('CHAT', 'source_button_clicked', { sourceTitle: source.title, sourceUrl: source.url, flush: true }),
+      },
     );
+    void this.chat.restoreLatest();
     this.showLauncher();
   }
 
@@ -163,6 +186,7 @@ export class Orchestrator {
       popupType: artifact.popupType,
       tone: artifact.tone,
     };
+    this.log('[popup-trace] stage=9_popup_delivery_to_widget artifact_received', { passed: true, popupGenerated: true, popupType: artifact.popupType });
     this.showPopup(decision);
   }
 
@@ -170,24 +194,38 @@ export class Orchestrator {
     const root = this.root;
     const session = this.session;
     const chat = this.chat;
-    if (!root || !session || !chat) return;
+    if (!root || !session || !chat) {
+      this.log('[popup-trace] stage=10_widget_rendering', { passed: false, reason: 'ui_not_ready', popupGenerated: false });
+      return;
+    }
 
     const s = session.get();
-    if (!decision.showPopup) return;
+    if (!decision.showPopup) {
+      this.log('[popup-trace] stage=10_widget_rendering', { passed: false, reason: 'decision_showPopup_false', popupGenerated: false });
+      return;
+    }
     if (this.popup || chat.isOpen) {
       this.log('popup_suppressed', { reason: this.popup ? 'popup_active' : 'chat_open' });
+      this.log('[popup-trace] stage=10_widget_rendering', { passed: false, reason: this.popup ? 'popup_active' : 'chat_open', popupGenerated: true });
+      this.analytics?.track('POPUP', 'popup_suppressed', { reason: this.popup ? 'popup_active' : 'chat_open' });
       return;
     }
     if (s.popupShown || s.dismissed) {
       this.log('popup_suppressed', { reason: s.dismissed ? 'dismissed' : 'already_shown' });
+      this.log('[popup-trace] stage=10_widget_rendering', { passed: false, reason: s.dismissed ? 'dismissed' : 'already_shown', popupGenerated: true });
+      this.analytics?.track('POPUP', 'popup_suppressed', { reason: s.dismissed ? 'dismissed' : 'already_shown' });
       return;
     }
     if (s.engageCount >= MAX_POPUPS_PER_SESSION) {
       this.log('popup_suppressed', { reason: 'frequency_budget' });
+      this.log('[popup-trace] stage=10_widget_rendering', { passed: false, reason: 'frequency_budget', popupGenerated: true });
+      this.analytics?.track('POPUP', 'popup_suppressed', { reason: 'frequency_budget' });
       return;
     }
     if (s.lastEngageAt && Date.now() - s.lastEngageAt < COOLDOWN_MS) {
       this.log('popup_suppressed', { reason: 'cooldown' });
+      this.log('[popup-trace] stage=10_widget_rendering', { passed: false, reason: 'cooldown', cooldownRemainingMs: Math.max(0, COOLDOWN_MS - (Date.now() - s.lastEngageAt)), popupGenerated: true });
+      this.analytics?.track('POPUP', 'popup_suppressed', { reason: 'cooldown' });
       return;
     }
 
@@ -197,24 +235,26 @@ export class Orchestrator {
       popupType: decision.popupType ?? null,
       tone: decision.tone ?? null,
     });
+    this.analytics?.track('POPUP', 'popup_displayed', { popupType: decision.popupType, label: decision.tone, flush: true });
+    this.log('[popup-trace] stage=10_widget_rendering', { passed: true, popupGenerated: true, popupType: decision.popupType, title: decision.title });
     this.popup = renderPopup(root.layer, decision, {
       onCta: () => {
         this.log('popup_clicked', {
           popupType: decision.popupType ?? null,
           tone: decision.tone ?? null,
         });
+        this.analytics?.track('POPUP', 'popup_clicked', { popupType: decision.popupType, label: decision.tone, flush: true });
         this.popup = null;
-        // If the backend supplied an (allowlisted) navigation target, go there;
-        // otherwise open the chat, seeded with the popup body so the
-        // conversation continues with context already in place.
+        // Link CTAs navigate only; chat CTAs open the active conversation with a natural transition.
         if (decision.ctaUrl && this.navigate(decision.ctaUrl)) return;
-        this.openChat(decision.body ?? decision.message);
+        this.openChat(decision.title ?? decision.cta ?? decision.body ?? decision.message);
       },
       onDismiss: () => {
         this.log('popup_dismissed', {
           popupType: decision.popupType ?? null,
           tone: decision.tone ?? null,
         });
+        this.analytics?.track('POPUP', 'popup_dismissed', { popupType: decision.popupType, label: decision.tone, flush: true });
         this.popup = null;
         session.markDismissed();
         this.showLauncher();
@@ -248,7 +288,7 @@ export class Orchestrator {
 
   private openChat(opener?: string): void {
     this.hideLauncher();
-    this.chat?.open(opener);
+    void this.chat?.open(opener);
   }
 
   /**

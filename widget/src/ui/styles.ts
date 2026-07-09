@@ -129,6 +129,31 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
 .aire-chat__title { font-size: 14.5px; font-weight: 700; color: var(--aire-text); }
 .aire-chat__status { font-size: 12px; color: var(--aire-muted); display: flex; align-items: center; gap: 6px; }
 .aire-chat__status::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #22c55e; }
+.aire-chat__meta { min-width: 88px; }
+.aire-chat__select {
+  min-width: 0;
+  max-width: 132px;
+  height: 32px;
+  border: 1px solid var(--aire-border);
+  border-radius: 8px;
+  background: var(--aire-bg);
+  color: var(--aire-text);
+  font-size: 12px;
+  padding: 0 8px;
+  outline: none;
+}
+.aire-chat__new {
+  color: var(--aire-muted);
+  font-size: 18px;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background .15s, color .15s;
+}
+.aire-chat__new:hover { background: var(--aire-border); color: var(--aire-text); }
 .aire-chat__header-spacer { flex: 1; }
 .aire-chat__min { color: var(--aire-muted); font-size: 22px; width: 30px; height: 30px; border-radius: 8px; display:flex; align-items:center; justify-content:center; transition: background .15s; }
 .aire-chat__min:hover { background: var(--aire-border); }

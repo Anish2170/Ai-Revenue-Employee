@@ -11,6 +11,7 @@ import { llmAvailable } from '../llm/index.js';
 import { streamChatReply } from '../services/chatService.js';
 import { hasDatabase } from '../config/index.js';
 import { resolveTenant, TenantNotFoundError, TenantDisabledError } from '../tenant/tenant.resolver.js';
+import { appendAssistantMessage, prepareConversationForChat, scheduleConversationMaintenance, type PromptConversationContext } from '../conversations/conversation.service.js';
 import { resolveTenantFromRequestOrigin } from '../tenant/originSnapshotTenant.resolver.js';
 import type { BusinessInstructions } from '../context/types.js';
 import type { ChatRequest } from '../validation/requestSchemas.js';
@@ -51,22 +52,25 @@ chatRouter.post('/chat', validateBody(chatRequestSchema), async (req, res) => {
   }
 
   try {
-    const { siteId, messages, behaviour } = req.body as ChatRequest;
+    const { siteId, conversationId, visitorId, sessionId, messages, behaviour } = req.body as ChatRequest;
     chatTrace(requestId, 'request parsed', {
       siteId: siteId || null,
       messages: messages.length,
+      conversationId: conversationId || null,
+      visitorId: visitorId || null,
+      sessionId: sessionId || null,
       hasBehaviour: Boolean(behaviour),
       databaseEnabled: hasDatabase,
     });
 
-    let tenant: { websiteId: string; instructions: BusinessInstructions } | undefined;
+    let tenant: { organizationId?: string; websiteId: string; instructions: BusinessInstructions } | undefined;
     let tenantSource: 'database' | 'origin_snapshot' | 'none' = 'none';
 
     if (siteId && hasDatabase) {
       chatTrace(requestId, 'tenant_resolve:start', { siteId });
       try {
         const t = await resolveTenant(siteId);
-        tenant = { websiteId: t.websiteId, instructions: t.instructions };
+        tenant = { organizationId: t.organizationId, websiteId: t.websiteId, instructions: t.instructions };
         tenantSource = 'database';
         chatTrace(requestId, 'tenant_resolve:success', {
           source: tenantSource,
@@ -152,15 +156,38 @@ chatRouter.post('/chat', validateBody(chatRequestSchema), async (req, res) => {
       businessInstructions: tenant?.instructions ?? null,
     });
 
-    const stream = await streamChatReply({ messages, behaviour, tenant, debug: { requestId } });
+    let conversation: { id: string; title: string; titleStatus: string } | undefined;
+    let promptContext: PromptConversationContext | undefined;
+    if (hasDatabase && tenantSource === 'database' && tenant?.organizationId) {
+      const prepared = await prepareConversationForChat({
+        tenant: { organizationId: tenant.organizationId, websiteId: tenant.websiteId },
+        conversationId,
+        visitorId: visitorId || sessionId || requestId,
+        sessionId,
+        messages,
+        behaviour,
+      });
+      conversation = prepared.conversation;
+      promptContext = prepared.prompt;
+      send({ conversation: { id: conversation.id, title: conversation.title, titleStatus: conversation.titleStatus } });
+    }
+
+    const stream = await streamChatReply({ messages: promptContext?.recentMessages ?? messages, behaviour, tenant, conversation: promptContext, debug: { requestId } });
     let finalResponse = '';
+    let source: { title: string; url: string } | null = null;
     for await (const event of stream) {
       if (event.type === 'token') {
         finalResponse += event.text;
         send({ token: event.text });
       } else if (event.type === 'source') {
+        source = event.source;
         send({ source: event.source });
       }
+    }
+
+    if (conversation) {
+      await appendAssistantMessage({ conversationId: conversation.id, content: finalResponse, source });
+      scheduleConversationMaintenance(conversation.id);
     }
 
     chatTrace(requestId, 'response_validation', {

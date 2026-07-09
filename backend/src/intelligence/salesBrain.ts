@@ -57,7 +57,6 @@ function interruptionFatigue(ctx: PerceptionContext, now: number): number {
 /** Bad moment: distracted / idle / mid-typing / fling — never interrupt (§7.3). */
 function badMomentPenalty(behaviour: BehaviourState): number {
   if (behaviour.dominant === 'Distracted') return 1;
-  if ((behaviour.vector.Distracted ?? 0) >= 0.5) return 1;
   return 0;
 }
 

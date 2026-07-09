@@ -132,6 +132,82 @@ test('responseValidation: rejects CTA that ignores the approved intent', () => {
   assert.equal(result.ok, false);
   assert.ok(result.reasons.includes('cta_not_allowed'));
 });
+test('responseValidation: accepts chat-style CTA language for lead capture', () => {
+  const { strategy } = fixture();
+  const leadStrategy: ConversationStrategy = {
+    ...strategy,
+    kind: 'GenerateLead',
+    tone: 'helpful',
+    ctaIntent: 'capture_lead',
+  };
+
+  const result = validatePopupResponse({
+    llm: llm({
+      title: 'Want help choosing the next step?',
+      body: 'Tell us what you are trying to improve and we can point you in the right direction.',
+      cta: 'Book a call',
+      tone: 'helpful',
+      popupType: 'lead',
+    }),
+    strategy: leadStrategy,
+    knowledge: knowledge('Tell us what you are trying to improve and we can point you in the right direction.'),
+    instructions,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.popup.cta, 'Book a call');
+});
+
+
+test('responseValidation: accepts common GenerateLead capture_lead CTA variants', () => {
+  const { strategy } = fixture();
+  const leadStrategy: ConversationStrategy = {
+    ...strategy,
+    kind: 'GenerateLead',
+    tone: 'direct',
+    ctaIntent: 'capture_lead',
+  };
+  const ctas = [
+    'Request a Consultation',
+    'Claim Gift Code',
+    'Get Gift Code',
+    'Join Now',
+    'Access Details',
+    'Unlock Details',
+    'Start Now',
+    'Get Started',
+    'Talk to an Expert',
+    'Connect With Us',
+    'Send a Message',
+    "I'm Interested",
+    'Yes, Help Me',
+    'Help Me Start',
+    'Check Eligibility',
+    'Find Out More',
+    'Show Me How',
+    'Begin Setup',
+    'Register Interest',
+    'Ask About This',
+  ];
+
+  for (const cta of ctas) {
+    const result = validatePopupResponse({
+      llm: llm({
+        title: 'Ready to take the next step?',
+        body: 'Share what you need and the team can guide you through the next step.',
+        cta,
+        tone: 'direct',
+        popupType: 'lead',
+      }),
+      strategy: leadStrategy,
+      knowledge: knowledge('Share what you need and the team can guide you through the next step.'),
+      instructions,
+    });
+
+    assert.equal(result.ok, true, `${cta} should be accepted as capture_lead`);
+    assert.equal(result.popup.cta, cta);
+  }
+});
 
 test('responseValidation: rejects invented pricing amounts', () => {
   const { strategy } = fixture();

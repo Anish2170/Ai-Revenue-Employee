@@ -73,6 +73,49 @@ class ApiClient {
     return request('/api/websites');
   }
 
+  getAnalyticsSummary(websiteId?: string) {
+    const qs = websiteId ? '?websiteId=' + encodeURIComponent(websiteId) : '';
+    return request('/api/analytics/summary' + qs);
+  }
+
+  getAnalyticsChart(metric: string, days = 14, websiteId?: string) {
+    const params = new URLSearchParams({ metric, days: String(days) });
+    if (websiteId) params.set('websiteId', websiteId);
+    return request('/api/analytics/charts?' + params.toString());
+  }
+
+
+  getAiDecisionLog(filters: { websiteId?: string; decision?: string; popupType?: string; sessionId?: string; date?: string; startDate?: string; endDate?: string; search?: string; limit?: number; export?: boolean } = {}) {
+    const params = new URLSearchParams();
+    if (filters.websiteId) params.set('websiteId', filters.websiteId);
+    if (filters.decision) params.set('decision', filters.decision);
+    if (filters.popupType) params.set('popupType', filters.popupType);
+    if (filters.sessionId) params.set('sessionId', filters.sessionId);
+    if (filters.date) params.set('date', filters.date);
+    if (filters.startDate) params.set('startDate', filters.startDate);
+    if (filters.endDate) params.set('endDate', filters.endDate);
+    if (filters.search) params.set('search', filters.search);
+    if (filters.limit) params.set('limit', String(filters.limit));
+    if (filters.export) params.set('export', '1');
+    const qs = params.toString();
+    return request('/api/analytics/decision-log' + (qs ? '?' + qs : ''));
+  }
+
+  listConversations(websiteId?: string) {
+    const qs = websiteId ? '?websiteId=' + encodeURIComponent(websiteId) : '';
+    return request('/api/conversations' + qs);
+  }
+
+  getConversation(id: string) {
+    return request(`/api/conversations/${id}`);
+  }
+
+  renameConversation(id: string, title: string) {
+    return request(`/api/conversations/${id}/title`, {
+      method: 'PATCH',
+      body: JSON.stringify({ title }),
+    });
+  }
   createWebsite(data: unknown) {
     return request('/api/websites', {
       method: 'POST',

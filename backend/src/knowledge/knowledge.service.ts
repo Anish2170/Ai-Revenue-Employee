@@ -6,6 +6,7 @@ import { prisma } from '../db/prisma.js';
 import { config } from '../config/index.js';
 import { ingest } from '../services/ingestService.js';
 import { writeAuditLog } from '../audit/audit.service.js';
+import { enqueueAnalyticsEvent } from '../analytics/analytics.service.js';
 import type { IngestPhase } from '../services/ingestService.js';
 
 export type BuildPhaseEvent = {
@@ -36,6 +37,14 @@ export async function startBuild(
       status: 'RUNNING',
       currentPhase: 'crawling',
     },
+  });
+
+  const analyticsTenant = { organizationId, websiteId };
+  enqueueAnalyticsEvent(analyticsTenant, {}, {
+    category: 'KNOWLEDGE',
+    eventName: 'knowledge_build_started',
+    knowledgeBuildId: build.id,
+    sourceUrl,
   });
 
   const events: BuildPhaseEvent[] = [];
@@ -101,6 +110,15 @@ export async function startBuild(
         },
       });
 
+      enqueueAnalyticsEvent(analyticsTenant, {}, {
+        category: 'KNOWLEDGE',
+        eventName: 'knowledge_build_completed',
+        knowledgeBuildId: build.id,
+        sourceUrl,
+        numericValue: result.chunks,
+        durationMs: result.durationMs,
+      });
+
       events.push({ phase: 'saving', detail: { done: true, pages: result.pages, chunks: result.chunks, durationMs: result.durationMs } });
 
       await writeAuditLog({
@@ -117,6 +135,13 @@ export async function startBuild(
         where: { id: build.id },
         data: { status: 'FAILED', error: message, finishedAt: new Date() },
       }).catch(() => {});
+      enqueueAnalyticsEvent(analyticsTenant, {}, {
+        category: 'KNOWLEDGE',
+        eventName: 'knowledge_build_failed',
+        knowledgeBuildId: build.id,
+        sourceUrl,
+        reason: message,
+      });
       events.push({ phase: 'crawling', detail: { error: message } });
     } finally {
       state.done = true;

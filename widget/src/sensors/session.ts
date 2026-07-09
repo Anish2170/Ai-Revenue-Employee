@@ -12,6 +12,9 @@
 
 const SESSION_KEY = 'aire_sid';
 const RETURN_KEY = 'aire_rt';
+const VISITOR_KEY = 'aire_vid';
+
+let cachedIdentity: { visitorId: string; returning: boolean } | null = null;
 
 function randomId(): string {
   // 128-bit opaque token; crypto where available, Math.random fallback.
@@ -50,13 +53,29 @@ export function getSessionId(): string {
   return id;
 }
 
+export function getVisitorIdentity(): { visitorId: string; returning: boolean } {
+  if (cachedIdentity) return cachedIdentity;
+
+  const ls = (globalThis as { localStorage?: Storage }).localStorage;
+  const existingVisitor = safeGet(ls, VISITOR_KEY);
+  const returning = existingVisitor !== null || safeGet(ls, RETURN_KEY) !== null;
+  const visitorId = existingVisitor ?? randomId();
+
+  safeSet(ls, VISITOR_KEY, visitorId);
+  safeSet(ls, RETURN_KEY, randomId()); // legacy return marker; rotate on every visit
+
+  cachedIdentity = { visitorId, returning };
+  return cachedIdentity;
+}
+
+export function getVisitorId(): string {
+  return getVisitorIdentity().visitorId;
+}
+
 /**
  * Whether this visitor is returning, and mark the return token for next time.
  * Called once at start; the token simply proves "seen before," nothing more.
  */
 export function resolveReturning(): boolean {
-  const ls = (globalThis as { localStorage?: Storage }).localStorage;
-  const seen = safeGet(ls, RETURN_KEY) !== null;
-  safeSet(ls, RETURN_KEY, randomId()); // rotate on every visit
-  return seen;
+  return getVisitorIdentity().returning;
 }

@@ -130,6 +130,7 @@ function buildSections(input: PopupPromptInput): PromptSection[] {
         `CTA max characters: ${MAX_POPUP_CTA_LENGTH}`,
         'Body must be one or two short sentences.',
         'CTA must match the CTA intent; do not introduce a different action.',
+        ctaGuidanceFor(strategy.ctaIntent),
         instructions.avoidDiscounts ? 'Do not offer, imply, or mention discounts.' : 'Do not invent discounts or special offers.',
         instructions.alwaysBookDemo ? 'When appropriate, steer buying intent toward a demo/contact action.' : 'Do not force a demo if the strategy suggests education, comparison, support, or pricing discussion.',
       ],
@@ -144,6 +145,26 @@ function buildSections(input: PopupPromptInput): PromptSection[] {
       ],
     },
   ];
+}
+
+function ctaGuidanceFor(intent: ConversationStrategy['ctaIntent']): string {
+  switch (intent) {
+    case 'capture_lead':
+      return 'For capture_lead CTAs, use a short lead action such as Request a Consultation, Talk to an Expert, Claim Gift Code, Get Started, Join Now, Access Details, Contact Us, or Send a Message.';
+    case 'discuss_pricing':
+      return 'For discuss_pricing CTAs, use pricing/plan/cost language such as Discuss Pricing or Talk Pricing.';
+    case 'book_demo':
+      return 'For book_demo CTAs, use demo booking language such as Book a Demo or Schedule Demo.';
+    case 'book_appointment':
+      return 'For book_appointment CTAs, use appointment language such as Book Appointment or Schedule a Visit.';
+    case 'compare_options':
+      return 'For compare_options CTAs, use comparison language such as Compare Options or Compare Plans.';
+    case 'offer_support':
+      return 'For offer_support CTAs, use help/support language such as Get Help or Ask a Question.';
+    case 'learn_more':
+    default:
+      return 'For learn_more CTAs, use education language such as Learn More, Explore Details, or See More.';
+  }
 }
 
 function renderKnowledgeLines(knowledge: StrategyKnowledgeResult): string[] {

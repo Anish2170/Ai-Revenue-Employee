@@ -18,6 +18,8 @@ import { sessionStore } from '../intelligence/session/visitorSession.js';
 import { perceive } from '../intelligence/perceive.js';
 import { objectiveFromInstructions, DEFAULT_OBJECTIVE } from '../intelligence/businessObjective.js';
 import { config } from '../config/index.js';
+import { SALES_POLICY } from '../intelligence/config/salesPolicy.config.js';
+import { cooldownRemainingMs, popupTrace } from '../intelligence/popupTrace.js';
 import type { BusinessInstructions } from '../context/types.js';
 import type { BusinessObjective, SalesDecision, Surface } from '../intelligence/types.js';
 
@@ -72,6 +74,12 @@ export function ingestEvents(opts: IngestOptions): IngestResult {
 
   // 1. Event-quality validation (cross-batch sequence checks use seenKinds).
   const { clean, dropped } = validateEvents(opts.rawEvents, session.seenKinds);
+  popupTrace(opts.sessionId, '1_event_quality', {
+    passed: clean.length > 0,
+    acceptedThisBatch: clean.length,
+    dropped,
+    cleanEvents: clean.map((e) => ({ type: e.type, zone: e.zone, intensity: e.intensity, ts: e.ts })),
+  });
 
   // 2. Attach accepted events to the server-side session.
   sessionStore.appendEvents(opts.sessionId, clean);
@@ -92,6 +100,15 @@ export function ingestEvents(opts: IngestOptions): IngestResult {
   const now = session.events[session.events.length - 1].ts;
   const objective = opts.instructions ? objectiveFromInstructions(opts.instructions) : DEFAULT_OBJECTIVE;
 
+  popupTrace(opts.sessionId, '0_session_context', {
+    passed: true,
+    sessionEventCount: session.events.length,
+    priorInterruptions: session.priorInterruptions,
+    lastInterruptionTs: session.lastInterruptionTs,
+    dismissed: session.dismissed,
+    cooldownRemainingMs: cooldownRemainingMs(session.lastInterruptionTs, now, SALES_POLICY.cooldownMs),
+  });
+
   const decision = perceive({
     events: session.events,
     now,
@@ -104,6 +121,32 @@ export function ingestEvents(opts: IngestOptions): IngestResult {
     objective,
     surface: opts.surface,
     shadow: true,
+  });
+
+  const trace = decision.trace;
+  popupTrace(opts.sessionId, '2_behavior_engine', {
+    passed: true,
+    currentBehavior: trace.behaviour,
+  });
+  popupTrace(opts.sessionId, '3_intent_engine', {
+    passed: true,
+    currentIntent: trace.intent,
+  });
+  popupTrace(opts.sessionId, '4_ai_sales_brain', {
+    passed: decision.action === 'speak',
+    action: decision.action,
+    popupConfidence: trace.confidence,
+    speakScore: decision.speakScore,
+    threshold: trace.policy.threshold,
+    scorePassed: trace.policy.speakScore >= trace.policy.threshold,
+    suppressionReason: decision.suppressedBy,
+    cooldownRemainingMs: cooldownRemainingMs(session.lastInterruptionTs, now, SALES_POLICY.cooldownMs),
+    because: decision.because,
+  });
+  popupTrace(opts.sessionId, '5_popup_eligibility', {
+    passed: decision.action === 'speak',
+    popupGenerated: false,
+    reason: decision.action === 'speak' ? null : decision.suppressedBy ?? 'score_below_threshold',
   });
 
   // 5. Shadow log — this is the whole point of 4.1: observe what we WOULD do.

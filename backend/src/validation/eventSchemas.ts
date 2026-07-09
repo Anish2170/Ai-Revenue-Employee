@@ -37,12 +37,21 @@ export const eventsRequestSchema = z.object({
   siteId: z.string().max(100).optional(),
   /** Anonymous, widget-generated first-party session id. */
   sessionId: z.string().min(8).max(128),
+  /** Anonymous, first-party visitor id for analytics. */
+  visitorId: z.string().min(8).max(128).optional(),
   /** Whether this is a returning visitor (first-party token present). */
   returning: z.boolean().default(false),
   /** The batched semantic events. Bounded to protect the ingest path. */
   events: z.array(rawEventSchema).max(100).default([]),
   /** Dominant surface for the session (tuning constant only). */
   surface: z.enum(['desktop', 'mobile', 'tablet']).default('desktop'),
+  /** Optional page/device context for analytics. */
+  pageUrl: z.string().max(1024).optional(),
+  pagePath: z.string().max(512).optional(),
+  pageTitle: z.string().max(512).optional(),
+  referrer: z.string().max(1024).optional(),
+  device: z.string().max(80).optional(),
+  browser: z.string().max(80).optional(),
   /** Optional client UI state so production /events can preserve suppression rules. */
   clientState: eventsClientStateSchema.optional(),
   /** Optional bot signals from the client (navigator.webdriver, UA). */

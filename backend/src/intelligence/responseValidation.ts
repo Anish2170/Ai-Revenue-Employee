@@ -61,6 +61,7 @@ export type PopupResponseValidationResult =
         action: 'suppress_popup';
         reason: string;
       };
+      rejectedPopup: ValidatedPopupLanguage | null;
     };
 
 const EXPECTED_POPUP_TYPE: Record<ConversationStrategyKind, PopupType> = {
@@ -74,14 +75,117 @@ const EXPECTED_POPUP_TYPE: Record<ConversationStrategyKind, PopupType> = {
   Support: 'support',
 };
 
-const CTA_PATTERNS: Record<StrategyCtaIntent, RegExp[]> = {
-  learn_more: [/\blearn\b/i, /\bexplore\b/i, /\bsee\b/i, /\bdetails?\b/i],
-  compare_options: [/\bcompare\b/i, /\boptions?\b/i, /\bplans?\b/i],
-  discuss_pricing: [/\bpricing\b/i, /\bprice\b/i, /\bcost\b/i, /\bplans?\b/i, /\btalk\b/i, /\bdiscuss\b/i],
-  book_demo: [/\bbook\b/i, /\bschedule\b/i, /\bdemo\b/i],
-  book_appointment: [/\bbook\b/i, /\bschedule\b/i, /\bappointment\b/i, /\bvisit\b/i],
-  capture_lead: [/\bcontact\b/i, /\bget in touch\b/i, /\btalk\b/i, /\bstart\b/i],
-  offer_support: [/\bhelp\b/i, /\bsupport\b/i, /\bquestion\b/i],
+interface CtaValidationRule {
+  expected: string[];
+  patterns: RegExp[];
+}
+
+const CTA_RULES: Record<StrategyCtaIntent, CtaValidationRule> = {
+  learn_more: {
+    expected: ['learn', 'explore', 'see', 'details'],
+    patterns: [/\blearn\b/i, /\bexplore\b/i, /\bsee\b/i, /\bdetails?\b/i],
+  },
+  compare_options: {
+    expected: ['compare', 'options', 'plans'],
+    patterns: [/\bcompare\b/i, /\boptions?\b/i, /\bplans?\b/i],
+  },
+  discuss_pricing: {
+    expected: ['pricing', 'price', 'cost', 'plans', 'talk', 'discuss'],
+    patterns: [/\bpricing\b/i, /\bprice\b/i, /\bcost\b/i, /\bplans?\b/i, /\btalk\b/i, /\bdiscuss\b/i],
+  },
+  book_demo: {
+    expected: ['book', 'schedule', 'demo'],
+    patterns: [/\bbook\b/i, /\bschedule\b/i, /\bdemo\b/i],
+  },
+  book_appointment: {
+    expected: ['book', 'schedule', 'appointment', 'visit'],
+    patterns: [/\bbook\b/i, /\bschedule\b/i, /\bappointment\b/i, /\bvisit\b/i],
+  },
+  capture_lead: {
+    expected: [
+      'contact',
+      'get in touch',
+      'talk',
+      'chat',
+      'message',
+      'tell me',
+      'book',
+      'schedule',
+      'demo',
+      'call',
+      'consultation',
+      'consult',
+      'request',
+      'claim',
+      'get',
+      'join',
+      'sign up',
+      'register',
+      'access',
+      'unlock',
+      'try',
+      'begin',
+      'start',
+      'connect',
+      'speak',
+      'send',
+      'reach',
+      'enquire',
+      'inquire',
+      'ask',
+      'check',
+      'find',
+      'show',
+      'guide',
+      'help',
+      'interested',
+      'yes',
+      'continue',
+    ],
+    patterns: [
+      /\bcontact\b/i,
+      /\bget in touch\b/i,
+      /\btalk\b/i,
+      /\bchat\b/i,
+      /\bmessage\b/i,
+      /\btell me\b/i,
+      /\bbook\b/i,
+      /\bschedule\b/i,
+      /\bdemo\b/i,
+      /\bcall\b/i,
+      /\bconsult(?:ation)?\b/i,
+      /\brequest\b/i,
+      /\bclaim\b/i,
+      /\bget\b/i,
+      /\bjoin\b/i,
+      /\bsign\s*up\b/i,
+      /\bregister\b/i,
+      /\baccess\b/i,
+      /\bunlock\b/i,
+      /\btry\b/i,
+      /\bbegin\b/i,
+      /\bstart\b/i,
+      /\bconnect\b/i,
+      /\bspeak\b/i,
+      /\bsend\b/i,
+      /\breach\b/i,
+      /\benquire\b/i,
+      /\binquire\b/i,
+      /\bask\b/i,
+      /\bcheck\b/i,
+      /\bfind\b/i,
+      /\bshow\b/i,
+      /\bguide\b/i,
+      /\bhelp\b/i,
+      /\binterested\b/i,
+      /\byes\b/i,
+      /\bcontinue\b/i,
+    ],
+  },
+  offer_support: {
+    expected: ['help', 'support', 'question'],
+    patterns: [/\bhelp\b/i, /\bsupport\b/i, /\bquestion\b/i],
+  },
 };
 
 const DISCOUNT_PATTERN = /\b(discount|coupon|promo|promotion|special offer|limited[- ]time|deal|save\s+\d+|%\s*off|\d+\s*%\s*off)\b/i;
@@ -129,6 +233,7 @@ export function validatePopupResponse(input: PopupResponseValidationInput): Popu
 
   if (!ctaMatchesIntent(popup.cta, input.strategy.ctaIntent)) {
     reasons.push('cta_not_allowed');
+    logCtaValidationFailure(popup, input.strategy);
   }
 
   const combined = `${popup.title} ${popup.body} ${popup.cta}`;
@@ -154,7 +259,7 @@ export function validatePopupResponse(input: PopupResponseValidationInput): Popu
     reasons.push('unsupported_claim');
   }
 
-  return reasons.length > 0 ? reject(unique(reasons)) : { ok: true, popup, reasons: [], fallback: null };
+  return reasons.length > 0 ? reject(unique(reasons), popup) : { ok: true, popup, reasons: [], fallback: null };
 }
 
 function parseRawPopup(raw: unknown): { ok: true; popup: ValidatedPopupLanguage } | { ok: false; reasons: PopupResponseRejectReason[] } {
@@ -211,7 +316,21 @@ function sanitizeString(value: unknown): string {
 }
 
 function ctaMatchesIntent(cta: string, intent: StrategyCtaIntent): boolean {
-  return CTA_PATTERNS[intent].some((pattern) => pattern.test(cta));
+  return CTA_RULES[intent].patterns.some((pattern) => pattern.test(cta));
+}
+
+function logCtaValidationFailure(popup: ValidatedPopupLanguage, strategy: ConversationStrategy): void {
+  const rule = CTA_RULES[strategy.ctaIntent];
+  console.warn('[popup-validation] cta_not_allowed', JSON.stringify({
+    generatedPopupTitle: popup.title,
+    generatedCtaText: popup.cta,
+    generatedCtaType: strategy.ctaIntent,
+    validationRuleFailed: `CTA_RULES.${strategy.ctaIntent}`,
+    exactValidatorBranch: 'validatePopupResponse -> ctaMatchesIntent',
+    expectedAllowedValues: rule.expected,
+    strategy: strategy.kind,
+    popupType: popup.popupType,
+  }));
 }
 
 function hasUnsupportedSpecificClaim(text: string, knowledgeText: string): boolean {
@@ -249,7 +368,7 @@ function unique<T>(items: T[]): T[] {
   return Array.from(new Set(items));
 }
 
-function reject(reasons: PopupResponseRejectReason[]): PopupResponseValidationResult {
+function reject(reasons: PopupResponseRejectReason[], rejectedPopup: ValidatedPopupLanguage | null = null): PopupResponseValidationResult {
   const safeReasons = unique(reasons);
   return {
     ok: false,
@@ -259,5 +378,6 @@ function reject(reasons: PopupResponseRejectReason[]): PopupResponseValidationRe
       action: 'suppress_popup',
       reason: safeReasons.join(','),
     },
+    rejectedPopup,
   };
 }
