@@ -39,6 +39,6 @@ export const CONFIDENCE_CONFIG = {
     /** ≥ high → "high": act with a specific, intent-matched message. */
     high: 0.72,
     /** ≥ medium (and < high) → "medium": probe only. Below → "low": stay silent. */
-    medium: 0.45,
+    medium: 0.35,
   },
 } as const;

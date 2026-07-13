@@ -67,10 +67,14 @@ export async function listBusinessActions(organizationId: string, websiteId: str
 }
 
 export async function getEnabledBusinessActions(websiteId: string): Promise<BusinessActionConfig[]> {
-  const graph = await getDiscoveredActionGraph(websiteId);
-  if (graph) return actionsFromGraph(graph, await getOverrideMap(websiteId));
-
   await seedStarterActionsForWebsite(websiteId);
+  const manualActions = await getEnabledStoredBusinessActions(websiteId);
+  const graph = await getDiscoveredActionGraph(websiteId);
+  const discoveredActions = graph ? actionsFromGraph(graph, await getOverrideMap(websiteId)) : [];
+  return mergeBusinessActions(manualActions, discoveredActions);
+}
+
+async function getEnabledStoredBusinessActions(websiteId: string): Promise<BusinessActionConfig[]> {
   const actions = await prisma.businessAction.findMany({
     where: { websiteId, enabled: true },
     orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
@@ -84,6 +88,19 @@ export async function getEnabledBusinessActions(websiteId: string): Promise<Busi
       destination: action.destination,
       enabled: action.enabled,
     }));
+}
+
+export function mergeBusinessActions(...actionGroups: BusinessActionConfig[][]): BusinessActionConfig[] {
+  const merged: BusinessActionConfig[] = [];
+  const seen = new Set<string>();
+  for (const group of actionGroups) {
+    for (const action of group) {
+      if (!action.enabled || seen.has(action.actionId)) continue;
+      seen.add(action.actionId);
+      merged.push(action);
+    }
+  }
+  return merged;
 }
 
 export async function getDiscoveredActionGraph(websiteId: string): Promise<DiscoveredActionGraph | null> {

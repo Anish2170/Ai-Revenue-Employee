@@ -36,9 +36,9 @@ export const SALES_POLICY = {
    * on a small screen. This is ONE tuning constant, not a separate codebase.
    */
   speakThreshold: {
-    desktop: 0.55,
-    mobile: 0.62,
-    tablet: 0.58,
+    desktop: 0.52,
+    mobile: 0.59,
+    tablet: 0.55,
   },
 
   /** readinessScore mapping (§7.3). */

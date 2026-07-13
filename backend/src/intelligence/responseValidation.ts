@@ -114,6 +114,15 @@ const CTA_INTENT_FALLBACKS: Partial<Record<ConversationStrategy['ctaIntent'], re
 
 const POPUP_TYPES_REQUIRING_ACTION = new Set<PopupType>(['comparison', 'pricing', 'booking', 'lead', 'support']);
 
+const ACTION_ID_ALIASES: Partial<Record<string, readonly string[]>> = {
+  contact: ['contact_sales'],
+  contact_sales: ['contact'],
+  support: ['contact_support'],
+  contact_support: ['support'],
+  learn_more: ['documentation'],
+  documentation: ['learn_more'],
+};
+
 const DISCOUNT_PATTERN = /\b(discount|coupon|promo|promotion|special offer|limited[- ]time|deal|save\s+\d+|%\s*off|\d+\s*%\s*off)\b/i;
 const PRICE_AMOUNT_PATTERN = /(?:[$?€£]\s*\d+(?:[.,]\d+)?|\b\d+(?:[.,]\d+)?\s*(?:usd|inr|eur|gbp|dollars?|rupees?)\b|\b\d+(?:[.,]\d+)?\s*\/\s*(?:mo|month|year|yr)\b)/i;
 const GUARANTEE_PATTERN = /\b(guarantee|guaranteed|money[- ]back|refund|risk[- ]free|no[- ]risk)\b/i;
@@ -205,8 +214,8 @@ function resolvePopupActions(
 ): { ok: boolean; popup: ValidatedPopupLanguage; invalidAction: boolean; actionDebug: PopupActionValidationDebug } {
   const expectedAction = POPUP_TYPES_REQUIRING_ACTION.has(popup.popupType);
   const primaryActionReturned = popup.primaryAction ?? null;
-  const primary = findBusinessAction(enabledActions, popup.primaryAction);
-  const secondary = findBusinessAction(enabledActions, popup.secondaryAction);
+  const primary = findCompatibleBusinessAction(enabledActions, popup.primaryAction);
+  const secondary = findCompatibleBusinessAction(enabledActions, popup.secondaryAction);
   const invalidAction = Boolean((popup.primaryAction && !primary) || (popup.secondaryAction && !secondary));
 
   if (primary) {
@@ -270,14 +279,28 @@ function findFallbackAction(
   ctaIntent: ConversationStrategy['ctaIntent'],
 ): BusinessActionConfig | null {
   for (const actionId of fallbackCandidates(popupType, ctaIntent)) {
-    const action = findBusinessAction(enabledActions, actionId);
+    const action = findCompatibleBusinessAction(enabledActions, actionId);
     if (action) return action;
   }
   return null;
 }
 
 function fallbackCandidates(popupType: PopupType, ctaIntent: ConversationStrategy['ctaIntent']): readonly string[] {
-  return [...(CTA_INTENT_FALLBACKS[ctaIntent] ?? []), ...(FALLBACK_ACTIONS_BY_TYPE[popupType] ?? [])].filter((actionId, index, list) => list.indexOf(actionId) === index);
+  const candidates = [...(CTA_INTENT_FALLBACKS[ctaIntent] ?? []), ...(FALLBACK_ACTIONS_BY_TYPE[popupType] ?? [])];
+  return candidates.flatMap(compatibleActionIds).filter((actionId, index, list) => list.indexOf(actionId) === index);
+}
+
+function findCompatibleBusinessAction(actions: BusinessActionConfig[], actionId: string | null | undefined): BusinessActionConfig | null {
+  for (const compatibleId of compatibleActionIds(actionId)) {
+    const action = findBusinessAction(actions, compatibleId);
+    if (action) return action;
+  }
+  return null;
+}
+
+function compatibleActionIds(actionId: string | null | undefined): string[] {
+  if (!actionId) return [];
+  return [actionId, ...(ACTION_ID_ALIASES[actionId] ?? [])].filter((id, index, list) => list.indexOf(id) === index);
 }
 
 function invalidActionReason(actionId: string, enabledActions: BusinessActionConfig[]): PopupMissingActionReason {

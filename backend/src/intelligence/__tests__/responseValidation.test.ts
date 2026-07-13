@@ -338,3 +338,56 @@ test('responseValidation: support strategy can choose only a configured support 
 });
 
 
+
+test('responseValidation: accepts configured aliases for contact and support actions', () => {
+  const { strategy } = fixture();
+  const leadStrategy: ConversationStrategy = {
+    ...strategy,
+    kind: 'GenerateLead',
+    tone: 'helpful',
+    ctaIntent: 'capture_lead',
+  };
+
+  const leadResult = validatePopupResponse({
+    llm: llm({
+      title: 'Want help choosing the next step?',
+      body: 'Tell us what you are trying to improve and we can point you in the right direction.',
+      tone: 'helpful',
+      popupType: 'lead',
+    }),
+    strategy: leadStrategy,
+    knowledge: knowledge('Tell us what you are trying to improve and we can point you in the right direction.'),
+    instructions,
+    enabledActions: [{ actionId: 'contact_sales', label: 'Contact Sales', destinationType: 'URL', destination: 'https://creovix.test/contact', enabled: true }],
+  });
+
+  assert.equal(leadResult.ok, true);
+  assert.equal(leadResult.popup.primaryAction, 'contact_sales');
+  assert.equal(leadResult.actionDebug.fallbackApplied, true);
+  assert.equal(leadResult.actionDebug.fallbackUsed, 'contact_sales');
+
+  const supportStrategy: ConversationStrategy = {
+    ...strategy,
+    kind: 'Support',
+    tone: 'supportive',
+    ctaIntent: 'offer_support',
+  };
+
+  const supportResult = validatePopupResponse({
+    llm: llm({
+      title: 'Need a hand?',
+      body: 'Our team can help answer questions about the next step.',
+      primaryAction: 'support',
+      tone: 'supportive',
+      popupType: 'support',
+    }),
+    strategy: supportStrategy,
+    knowledge: knowledge('Our team can help answer questions about the next step.'),
+    instructions,
+    enabledActions: [{ actionId: 'contact_support', label: 'Contact Support', destinationType: 'EMAIL', destination: 'support@creovix.test', enabled: true }],
+  });
+
+  assert.equal(supportResult.ok, true);
+  assert.equal(supportResult.popup.primaryAction, 'contact_support');
+  assert.equal(supportResult.actionDebug.fallbackApplied, false);
+});

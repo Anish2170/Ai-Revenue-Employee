@@ -41,7 +41,7 @@ export interface PreLlmSafetyResult {
   };
 }
 
-const MIN_CONFIDENCE = 0.45;
+const MIN_CONFIDENCE = 0.35;
 
 const CTA_BY_STRATEGY: Record<ConversationStrategyKind, readonly StrategyCtaIntent[]> = {
   Educate: ['learn_more', 'capture_lead'],
