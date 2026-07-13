@@ -19,6 +19,8 @@ export interface LoadedMeta {
   sourceUrl: string;
   siteLinks: SiteLink[];
   pages: Array<{ url: string; path: string; pageType: PageType; contentHash: string; lastCrawled: string }>;
+  debugPages?: KnowledgeSnapshot['debugPages'];
+  actionGraph?: KnowledgeSnapshot['actionGraph'];
   createdAt: string;
   embeddingModel: string;
 }
@@ -84,6 +86,8 @@ export async function getWebsiteStore(websiteId: string): Promise<{ store: Vecto
         sourceUrl: snap.sourceUrl,
         siteLinks: snap.siteLinks,
         pages: snap.pages,
+        debugPages: snap.debugPages,
+        actionGraph: snap.actionGraph,
         createdAt: snap.createdAt,
         embeddingModel: snap.embeddingModel,
       };
@@ -116,6 +120,8 @@ export async function persistWebsiteSnapshot(
     sourceUrl: meta.sourceUrl,
     siteLinks: meta.siteLinks,
     pages: meta.pages,
+    debugPages: meta.debugPages,
+    actionGraph: meta.actionGraph,
     documents,
   };
   const path = await saveSnapshotFile(websiteSnapshotPath(websiteId), snapshot);
@@ -139,3 +145,4 @@ export async function getWebsiteMeta(websiteId: string): Promise<LoadedMeta | nu
   const { meta } = await getWebsiteStore(websiteId);
   return meta;
 }
+

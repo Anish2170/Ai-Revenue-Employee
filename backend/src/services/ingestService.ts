@@ -15,8 +15,9 @@ import { getBusinessInstructions } from '../context/instructions.js';
 import { getVectorStore, persistSnapshot } from '../vectorstore/index.js';
 import { getWebsiteStore, persistWebsiteSnapshot, invalidateWebsiteStore } from '../vectorstore/registry.js';
 import { llmAvailable } from '../llm/index.js';
+import { buildActionGraph } from '../business-actions/actionDiscovery.js';
 
-export type IngestPhase = 'crawling' | 'chunking' | 'embedding' | 'indexing' | 'saving';
+export type IngestPhase = 'crawling' | 'action_discovery' | 'chunking' | 'embedding' | 'indexing' | 'saving';
 
 export interface IngestOptions {
   websiteId?: string;
@@ -44,9 +45,12 @@ export async function ingest(url: string, opts: IngestOptions = {}): Promise<Ing
 
   // 1. Crawl
   onPhase?.('crawling');
-  const { pages, skipped } = await crawl(url);
+  const { pages, skipped, actions } = await crawl(url);
   if (pages.length === 0) throw new Error(`Crawl found no readable pages at ${url}.`);
-  onPhase?.('crawling', { pages: pages.length, skipped: skipped.length });
+  onPhase?.('crawling', { pages: pages.length, skipped: skipped.length, discoveredActions: actions.length });
+  onPhase?.('action_discovery');
+  const actionGraph = await buildActionGraph(actions);
+  onPhase?.('action_discovery', { actions: actionGraph.nodes.length });
 
   // 2. Chunk
   onPhase?.('chunking');
@@ -63,12 +67,45 @@ export async function ingest(url: string, opts: IngestOptions = {}): Promise<Ing
   // 4. Index
   onPhase?.('indexing');
   const siteLinks = deriveSiteLinks(pages);
+  const chunkCountsByUrl = new Map<string, number>();
+  for (const chunk of embedded) {
+    chunkCountsByUrl.set(chunk.url, (chunkCountsByUrl.get(chunk.url) ?? 0) + 1);
+  }
+
   const pageMeta = pages.map((p) => ({
     url: p.url,
     path: p.path,
     pageType: p.pageType,
     contentHash: p.contentHash,
     lastCrawled: p.lastCrawled,
+  }));
+
+  const debugPages = pages.map((p) => ({
+    url: p.url,
+    path: p.path,
+    title: p.title,
+    crawlStatus: 'crawled' as const,
+    httpStatus: 200,
+    rawExtractedText: p.text,
+    cleanedText: p.text,
+    extractedTextLength: p.text.length,
+    cleanedTextLength: p.text.length,
+    wordCount: p.text.split(/\s+/).filter(Boolean).length,
+    chunkCount: chunkCountsByUrl.get(p.url) ?? 0,
+    lastCrawled: p.lastCrawled,
+    renderer: 'unknown' as const,
+    cleaning: {
+      removedNavigation: true,
+      removedFooter: true,
+      removedScripts: true,
+      removedCookieBanners: true,
+      removedDuplicatedContent: false,
+      beforeLength: p.text.length,
+      afterLength: p.text.length,
+      notes: [
+        'Current crawler stores post-extraction readable text. Category flags reflect configured removal selectors; exact removed fragments are not persisted.',
+      ],
+    },
   }));
 
   let snapshotPath: string;
@@ -81,14 +118,14 @@ export async function ingest(url: string, opts: IngestOptions = {}): Promise<Ing
     dimensions = store.dimensions();
 
     onPhase?.('saving');
-    snapshotPath = await persistWebsiteSnapshot(websiteId, { sourceUrl: url, siteLinks, pages: pageMeta });
+    snapshotPath = await persistWebsiteSnapshot(websiteId, { sourceUrl: url, siteLinks, pages: pageMeta, debugPages, actionGraph });
   } else {
     const store = getVectorStore();
     await store.indexDocuments(embedded);
     dimensions = store.dimensions();
 
     onPhase?.('saving');
-    snapshotPath = await persistSnapshot({ sourceUrl: url, siteLinks, pages: pageMeta });
+    snapshotPath = await persistSnapshot({ sourceUrl: url, siteLinks, pages: pageMeta, debugPages, actionGraph });
   }
 
   const result: IngestResult = {
@@ -108,3 +145,5 @@ export async function ingest(url: string, opts: IngestOptions = {}): Promise<Ing
   );
   return result;
 }
+
+

@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Emergency tenant resolver for public widget requests when the DB tenant lookup
  * is unavailable. It never guesses from siteId and never falls back to the
  * legacy/global knowledge base. It can only resolve a tenant by matching the
@@ -84,6 +84,7 @@ export async function resolveTenantFromRequestOrigin(input: {
           avoidDiscounts: false,
           language: snapshot.documents[0]?.language || 'English',
         },
+        businessActions: [],
       },
     });
   }

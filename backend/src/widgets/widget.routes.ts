@@ -4,7 +4,7 @@
 import { Router } from 'express';
 import { requireAuth } from '../auth/auth.middleware.js';
 import { OwnershipError } from '../websites/website.service.js';
-import { getWidgetView } from './widget.service.js';
+import { getWidgetView, verifyWidgetInstallation } from './widget.service.js';
 
 export const widgetRouter = Router();
 
@@ -21,3 +21,15 @@ widgetRouter.get('/api/websites/:id/widget', async (req, res, next) => {
     next(err);
   }
 });
+widgetRouter.post('/api/websites/:id/widget/verify', async (req, res, next) => {
+  try {
+    const result = await verifyWidgetInstallation(req.auth!.organizationId, req.params.id);
+    res.json(result);
+  } catch (err) {
+    if (err instanceof OwnershipError) {
+      return res.status(err.status).json({ error: err.code, message: err.message });
+    }
+    next(err);
+  }
+});
+

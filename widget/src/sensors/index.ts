@@ -3,7 +3,7 @@
  *
  * Picks the device profile, wires the batching emitter to POST /events, and
  * streams a low-rate SEMANTIC feed. This is the ONLY device-aware code in the
- * whole system (§9); everything above the wire is device-blind.
+ * whole system (ï¿½9); everything above the wire is device-blind.
  *
  * Sprint 4 production integration: /events may return a validated popup artifact
  * when the deterministic backend pipeline decides to speak. The sensor engine
@@ -120,9 +120,23 @@ function isPopupArtifact(value: unknown): value is PopupArtifact {
   const v = value as Partial<PopupArtifact>;
   return typeof v.title === 'string'
     && typeof v.body === 'string'
-    && typeof v.cta === 'string'
     && typeof v.popupType === 'string'
-    && typeof v.tone === 'string';
+    && typeof v.tone === 'string'
+    && (v.cta === undefined || typeof v.cta === 'string')
+    && (v.primaryAction === undefined || typeof v.primaryAction === 'string')
+    && (v.secondaryAction === undefined || typeof v.secondaryAction === 'string')
+    && (v.action === undefined || isBusinessAction(v.action))
+    && (v.secondaryActionConfig === undefined || isBusinessAction(v.secondaryActionConfig));
+}
+
+function isBusinessAction(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as Record<string, unknown>;
+  return typeof v.actionId === 'string'
+    && typeof v.label === 'string'
+    && typeof v.destinationType === 'string'
+    && typeof v.destination === 'string'
+    && typeof v.enabled === 'boolean';
 }
 
 function navigatorWebdriver(): boolean {

@@ -21,6 +21,7 @@ interface AnalyticsEvent {
   numericValue?: number;
   reason?: string;
   label?: string;
+  actionId?: string;
 }
 
 export interface TrackOptions extends Partial<Omit<AnalyticsEvent, 'category' | 'eventName' | 'occurredAt'>> {

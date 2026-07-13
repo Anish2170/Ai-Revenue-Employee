@@ -72,7 +72,7 @@ test('popupLlmAdapter: rejects when provider is unavailable', async () => {
 
 test('popupLlmAdapter: calls provider with structured popup prompt', async () => {
   const seen: StructuredRequest[] = [];
-  const raw = { title: 'Pricing help', body: 'Want help comparing plans?', cta: 'Discuss pricing', tone: 'reassuring', popupType: 'pricing' };
+  const raw = { title: 'Pricing help', body: 'Want help comparing plans?', primaryAction: 'pricing', tone: 'reassuring', popupType: 'pricing' };
 
   const result = await generatePopupLanguage(
     { prompt: prompt(), safety: safety(true) },

@@ -37,7 +37,7 @@ export default function WebsitesPage() {
         ...(form.industry && { industry: form.industry }),
         ...(form.description && { description: form.description }),
       })) as Website;
-      router.push(`/websites/${website.id}`);
+      router.push(`/onboarding?websiteId=${website.id}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create website');
     } finally {
@@ -155,3 +155,6 @@ export default function WebsitesPage() {
     </div>
   );
 }
+
+
+

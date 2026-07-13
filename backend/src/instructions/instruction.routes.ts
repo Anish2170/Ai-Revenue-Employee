@@ -10,23 +10,26 @@ import * as instructionService from './instruction.service.js';
 
 export const instructionRouter = Router();
 
+const optionalText = (max: number) => z.string().max(max).optional();
+const optionalNonEmptyText = (max: number) => z.string().trim().min(1).max(max).optional();
+
 const updateSchema = z.object({
-  businessName: z.string().min(1).max(120).optional(),
-  companyDescription: z.string().max(1000).optional(),
-  role: z.string().max(500).optional(),
-  tone: z.string().max(200).optional(),
-  goal: z.string().max(500).optional(),
-  context: z.string().max(2000).optional(),
-  rules: z.string().max(2000).optional(),
-  fallbackMessage: z.string().max(500).optional(),
-  language: z.string().max(40).optional(),
+  businessName: optionalNonEmptyText(120),
+  companyDescription: optionalText(5000),
+  role: optionalText(5000),
+  tone: optionalText(2000),
+  goal: optionalText(5000),
+  context: optionalText(10000),
+  rules: optionalText(10000),
+  fallbackMessage: optionalText(2000),
+  language: optionalNonEmptyText(40),
   alwaysBookDemo: z.boolean().optional(),
   avoidDiscounts: z.boolean().optional(),
   allowedLinks: z.array(z.object({ label: z.string(), url: z.string().url() })).optional(),
-  preferredCta: z.string().max(200).optional(),
-  supportEmail: z.string().email().optional(),
-  supportPhone: z.string().max(40).optional(),
-  websiteUrl: z.string().url().optional(),
+  preferredCta: optionalText(2000),
+  supportEmail: optionalText(254),
+  supportPhone: optionalText(100),
+  websiteUrl: optionalText(2048),
 });
 
 instructionRouter.use(requireAuth);

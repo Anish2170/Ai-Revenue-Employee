@@ -2,20 +2,21 @@
  * Popup prompt builder (Sprint 4.2 component 3).
  *
  * Builds a structured prompt for language generation only. The prompt receives
- * conversation strategy, minimal knowledge, and safe summaries from Sprint 4.1;
- * it never receives raw semantic events and never asks the model to decide
- * whether to interrupt.
+ * conversation strategy, minimal knowledge, enabled business actions, and safe
+ * summaries from Sprint 4.1; it never asks the model to create destinations.
  */
+import type { BusinessActionConfig } from '../business-actions/action.types.js';
 import type { BusinessInstructions } from '../context/types.js';
 import type { ConversationStrategy, ConversationStrategyKind } from '../intelligence/conversationStrategy.js';
 import type { StrategyKnowledgeChunk, StrategyKnowledgeResult } from '../intelligence/knowledgeRetrieval.js';
 import {
+  MAX_POPUP_ACTION_ID_LENGTH,
   MAX_POPUP_BODY_LENGTH,
-  MAX_POPUP_CTA_LENGTH,
   MAX_POPUP_TITLE_LENGTH,
   popupJsonSchema,
   type PopupType,
 } from '../validation/popupSchema.js';
+import { renderBusinessActions, renderInstructions } from './shared.js';
 
 export interface PopupPromptInput {
   business: {
@@ -25,6 +26,7 @@ export interface PopupPromptInput {
   instructions: BusinessInstructions;
   strategy: ConversationStrategy;
   knowledge: StrategyKnowledgeResult;
+  businessActions?: BusinessActionConfig[];
 }
 
 export interface PromptSection {
@@ -51,7 +53,7 @@ export const popupPromptBuilder = {
         lines: [
           `You are the AI sales employee for ${input.business.name}.`,
           'The deterministic Sales Brain has already decided to speak.',
-          'Your only job is to generate concise popup language that follows the approved strategy.',
+          'Your only job is to generate concise popup language and choose an enabled business action when one fits.',
         ],
       },
       {
@@ -61,6 +63,7 @@ export const popupPromptBuilder = {
           'Do not mention internal labels, confidence scores, behaviour states, or strategy names to the visitor.',
           'Use only the provided knowledge. Do not invent pricing, guarantees, features, case studies, or policies.',
           'If knowledge is missing or thin, write a modest offer to help instead of making a factual claim.',
+          'Never generate URLs, phone numbers, email addresses, WhatsApp numbers, or CTA labels.',
           'Return only JSON matching the schema. No markdown, no extra prose.',
         ],
       },
@@ -73,6 +76,7 @@ export const popupPromptBuilder = {
 
 function buildSections(input: PopupPromptInput): PromptSection[] {
   const { business, instructions, strategy, knowledge } = input;
+  const businessActions = input.businessActions ?? [];
   const visitor = strategy.visitor;
 
   return [
@@ -81,10 +85,7 @@ function buildSections(input: PopupPromptInput): PromptSection[] {
       lines: [
         `Name: ${business.name}`,
         `Objective: ${business.objectiveKey}`,
-        `Owner tone: ${instructions.tone}`,
-        `Language: ${instructions.language}`,
-        `Policy - always book demo: ${instructions.alwaysBookDemo}`,
-        `Policy - avoid discounts: ${instructions.avoidDiscounts}`,
+        ...renderInstructions(instructions).split('\n'),
       ],
     },
     {
@@ -123,48 +124,34 @@ function buildSections(input: PopupPromptInput): PromptSection[] {
       lines: renderKnowledgeLines(knowledge),
     },
     {
+      title: 'Business Actions',
+      lines: renderBusinessActions(businessActions).split('\n'),
+    },
+    {
       title: 'Constraints',
       lines: [
         `Title max characters: ${MAX_POPUP_TITLE_LENGTH}`,
         `Body max characters: ${MAX_POPUP_BODY_LENGTH}`,
-        `CTA max characters: ${MAX_POPUP_CTA_LENGTH}`,
+        `Action ID max characters: ${MAX_POPUP_ACTION_ID_LENGTH}`,
         'Body must be one or two short sentences.',
-        'CTA must match the CTA intent; do not introduce a different action.',
-        ctaGuidanceFor(strategy.ctaIntent),
+        'If a configured action matches the strategy, set primaryAction to that exact Action ID.',
+        'For comparison, pricing, booking, lead, and support popups, choose an enabled primaryAction when one fits.',
+        'Only educational and trust popups may leave primaryAction and secondaryAction empty.',
+        'Never invent action IDs and never generate destinations or labels.',
         instructions.avoidDiscounts ? 'Do not offer, imply, or mention discounts.' : 'Do not invent discounts or special offers.',
-        instructions.alwaysBookDemo ? 'When appropriate, steer buying intent toward a demo/contact action.' : 'Do not force a demo if the strategy suggests education, comparison, support, or pricing discussion.',
+        instructions.alwaysBookDemo ? 'When appropriate, choose an enabled demo/contact action if one exists.' : 'Do not force an action if the strategy suggests education, comparison, support, or pricing discussion.',
       ],
     },
     {
       title: 'Output Format',
       lines: [
-        'Return JSON with exactly these fields: title, body, cta, tone, popupType.',
+        'Return JSON with exactly these fields: title, body, primaryAction, secondaryAction, tone, popupType.',
         `tone must be: ${strategy.tone}`,
         `popupType should be: ${popupTypeFor(strategy.kind)}`,
-        'Do not include showPopup, confidence, raw events, debug fields, or explanations.',
+        'Do not include cta, ctaUrl, destination, showPopup, confidence, raw events, debug fields, or explanations.',
       ],
     },
   ];
-}
-
-function ctaGuidanceFor(intent: ConversationStrategy['ctaIntent']): string {
-  switch (intent) {
-    case 'capture_lead':
-      return 'For capture_lead CTAs, use a short lead action such as Request a Consultation, Talk to an Expert, Claim Gift Code, Get Started, Join Now, Access Details, Contact Us, or Send a Message.';
-    case 'discuss_pricing':
-      return 'For discuss_pricing CTAs, use pricing/plan/cost language such as Discuss Pricing or Talk Pricing.';
-    case 'book_demo':
-      return 'For book_demo CTAs, use demo booking language such as Book a Demo or Schedule Demo.';
-    case 'book_appointment':
-      return 'For book_appointment CTAs, use appointment language such as Book Appointment or Schedule a Visit.';
-    case 'compare_options':
-      return 'For compare_options CTAs, use comparison language such as Compare Options or Compare Plans.';
-    case 'offer_support':
-      return 'For offer_support CTAs, use help/support language such as Get Help or Ask a Question.';
-    case 'learn_more':
-    default:
-      return 'For learn_more CTAs, use education language such as Learn More, Explore Details, or See More.';
-  }
 }
 
 function renderKnowledgeLines(knowledge: StrategyKnowledgeResult): string[] {
@@ -213,3 +200,6 @@ function popupTypeFor(strategy: ConversationStrategyKind): PopupType {
       return 'educational';
   }
 }
+
+
+

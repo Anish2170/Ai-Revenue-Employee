@@ -23,6 +23,8 @@ export const engageDecisionZod = z.object({
   confidence: z.number().min(0).max(1).optional(),
   message: z.string().max(2000).optional(),
   cta: z.string().max(120).optional(),
+  primaryAction: z.string().max(80).optional(),
+  secondaryAction: z.string().max(80).optional(),
   ctaUrl: z.string().max(2048).optional(),
 });
 
@@ -40,12 +42,14 @@ export const engageJsonSchema = {
     intent: { type: 'string', description: 'Short machine label for the visitor intent, e.g. pricing_interest.' },
     confidence: { type: 'number', description: 'Confidence between 0 and 1 that engaging now is the right call.' },
     message: { type: 'string', description: 'The popup body text shown to the visitor. Empty when showPopup is false.' },
-    cta: { type: 'string', description: 'Short call-to-action button label. Empty when showPopup is false.' },
-    ctaUrl: {
+    primaryAction: {
       type: 'string',
-      description:
-        'Optional. If the best next step is to visit a specific page, set this to the EXACT url of the most relevant entry from the provided Site links list. Only use a url from that list; never invent one. Leave empty to instead open chat.',
+      description: 'Optional Action ID chosen from Available Actions. Leave empty when no listed action fits.',
+    },
+    secondaryAction: {
+      type: 'string',
+      description: 'Optional secondary Action ID chosen from Available Actions. Leave empty unless a second listed action clearly helps.',
     },
   },
-  required: ['showPopup', 'intent', 'confidence', 'message', 'cta'],
+  required: ['showPopup', 'intent', 'confidence', 'message'],
 } as const;

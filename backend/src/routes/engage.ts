@@ -19,12 +19,12 @@ engageRouter.post('/engage', validateBody(engageRequestSchema), async (req, res,
   try {
     const { siteId, behaviour, session } = req.body as EngageRequest;
 
-    let tenant: { websiteId: string; instructions: import('../context/types.js').BusinessInstructions } | undefined;
+    let tenant: { websiteId: string; instructions: import('../context/types.js').BusinessInstructions; businessActions?: import('../business-actions/action.types.js').BusinessActionConfig[] } | undefined;
 
     if (siteId && hasDatabase) {
       try {
         const t = await resolveTenant(siteId);
-        tenant = { websiteId: t.websiteId, instructions: t.instructions };
+        tenant = { websiteId: t.websiteId, instructions: t.instructions, businessActions: t.businessActions };
       } catch (err) {
         if (err instanceof TenantNotFoundError || err instanceof TenantDisabledError) {
           return res.json({ showPopup: false });

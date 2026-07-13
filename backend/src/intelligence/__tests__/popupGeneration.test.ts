@@ -8,6 +8,7 @@ import { validatePopupResponse } from '../responseValidation.js';
 import { perceive } from '../perceive.js';
 import { buildConversationStrategy } from '../conversationStrategy.js';
 import { SCENARIOS } from './fixtures.js';
+import type { BusinessActionConfig } from '../../business-actions/action.types.js';
 import type { BusinessInstructions, RetrievedChunk } from '../../context/types.js';
 import type { BusinessObjective, SalesDecision } from '../types.js';
 
@@ -20,6 +21,11 @@ const instructions: BusinessInstructions = {
 };
 
 const knowledgeContent = 'Creovix offers custom pricing based on workflow scope and integrations.';
+
+const enabledActions: BusinessActionConfig[] = [
+  { actionId: 'pricing', label: 'View Pricing', destinationType: 'URL', destination: 'https://creovix.test/pricing', enabled: true },
+  { actionId: 'book_demo', label: 'Book Demo', destinationType: 'URL', destination: 'https://creovix.test/demo', enabled: true },
+];
 
 function scenarioDecision(name = 'price-wall'): { decision: SalesDecision; objective: BusinessObjective } {
   const scenario = SCENARIOS.find((s) => s.name === name);
@@ -57,7 +63,6 @@ function rawPopup(overrides: Record<string, unknown> = {}) {
   return {
     title: 'Pricing that fits your workflow',
     body: knowledgeContent,
-    cta: 'Discuss pricing',
     tone: 'reassuring',
     popupType: 'pricing',
     ...overrides,
@@ -80,6 +85,7 @@ test('popupGeneration: produces a popup only from validated language', () => {
       chunks: [{ ...retrievedChunk(), score: 0.91 }],
     },
     instructions,
+    enabledActions,
   });
 
   const result = generatePopup({ validation, strategy });
@@ -107,6 +113,7 @@ test('popupGeneration: suppresses when response validation failed', () => {
       chunks: [{ ...retrievedChunk(), score: 0.91 }],
     },
     instructions,
+    enabledActions,
   });
 
   const result = generatePopup({ validation, strategy });
@@ -126,6 +133,7 @@ test('popupPipeline: runs the full safe path and returns validated popup payload
       objective,
       business: { name: 'Creovix AI' },
       instructions,
+      businessActions: enabledActions,
     },
     {
       knowledge: {
@@ -161,6 +169,7 @@ test('popupPipeline: stops before prompt and LLM when knowledge is missing', asy
       objective,
       business: { name: 'Creovix AI' },
       instructions,
+      businessActions: enabledActions,
     },
     {
       knowledge: {
@@ -192,6 +201,7 @@ test('popupPipeline: stops at response validation when LLM invents unsupported c
       objective,
       business: { name: 'Creovix AI' },
       instructions,
+      businessActions: enabledActions,
     },
     {
       knowledge: {
@@ -211,3 +221,4 @@ test('popupPipeline: stops at response validation when LLM invents unsupported c
   assert.equal(result.popup.ok, false);
   assert.equal(result.popup.suppressed, true);
 });
+

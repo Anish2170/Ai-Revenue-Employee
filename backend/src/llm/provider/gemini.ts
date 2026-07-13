@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Gemini implementation of the {@link LLMProvider} port (@google/genai).
  *
  * Translates the provider-neutral requests into Gemini calls:
@@ -89,6 +89,7 @@ function serializeProviderError(err: unknown): Record<string, unknown> {
 }
 
 function chatTrace(req: StreamRequest, stage: string, detail?: unknown): void {
+  if (!config.debugTrace) return;
   const id = req.debug?.requestId ?? 'no-request-id';
   const suffix = detail === undefined ? '' : ` ${JSON.stringify(detail)}`;
   console.log(`[chat:${id}] ${stage}${suffix}`);
@@ -187,5 +188,7 @@ export function createGeminiProvider(): LLMProvider {
     },
   };
 }
+
+
 
 

@@ -5,6 +5,7 @@
 import { prisma } from '../db/prisma.js';
 import { assertWebsiteOwnership } from '../websites/website.service.js';
 import { writeAuditLog } from '../audit/audit.service.js';
+import { invalidateTenantCacheForWebsite } from '../tenant/tenant.resolver.js';
 
 export interface BusinessInstructionData {
   businessName?: string;
@@ -93,6 +94,7 @@ export async function updateInstructions(
       ...(data.websiteUrl !== undefined && { websiteUrl: data.websiteUrl }),
     },
   });
+  invalidateTenantCacheForWebsite(websiteId);
   await writeAuditLog({
     action: 'instructions.updated',
     organizationId,
@@ -102,3 +104,5 @@ export async function updateInstructions(
   });
   return updated;
 }
+
+

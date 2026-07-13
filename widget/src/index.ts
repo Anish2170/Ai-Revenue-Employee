@@ -19,14 +19,17 @@ function boot(): void {
   if (window.__aireLoaded) return;
   window.__aireLoaded = true;
 
-  console.log('[AIRE] booting widget…');
   const cfg = readConfig();
-  console.log('[AIRE] config:', JSON.stringify(cfg));
+  if (cfg.debug) {
+    console.log('[AIRE] booting widget...');
+    console.log('[AIRE] config:', JSON.stringify(cfg));
+  }
+
   try {
     const instance = new Orchestrator(cfg);
     instance.start();
     window.Aire = instance;
-    console.log('[AIRE] widget started successfully');
+    if (cfg.debug) console.log('[AIRE] widget started successfully');
   } catch (err) {
     console.error('[AIRE] failed to start', err);
   }

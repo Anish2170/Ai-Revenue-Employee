@@ -7,6 +7,7 @@ import { perceive } from '../../intelligence/perceive.js';
 import { buildConversationStrategy } from '../../intelligence/conversationStrategy.js';
 import type { StrategyKnowledgeResult } from '../../intelligence/knowledgeRetrieval.js';
 import { SCENARIOS } from '../../intelligence/__tests__/fixtures.js';
+import type { BusinessActionConfig } from '../../business-actions/action.types.js';
 import type { BusinessInstructions } from '../../context/types.js';
 
 function buildInput(knowledge?: Partial<StrategyKnowledgeResult>) {
@@ -54,6 +55,10 @@ function buildInput(knowledge?: Partial<StrategyKnowledgeResult>) {
     instructions,
     strategy,
     knowledge: { ...baseKnowledge, ...knowledge },
+    businessActions: [
+      { actionId: 'book_demo', label: 'Book Demo', destinationType: 'URL', destination: 'https://creovix.test/demo', enabled: true },
+      { actionId: 'pricing', label: 'Pricing', destinationType: 'URL', destination: 'https://creovix.test/pricing', enabled: true },
+    ] satisfies BusinessActionConfig[],
   };
 }
 
@@ -68,6 +73,7 @@ test('popupPromptBuilder: builds required structured sections', () => {
     'Intent',
     'Strategy',
     'Knowledge',
+    'Business Actions',
     'Constraints',
     'Output Format',
   ]);
@@ -81,7 +87,8 @@ test('popupPromptBuilder: schema is language-only and cannot decide interruption
 
   assert.match(schemaText, /title/);
   assert.match(schemaText, /body/);
-  assert.match(schemaText, /cta/);
+  assert.match(schemaText, /primaryAction/);
+  assert.equal(schemaText.includes('ctaUrl'), false);
   assert.match(schemaText, /popupType/);
   assert.equal(schemaText.includes('showPopup'), false);
   assert.equal(schemaText.includes('confidence'), false);
@@ -120,4 +127,14 @@ test('popupPromptBuilder: missing knowledge tells model not to fabricate', () =>
   assert.match(prompt.user, /Knowledge available: false/);
   assert.match(prompt.user, /Do not fabricate facts/);
   assert.match(prompt.system, /Use only the provided knowledge/);
+});
+
+test('popupPromptBuilder: exposes action IDs and labels but never destinations', () => {
+  const prompt = popupPromptBuilder.build(buildInput());
+
+  assert.match(prompt.user, /book_demo: Book Demo/);
+  assert.match(prompt.user, /pricing: Pricing/);
+  assert.equal(prompt.user.includes('https://creovix.test/demo'), false);
+  assert.equal(prompt.user.includes('https://creovix.test/pricing'), false);
+  assert.match(prompt.system, /Never generate URLs, phone numbers, email addresses, WhatsApp numbers, or CTA labels/);
 });

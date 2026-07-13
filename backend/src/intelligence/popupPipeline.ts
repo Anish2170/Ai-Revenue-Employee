@@ -7,6 +7,7 @@
  * visitor-visible behavior until the product surface opts in later.
  */
 import type { BusinessInstructions } from '../context/types.js';
+import type { BusinessActionConfig } from '../business-actions/action.types.js';
 import { popupPromptBuilder } from '../prompts/popupPromptBuilder.js';
 import { buildConversationStrategy, type ConversationStrategy } from './conversationStrategy.js';
 import { retrieveStrategyKnowledge, type StrategyKnowledgeOptions, type StrategyKnowledgeResult } from './knowledgeRetrieval.js';
@@ -33,6 +34,7 @@ export interface GenerateSafePopupInput {
   };
   instructions: BusinessInstructions;
   websiteId?: string;
+  businessActions?: BusinessActionConfig[];
 }
 
 export interface GenerateSafePopupOptions {
@@ -97,6 +99,7 @@ export async function generateSafePopup(
     instructions: input.instructions,
     strategy,
     knowledge,
+    businessActions: input.businessActions ?? [],
   });
 
   stages.push('llm');
@@ -105,7 +108,7 @@ export async function generateSafePopup(
   if (!llm.ok) return stop('llm', llm.reason, trace, null);
 
   stages.push('response_validation');
-  const responseValidation = validatePopupResponse({ llm, strategy, knowledge, instructions: input.instructions });
+  const responseValidation = validatePopupResponse({ llm, strategy, knowledge, instructions: input.instructions, enabledActions: input.businessActions ?? [] });
   trace.responseValidation = responseValidation;
   if (!responseValidation.ok) {
     const popup = generatePopup({ validation: responseValidation, strategy });

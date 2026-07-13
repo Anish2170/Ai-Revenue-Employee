@@ -15,9 +15,17 @@ export interface ChatAnalyticsCallbacks {
 
 const SEND_SVG =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>';
+const NEW_SVG =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>';
+const MINIMIZE_SVG =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/></svg>';
+const CLOSE_SVG =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>';
 const SOURCE_SVG =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>';
+const EMAIL_RE = /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i;
 const CONVERSATION_ID_KEY = 'aire_conversation_id';
+const SUGGESTED_QUESTIONS = ['Pricing', 'Book Demo', 'Services', 'Enterprise'];
 
 function readConversationId(): string | null {
   try { return sessionStorage.getItem(CONVERSATION_ID_KEY); } catch { return null; }
@@ -40,6 +48,7 @@ export class ChatWindow {
   private restoring: Promise<void> | null = null;
   private streaming = false;
   private abort: (() => void) | null = null;
+  private savedLeadCards = new Set<string>();
 
   constructor(
     private readonly layer: HTMLElement,
@@ -65,7 +74,10 @@ export class ChatWindow {
 
     const transition = opener ? this.naturalTransition(opener) : '';
     if (transition) this.seedOpener(transition, true);
-    if (this.history.length === 0) this.seedOpener('Hi! I can help answer your questions. What would you like to know?', false);
+    if (this.history.length === 0) {
+      this.seedOpener('Hi! I can help answer your questions. What would you like to know?', false);
+      this.appendSuggestedQuestions();
+    }
 
     requestAnimationFrame(() => this.input?.focus());
   }
@@ -120,22 +132,33 @@ export class ChatWindow {
     select.setAttribute('aria-label', 'Switch conversation');
     select.addEventListener('change', () => this.switchConversation(select.value));
 
-    const add = el('button', 'aire-chat__new', '+') as HTMLButtonElement;
+    const add = el('button', 'aire-chat__new') as HTMLButtonElement;
     add.type = 'button';
-    add.setAttribute('aria-label', 'New chat');
+    add.innerHTML = NEW_SVG;
+    add.setAttribute('aria-label', 'New conversation');
+    add.title = 'New conversation';
     add.addEventListener('click', () => this.newChat());
 
-    const min = el('button', 'aire-chat__min', '-') as HTMLButtonElement;
+    const min = el('button', 'aire-chat__min') as HTMLButtonElement;
     min.type = 'button';
+    min.innerHTML = MINIMIZE_SVG;
     min.setAttribute('aria-label', 'Minimize chat');
+    min.title = 'Minimize';
     min.addEventListener('click', () => this.close());
-    header.append(avatar, meta, select, add, min);
+
+    const close = el('button', 'aire-chat__close') as HTMLButtonElement;
+    close.type = 'button';
+    close.innerHTML = CLOSE_SVG;
+    close.setAttribute('aria-label', 'Close chat');
+    close.title = 'Close';
+    close.addEventListener('click', () => this.close());
+    header.append(avatar, meta, select, add, min, close);
 
     const messages = el('div', 'aire-chat__messages');
     const composer = el('div', 'aire-chat__composer');
     const input = el('textarea', 'aire-chat__input');
     input.rows = 1;
-    input.placeholder = 'Type your message...';
+    input.placeholder = 'Ask anything...';
     input.addEventListener('input', () => this.autoGrow());
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
@@ -176,16 +199,24 @@ export class ChatWindow {
   private renderMessages(): void {
     if (!this.messagesEl) return;
     this.messagesEl.innerHTML = '';
+    if (!this.restored && this.history.length === 0) {
+      this.appendLoadingSkeleton();
+      return;
+    }
     for (const message of this.history) {
       this.appendBubble(message.role === 'user' ? 'user' : 'ai', message.content);
       if (message.role === 'assistant' && message.source) this.appendSource(message.source);
+      if (message.role === 'assistant' && this.shouldShowLeadCard(message.content)) this.appendLeadCaptureCard(message.content);
     }
   }
 
   private async newChat(): Promise<void> {
     const response = await this.api.createConversation(this.getBehaviour());
     if (response) this.applyConversationResponse(response);
-    if (this.history.length === 0) this.seedOpener('Hi! I can help answer your questions. What would you like to know?', false);
+    if (this.history.length === 0) {
+      this.seedOpener('Hi! I can help answer your questions. What would you like to know?', false);
+      this.appendSuggestedQuestions();
+    }
     requestAnimationFrame(() => this.input?.focus());
   }
 
@@ -207,6 +238,7 @@ export class ChatWindow {
     this.history.push({ role: 'assistant', content: text });
     if (persist) this.pendingAssistant = text;
     this.appendBubble('ai', text);
+    if (this.shouldShowLeadCard(text)) this.appendLeadCaptureCard(text);
   }
 
   private autoGrow(): void {
@@ -228,6 +260,32 @@ export class ChatWindow {
     this.streamReply(text);
   }
 
+  private appendLoadingSkeleton(): void {
+    if (!this.messagesEl) return;
+    for (let index = 0; index < 3; index += 1) {
+      const row = el('div', `aire-skeleton-row ${index === 1 ? 'aire-skeleton-row--user' : ''}`);
+      const bubble = el('div', 'aire-skeleton-bubble');
+      row.appendChild(bubble);
+      this.messagesEl.appendChild(row);
+    }
+  }
+  private appendSuggestedQuestions(): void {
+    if (!this.messagesEl || this.messagesEl.querySelector('.aire-suggestions')) return;
+    const wrap = el('div', 'aire-suggestions');
+    for (const question of SUGGESTED_QUESTIONS) {
+      const chip = el('button', 'aire-suggestion-chip', question) as HTMLButtonElement;
+      chip.type = 'button';
+      chip.addEventListener('click', () => {
+        if (!this.input || this.streaming) return;
+        this.input.value = question;
+        this.autoGrow();
+        this.submit();
+      });
+      wrap.appendChild(chip);
+    }
+    this.messagesEl.appendChild(wrap);
+    this.scrollToBottom();
+  }
   private streamReply(userText: string): void {
     this.setStreaming(true);
     const bubble = this.appendBubble('ai', '');
@@ -274,6 +332,7 @@ export class ChatWindow {
         if (acc) {
           this.history.push({ role: 'assistant', content: acc, ...(source ? { source } : {}) });
           this.analytics.onAiResponseCompleted?.({ length: acc.length });
+          if (this.shouldShowLeadCard(acc)) this.appendLeadCaptureCard(acc);
         }
         this.setStreaming(false);
         this.abort = null;
@@ -282,9 +341,117 @@ export class ChatWindow {
     });
   }
 
+
+  private shouldShowLeadCard(text: string): boolean {
+    const normalized = text.toLowerCase();
+    const asksForEmail = /\b(best email|email address|what(?:'s| is) your email|what(?:'s| is) the best email|email it|email this|email that|email it to you|email that to you|send .* email|send .* inbox)\b/i.test(text);
+    const declined = /\b(no thanks|no thank you|not now|do not email|don't email|no need)\b/i.test(normalized);
+    return !declined && asksForEmail;
+  }
+
+  private leadCardKey(messageText: string): string {
+    return messageText.replace(/\s+/g, ' ').trim().slice(0, 160);
+  }
+
+  private appendLeadCaptureCard(messageText: string): HTMLElement | null {
+    if (!this.messagesEl) return null;
+    const key = this.leadCardKey(messageText);
+    const card = el('form', 'aire-lead-card') as HTMLFormElement;
+    card.setAttribute('data-lead-key', key);
+    card.noValidate = true;
+
+    const title = el('div', 'aire-lead-card__title', 'Get Your Resource');
+    const icon = el('span', 'aire-lead-card__icon', 'Email');
+    title.prepend(icon);
+    const subtitle = el('div', 'aire-lead-card__subtitle', "Enter your email below and we'll use it to send the information discussed.");
+    const label = el('label', 'aire-lead-card__label', 'Email Address') as HTMLLabelElement;
+    const input = el('input', 'aire-lead-card__input') as HTMLInputElement;
+    input.type = 'email';
+    input.placeholder = 'you@example.com';
+    input.autocomplete = 'email';
+    const error = el('div', 'aire-lead-card__error', '');
+    const button = el('button', 'aire-lead-card__button', this.savedLeadCards.has(key) ? 'Email Saved' : 'Send') as HTMLButtonElement;
+    button.type = 'submit';
+    if (this.savedLeadCards.has(key)) {
+      input.disabled = true;
+      button.disabled = true;
+      button.classList.add('aire-lead-card__button--saved');
+    }
+
+    const secondary = el('button', 'aire-lead-card__secondary', 'Maybe Later') as HTMLButtonElement;
+    secondary.type = 'button';
+    secondary.addEventListener('click', () => card.remove());
+
+    label.appendChild(input);
+    card.append(title, subtitle, label, error, button, secondary);
+    card.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const email = input.value.trim();
+      if (!EMAIL_RE.test(email)) {
+        error.textContent = 'Please enter a valid email address.';
+        input.setAttribute('aria-invalid', 'true');
+        input.focus();
+        return;
+      }
+      error.textContent = '';
+      input.removeAttribute('aria-invalid');
+      input.disabled = true;
+      button.disabled = true;
+      button.textContent = 'Saving...';
+      this.savedLeadCards.add(key);
+      this.submitLeadEmail(email, button);
+    });
+
+    this.messagesEl.appendChild(card);
+    this.scrollToBottom();
+    return card;
+  }
+
+  private submitLeadEmail(email: string, button: HTMLButtonElement): void {
+    const outbound: ChatMessage[] = [{ role: 'user', content: `My email is ${email}` }];
+    let completed = false;
+    let failed = false;
+    const abort = this.api.streamChat(outbound, this.getBehaviour(), this.conversationId, {
+      onConversation: (conversation: ChatConversationMeta) => {
+        this.conversationId = conversation.id;
+        storeConversationId(conversation.id);
+        const existing = this.conversations.find((item) => item.id === conversation.id);
+        if (existing) Object.assign(existing, conversation);
+        else this.conversations.unshift(conversation);
+        this.updateConversationSelect();
+      },
+      onToken: () => { /* keep lead-card submission quiet in the UI */ },
+      onSource: () => { /* no visible source for hidden lead submission */ },
+      onError: () => {
+        if (completed) return;
+        failed = true;
+        button.disabled = false;
+        button.textContent = 'Send';
+      },
+      onDone: () => {
+        if (failed) return;
+        completed = true;
+        abort();
+        button.textContent = 'Email Saved';
+        button.classList.add('aire-lead-card__button--saved');
+        this.scrollToBottom();
+      },
+    });
+  }
+
+
   private appendBubble(role: 'user' | 'ai', text: string): HTMLDivElement {
+    const previous = this.messagesEl?.lastElementChild as HTMLElement | null;
+    const grouped = previous?.classList.contains('aire-message-row') && previous.dataset.role === role;
+    const row = el('div', `aire-message-row aire-message-row--${role}${grouped ? ' aire-message-row--grouped' : ''}`);
+    row.dataset.role = role;
+    if (role === 'ai') row.appendChild(el('div', `aire-message-avatar${grouped ? ' aire-message-avatar--hidden' : ''}`, 'AI'));
     const bubble = el('div', `aire-msg aire-msg--${role}`, text);
-    this.messagesEl?.appendChild(bubble);
+    const time = el('div', 'aire-msg__time', 'Now');
+    const stack = el('div', 'aire-message-stack');
+    stack.append(bubble, time);
+    row.appendChild(stack);
+    this.messagesEl?.appendChild(row);
     this.scrollToBottom();
     return bubble;
   }
@@ -318,3 +485,6 @@ export class ChatWindow {
     if (this.messagesEl) this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
   }
 }
+
+
+

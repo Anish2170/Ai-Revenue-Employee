@@ -1,3 +1,5 @@
+import { config } from '../config/index.js';
+
 export interface PopupTraceDetail {
   passed?: boolean;
   reason?: string | null;
@@ -5,6 +7,7 @@ export interface PopupTraceDetail {
 }
 
 export function popupTrace(sessionId: string, stage: string, detail: PopupTraceDetail = {}): void {
+  if (!config.debugTrace) return;
   const safeDetail = JSON.stringify(detail, (_key, value) => {
     if (value instanceof Set) return Array.from(value);
     if (typeof value === 'number' && !Number.isFinite(value)) return String(value);
@@ -17,3 +20,4 @@ export function cooldownRemainingMs(lastInterruptionTs: number | null, now: numb
   if (lastInterruptionTs === null) return 0;
   return Math.max(0, cooldownMs - Math.max(0, now - lastInterruptionTs));
 }
+

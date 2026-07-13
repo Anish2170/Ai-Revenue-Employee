@@ -49,3 +49,56 @@ export async function getWidgetView(organizationId: string, websiteId: string) {
     scriptSnippet: buildScriptSnippet(widget.siteId),
   };
 }
+
+export async function verifyWidgetInstallation(organizationId: string, websiteId: string) {
+  await assertWebsiteOwnership(organizationId, websiteId);
+  const website = await prisma.website.findUnique({
+    where: { id: websiteId },
+    include: { widget: true },
+  });
+
+  if (!website || website.deletedAt) {
+    return { installed: false, checkedUrl: null, reason: 'Website not found.' };
+  }
+
+  const widget = website.widget ?? (await getOrCreateWidget(organizationId, websiteId));
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 12000);
+
+  try {
+    const response = await fetch(website.url, {
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'AI-Revenue-Employee-Install-Verifier/1.0',
+        Accept: 'text/html,application/xhtml+xml',
+      },
+    });
+    const html = await response.text();
+    const installed =
+      html.includes(`data-site-id="${widget.siteId}"`) ||
+      html.includes(`data-site-id='${widget.siteId}'`) ||
+      (html.includes('/widget.js') && html.includes(widget.siteId));
+
+    if (installed) {
+      await prisma.widget.update({
+        where: { id: widget.id },
+        data: { installedAt: new Date() },
+      });
+    }
+
+    return {
+      installed,
+      checkedUrl: website.url,
+      status: response.status,
+      reason: installed ? 'Widget script found on website.' : 'Widget script was not found in the page HTML.',
+    };
+  } catch (err) {
+    return {
+      installed: false,
+      checkedUrl: website.url,
+      reason: err instanceof Error ? err.message : 'Unable to fetch website.',
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}

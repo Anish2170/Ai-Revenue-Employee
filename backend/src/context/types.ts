@@ -8,6 +8,8 @@
  * change.
  */
 import type { SiteLink } from '../types.js';
+import type { BusinessActionConfig } from '../business-actions/action.types.js';
+import type { DiscoveredActionGraph } from '../business-actions/discovered-action.types.js';
 
 /** Coarse classification of a crawled page, from its URL/path. */
 export type PageType =
@@ -74,10 +76,17 @@ export interface RetrievedChunk extends ChunkMetadata {
 /** Owner-defined AI behaviour (Sprint 2: local JSON; later: dashboard). */
 export interface BusinessInstructions {
   businessName: string;
+  companyDescription?: string;
+  role?: string;
   tone: string;
+  goal?: string;
+  context?: string;
+  rules?: string;
+  fallbackMessage?: string;
   alwaysBookDemo: boolean;
   avoidDiscounts: boolean;
   language: string;
+  websiteUrl?: string;
 }
 
 /**
@@ -91,6 +100,8 @@ export interface ResolvedContext {
   chunks: RetrievedChunk[];
   /** Navigable links (from crawl, or static on fallback). */
   siteLinks: SiteLink[];
+  /** Enabled, business-configured actions the AI may choose by Action ID. */
+  businessActions: BusinessActionConfig[];
   /** Whether real RAG was used or the static fallback. */
   source: 'rag' | 'fallback';
   /** Similarity scores of the retrieved chunks (debug/tuning). */
@@ -112,5 +123,34 @@ export interface KnowledgeSnapshot {
   siteLinks: SiteLink[];
   /** Per-page hashes/timestamps — future incremental "skip unchanged page". */
   pages: Array<{ url: string; path: string; pageType: PageType; contentHash: string; lastCrawled: string }>;
+  /** Developer-only debug payload captured during ingestion. Older snapshots omit this field. */
+  debugPages?: Array<{
+    url: string;
+    path: string;
+    title: string;
+    crawlStatus: 'crawled' | 'skipped';
+    httpStatus: number | null;
+    rawExtractedText: string;
+    cleanedText: string;
+    extractedTextLength: number;
+    cleanedTextLength: number;
+    wordCount: number;
+    chunkCount: number;
+    lastCrawled: string;
+    renderer: 'static' | 'js-rendered' | 'unknown';
+    cleaning: {
+      removedNavigation: boolean;
+      removedFooter: boolean;
+      removedScripts: boolean;
+      removedCookieBanners: boolean;
+      removedDuplicatedContent: boolean;
+      beforeLength: number;
+      afterLength: number;
+      notes: string[];
+    };
+  }>;
+  /** Crawl-discovered intent -> URL action graph. Manual business actions are no longer required. */
+  actionGraph?: DiscoveredActionGraph;
   documents: EmbeddedChunk[];
 }
+

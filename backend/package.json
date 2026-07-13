@@ -13,17 +13,21 @@
     "ingest": "tsx scripts/ingest.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
-    "prisma:studio": "prisma studio"
+    "prisma:studio": "prisma studio",
+    "postinstall": "prisma generate",
+    "prisma:migrate:deploy": "prisma migrate deploy"
   },
   "dependencies": {
     "@google/genai": "^0.7.0",
     "@prisma/client": "^6.2.1",
     "bcryptjs": "^2.4.3",
     "cheerio": "^1.0.0",
+    "compression": "^1.8.1",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
+    "helmet": "^8.3.0",
     "zod": "^3.24.1"
   },
   "devDependencies": {
@@ -34,6 +38,7 @@
     "@types/node": "^22.10.5",
     "prisma": "^6.2.1",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.3"
+    "typescript": "^5.7.3",
+    "@types/compression": "^1.8.1"
   }
 }

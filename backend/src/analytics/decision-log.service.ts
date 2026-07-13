@@ -22,6 +22,12 @@ export interface AiDecisionLogInput extends AnalyticsContext {
   generatedPopupTitle?: string | null;
   ctaType?: string | null;
   ctaText?: string | null;
+  ctaActionId?: string | null;
+  expectedAction?: boolean;
+  primaryActionReturned?: string | null;
+  fallbackApplied?: boolean;
+  fallbackUsed?: string | null;
+  missingActionReason?: string | null;
   llmUsed?: boolean;
   validationPassed?: boolean;
   finalOutcome: string;
@@ -112,6 +118,12 @@ async function persistDecision(tenant: AnalyticsTenant, input: AiDecisionLogInpu
       generatedPopupTitle: cleanText(input.generatedPopupTitle, 240),
       ctaType: cleanText(input.ctaType, 80),
       ctaText: cleanText(input.ctaText, 120),
+      ctaActionId: cleanText(input.ctaActionId, 80),
+      expectedAction: Boolean(input.expectedAction),
+      primaryActionReturned: cleanText(input.primaryActionReturned, 80),
+      fallbackApplied: Boolean(input.fallbackApplied),
+      fallbackUsed: cleanText(input.fallbackUsed, 80),
+      missingActionReason: cleanText(input.missingActionReason, 160),
       llmUsed: Boolean(input.llmUsed),
       validationPassed: Boolean(input.validationPassed),
       finalOutcome: cleanText(input.finalOutcome, 80) ?? input.finalOutcome,
@@ -138,6 +150,7 @@ async function persistOutcome(tenant: AnalyticsTenant, context: AnalyticsContext
     data: {
       ...patch,
       ...(event.popupType ? { generatedPopupType: cleanText(event.popupType, 80) } : {}),
+      ...(event.actionId ? { ctaActionId: cleanText(event.actionId, 80) } : {}),
     },
   });
 }
@@ -161,3 +174,5 @@ function cleanNumber(value: number | null | undefined): number | undefined {
   if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
   return value;
 }
+
+

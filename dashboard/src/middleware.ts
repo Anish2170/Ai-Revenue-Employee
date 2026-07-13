@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-const PUBLIC_PATHS = ['/login', '/signup', '/_next', '/favicon.ico'];
+const PUBLIC_PATHS = ['/', '/login', '/signup', '/_next', '/favicon.ico'];
 
 export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
-  if (PUBLIC_PATHS.some((path) => pathname.startsWith(path))) {
+  if (PUBLIC_PATHS.some((path) => (path === '/' ? pathname === '/' : pathname.startsWith(path)))) {
     return NextResponse.next();
   }
 

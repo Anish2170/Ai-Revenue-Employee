@@ -3,6 +3,14 @@
  * independent so the widget bundle has zero shared dependencies.
  */
 
+export interface BusinessActionConfig {
+  actionId: string;
+  label: string;
+  destinationType: 'URL' | 'CHAT' | 'WHATSAPP' | 'PHONE' | 'EMAIL';
+  destination: string;
+  enabled: boolean;
+}
+
 export interface VisitorBehaviour {
   page: string;
   pageTitle: string;
@@ -25,7 +33,11 @@ export interface SessionState {
 export interface PopupArtifact {
   title: string;
   body: string;
-  cta: string;
+  cta?: string;
+  primaryAction?: string;
+  secondaryAction?: string;
+  action?: BusinessActionConfig;
+  secondaryActionConfig?: BusinessActionConfig;
   popupType: string;
   tone: string;
 }
@@ -38,6 +50,10 @@ export interface EngageDecision {
   title?: string;
   body?: string;
   cta?: string;
+  primaryAction?: string;
+  secondaryAction?: string;
+  action?: BusinessActionConfig;
+  secondaryActionConfig?: BusinessActionConfig;
   popupType?: string;
   tone?: string;
   /** Optional navigation target for the CTA (allowlisted server-side). */

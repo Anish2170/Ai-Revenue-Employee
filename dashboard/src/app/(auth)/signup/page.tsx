@@ -4,84 +4,111 @@ import { FormEvent, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
-import { Button, Input, Card } from '@/components/ui';
 
 export default function SignupPage() {
-  const { signup, loading } = useAuth();
+  const { signup } = useAuth();
   const router = useRouter();
 
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [organizationName, setOrganizationName] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setError('');
 
+    if (password !== confirmPassword) {
+      setError('Passwords do not match.');
+      return;
+    }
+
+    setSubmitting(true);
     try {
-      await signup(email, password, name, organizationName || undefined);
-      router.push('/websites');
+      await signup(email, password, name);
+      router.replace('/onboarding');
+      router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create account');
+    } finally {
+      setSubmitting(false);
     }
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center px-4">
-      <div className="w-full max-w-sm">
-        <Card>
-          <h1 className="mb-6 text-center text-2xl font-semibold text-white">Create your account</h1>
+    <main className="auth-shell">
+      <section className="auth-card" aria-labelledby="signup-title">
+        <Link href="/" className="auth-brand" aria-label="AI Revenue Employee home"><span className="auth-logo-mark">AI</span><span>AI Revenue Employee</span></Link>
+        <h1 id="signup-title">Create Account</h1>
+        <p className="auth-subtitle">Start free, then launch the existing guided setup for your website.</p>
 
-          <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-            <Input
-              label="Name"
+        <form onSubmit={handleSubmit} className="auth-form">
+          <div className="auth-field">
+            <label htmlFor="name">Name</label>
+            <input
+              id="name"
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
               required
               autoComplete="name"
             />
-            <Input
-              label="Email"
+          </div>
+
+          <div className="auth-field">
+            <label htmlFor="email">Business Email</label>
+            <input
+              id="email"
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
               autoComplete="email"
             />
-            <Input
-              label="Password"
+          </div>
+
+          <div className="auth-field">
+            <label htmlFor="password">Password</label>
+            <input
+              id="password"
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
+              minLength={8}
               autoComplete="new-password"
             />
-            <Input
-              label="Organization name (optional)"
-              type="text"
-              value={organizationName}
-              onChange={(e) => setOrganizationName(e.target.value)}
-              autoComplete="organization"
+          </div>
+
+          <div className="auth-field">
+            <label htmlFor="confirm-password">Confirm Password</label>
+            <input
+              id="confirm-password"
+              type="password"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              required
+              minLength={8}
+              autoComplete="new-password"
             />
+          </div>
 
-            {error && <p className="text-sm text-red-400">{error}</p>}
+          {error && <p className="auth-error">{error}</p>}
 
-            <Button type="submit" variant="primary" loading={loading}>
-              Create account
-            </Button>
-          </form>
+          <button className="auth-primary" type="submit" disabled={submitting}>
+            {submitting ? 'Creating account...' : 'Create Account'}
+          </button>
+        </form>
 
-          <p className="mt-6 text-center text-sm text-white/60">
-            Already have an account?{' '}
-            <Link href="/login" className="font-medium text-indigo-400 hover:text-indigo-300">
-              Sign in
-            </Link>
-          </p>
-        </Card>
-      </div>
-    </div>
+        <p className="auth-footer">
+          Already have an account? <Link href="/login">Login</Link>
+        </p>
+      </section>
+    </main>
   );
 }
+
+
+

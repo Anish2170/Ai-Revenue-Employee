@@ -11,6 +11,7 @@
 import { createHash } from 'node:crypto';
 import { config } from '../config/index.js';
 import { extract, inspectHtml, type HtmlInspection } from './extract.js';
+import { extractActionsFromHtml, type RawDiscoveredAction } from '../business-actions/actionDiscovery.js';
 import { renderPage, type RenderedPage } from './browserRenderer.js';
 import { classifyPage, isCrawlablePath, isSameOrigin, normalizeUrl } from './links.js';
 import type { CrawledPage } from '../context/types.js';
@@ -25,6 +26,7 @@ export interface CrawlResult {
   pages: CrawledPage[];
   /** URLs that were fetched but failed or had no usable content. */
   skipped: string[];
+  actions: RawDiscoveredAction[];
 }
 
 interface FetchResult {
@@ -82,6 +84,7 @@ export async function crawl(startUrl: string, opts: CrawlOptions = {}): Promise<
 
   const pages: CrawledPage[] = [];
   const skipped: string[] = [];
+  const actions: RawDiscoveredAction[] = [];
 
   while (frontier.length > 0 && pages.length < maxPages) {
     const wave = frontier.splice(0, concurrency);
@@ -102,6 +105,8 @@ export async function crawl(startUrl: string, opts: CrawlOptions = {}): Promise<
 
       // Enqueue new same-origin links even from pages rejected for low text; a
       // shell page may still expose crawlable nav links after rendering.
+      actions.push(...result.actions);
+
       for (const raw of result.links) {
         const norm = normalizeUrl(raw);
         if (!norm || queued.has(norm) || visited.has(norm)) continue;
@@ -113,10 +118,10 @@ export async function crawl(startUrl: string, opts: CrawlOptions = {}): Promise<
     frontier = nextFrontier;
   }
 
-  return { pages: pages.slice(0, maxPages), skipped };
+  return { pages: pages.slice(0, maxPages), skipped, actions };
 }
 
-async function crawlOnePage(url: string, timeoutMs: number): Promise<{ url: string; page: CrawledPage | null; links: string[] }> {
+async function crawlOnePage(url: string, timeoutMs: number): Promise<{ url: string; page: CrawledPage | null; links: string[]; actions: RawDiscoveredAction[] }> {
   const fetched = await fetchHtml(url, timeoutMs);
   if (!fetched.ok || !fetched.html) {
     logCrawlPage({
@@ -134,7 +139,7 @@ async function crawlOnePage(url: string, timeoutMs: number): Promise<{ url: stri
       accepted: false,
       rejectionReason: fetched.error ?? 'fetch_failed',
     });
-    return { url, page: null, links: [] };
+    return { url, page: null, links: [], actions: [] };
   }
 
   const staticInspection = inspectHtml(fetched.html);
@@ -160,7 +165,8 @@ async function crawlOnePage(url: string, timeoutMs: number): Promise<{ url: stri
   });
 
   if (!staticReason) {
-    return { url, page: toCrawledPage(fetched.url, staticExtracted.title, staticExtracted.text), links: staticExtracted.links };
+    const page = toCrawledPage(fetched.url, staticExtracted.title, staticExtracted.text);
+    return { url, page, links: staticExtracted.links, actions: extractActionsFromHtml(fetched.html, page) };
   }
 
   try {
@@ -173,9 +179,10 @@ async function crawlOnePage(url: string, timeoutMs: number): Promise<{ url: stri
     logRenderedCrawlPage(url, rendered, renderedExtracted.text.length, renderedReason);
 
     if (!renderedReason) {
-      return { url, page: toCrawledPage(rendered.url, renderedExtracted.title, renderedExtracted.text), links: renderedExtracted.links };
+      const page = toCrawledPage(rendered.url, renderedExtracted.title, renderedExtracted.text);
+      return { url, page, links: renderedExtracted.links, actions: extractActionsFromHtml(rendered.html, page) };
     }
-    return { url, page: null, links: renderedExtracted.links };
+    return { url, page: null, links: renderedExtracted.links, actions: [] };
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
     logCrawlPage({
@@ -193,7 +200,7 @@ async function crawlOnePage(url: string, timeoutMs: number): Promise<{ url: stri
       accepted: false,
       rejectionReason: `browser_render_failed:${reason}`,
     });
-    return { url, page: null, links: staticExtracted.links };
+    return { url, page: null, links: staticExtracted.links, actions: [] };
   }
 }
 

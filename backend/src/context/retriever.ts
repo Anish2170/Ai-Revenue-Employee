@@ -5,6 +5,7 @@
  * Sprint 3: accepts an optional `websiteId` to query a per-website store
  * (via the registry). When omitted, falls back to the global dev singleton.
  */
+import { config } from '../config/index.js';
 import { retrievalConfig } from '../config/retrieval.js';
 import { embedQuery } from '../embeddings/embedder.js';
 import { getVectorStore, knowledgeReady } from '../vectorstore/index.js';
@@ -45,7 +46,7 @@ export async function retrieve(query: string, websiteId?: string): Promise<Retri
 
   const aboveThreshold = hits.filter((h) => h.score >= retrievalConfig.similarityThreshold);
 
-  // Enforce maxContextChars budget — chunks are already sorted by score desc
+  // Enforce maxContextChars budget â€” chunks are already sorted by score desc
   const kept: RetrievedChunk[] = [];
   let charBudget = retrievalConfig.maxContextChars;
   for (const chunk of aboveThreshold) {
@@ -57,12 +58,15 @@ export async function retrieve(query: string, websiteId?: string): Promise<Retri
   const allScores = hits.map((h) => Number(h.score.toFixed(3)));
   const keptScores = kept.map((h) => Number(h.score.toFixed(3)));
 
-  console.log(
-    `[retrieval] query="${query.slice(0, 60)}" topK=${hits.length} scores=[${allScores.join(', ')}] ` +
-      `kept=${kept.length} (threshold ${retrievalConfig.similarityThreshold}, ` +
-      `chars ${retrievalConfig.maxContextChars - charBudget}/${retrievalConfig.maxContextChars})` +
-      (websiteId ? ` website=${websiteId.slice(0, 8)}` : ''),
-  );
+  if (config.debugTrace) {
+    console.log(
+      `[retrieval] query="${query.slice(0, 60)}" topK=${hits.length} scores=[${allScores.join(', ')}] ` +
+        `kept=${kept.length} (threshold ${retrievalConfig.similarityThreshold}, ` +
+        `chars ${retrievalConfig.maxContextChars - charBudget}/${retrievalConfig.maxContextChars})` +
+        (websiteId ? ` website=${websiteId.slice(0, 8)}` : ''),
+    );
+  }
 
   return { chunks: kept, scores: keptScores };
 }
+

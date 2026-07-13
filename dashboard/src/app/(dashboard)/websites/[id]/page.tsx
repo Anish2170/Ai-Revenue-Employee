@@ -82,10 +82,10 @@ export default function WebsiteDetailPage() {
 // ---------------------------------------------------------------------------
 
 function InstructionsTab({ websiteId }: { websiteId: string }) {
-  const [instructions, setInstructions] = useState<AnyRecord | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [error, setError] = useState('');
   const [form, setForm] = useState({
     businessName: '',
     companyDescription: '',
@@ -103,45 +103,47 @@ function InstructionsTab({ websiteId }: { websiteId: string }) {
   const [alwaysBookDemo, setAlwaysBookDemo] = useState(false);
   const [avoidDiscounts, setAvoidDiscounts] = useState(false);
 
+  const applyInstructions = useCallback((data: AnyRecord) => {
+    setForm({
+      businessName: data?.businessName || '',
+      companyDescription: data?.companyDescription || '',
+      role: data?.role || '',
+      tone: data?.tone || '',
+      goal: data?.goal || '',
+      context: data?.context || '',
+      rules: data?.rules || '',
+      fallbackMessage: data?.fallbackMessage || '',
+      preferredCta: data?.preferredCta || '',
+      supportEmail: data?.supportEmail || '',
+      supportPhone: data?.supportPhone || '',
+      websiteUrl: data?.websiteUrl || '',
+    });
+    setAlwaysBookDemo(data?.alwaysBookDemo ?? false);
+    setAvoidDiscounts(data?.avoidDiscounts ?? false);
+  }, []);
+
   useEffect(() => {
     api.getInstructions(websiteId)
-      .then((data) => {
-        const d = data as AnyRecord;
-        setInstructions(d);
-        setForm({
-          businessName: d?.businessName || '',
-          companyDescription: d?.companyDescription || '',
-          role: d?.role || '',
-          tone: d?.tone || '',
-          goal: d?.goal || '',
-          context: d?.context || '',
-          rules: d?.rules || '',
-          fallbackMessage: d?.fallbackMessage || '',
-          preferredCta: d?.preferredCta || '',
-          supportEmail: d?.supportEmail || '',
-          supportPhone: d?.supportPhone || '',
-          websiteUrl: d?.websiteUrl || '',
-        });
-        setAlwaysBookDemo(d?.alwaysBookDemo ?? false);
-        setAvoidDiscounts(d?.avoidDiscounts ?? false);
-      })
-      .catch(() => {})
+      .then((data) => applyInstructions(data as AnyRecord))
+      .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load instructions.'))
       .finally(() => setLoading(false));
-  }, [websiteId]);
+  }, [applyInstructions, websiteId]);
 
   const handleSave = async () => {
     setSaving(true);
     setSaved(false);
+    setError('');
     try {
-      await api.updateInstructions(websiteId, {
+      const updated = await api.updateInstructions(websiteId, {
         ...form,
         alwaysBookDemo,
         avoidDiscounts,
       });
+      applyInstructions(updated as AnyRecord);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
-    } catch {
-      // ignore
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save instructions.');
     } finally {
       setSaving(false);
     }
@@ -209,8 +211,9 @@ function InstructionsTab({ websiteId }: { websiteId: string }) {
         <Button variant="primary" onClick={handleSave} loading={saving}>
           Save Instructions
         </Button>
-        {saved && <span className="text-sm text-[var(--success)]">✓ Saved</span>}
+        {saved && <span className="text-sm text-[var(--success)]">Saved</span>}
       </div>
+      {error && <p className="mt-3 text-sm text-[var(--danger)]">{error}</p>}
     </Card>
   );
 }
@@ -280,7 +283,7 @@ function KnowledgeTab({ websiteId, websiteUrl }: { websiteId: string; websiteUrl
   const [status, setStatus] = useState<AnyRecord | null>(null);
   const [loading, setLoading] = useState(true);
   const [building, setBuilding] = useState(false);
-  const [buildUrl, setBuildUrl] = useState('');
+  const [buildUrl, setBuildUrl] = useState(websiteUrl);
   const [phases, setPhases] = useState<{ phase: string; detail?: AnyRecord }[]>([]);
   const [error, setError] = useState('');
   const handleRef = useRef<KnowledgeBuildHandle | null>(null);
@@ -294,8 +297,7 @@ function KnowledgeTab({ websiteId, websiteUrl }: { websiteId: string; websiteUrl
 
   useEffect(() => {
     fetchStatus();
-    setBuildUrl(websiteUrl);
-  }, [fetchStatus, websiteUrl]);
+  }, [fetchStatus]);
 
   const startBuild = () => {
     if (!buildUrl) return;
@@ -395,3 +397,4 @@ function KnowledgeTab({ websiteId, websiteUrl }: { websiteId: string; websiteUrl
     </div>
   );
 }
+

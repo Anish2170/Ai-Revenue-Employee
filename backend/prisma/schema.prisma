@@ -49,7 +49,10 @@ model Organization {
   analyticsSessions    AnalyticsSession[]
   analyticsEvents      AnalyticsEvent[]
   aiDecisionLogs       AiDecisionLog[]
+  businessActions      BusinessAction[]
+  actionUrlOverrides   ActionUrlOverride[]
   conversations        Conversation[]
+  leads                Lead[]
   visitors             Visitor[]
   conversationMemories ConversationMemory[]
   auditLogs            AuditLog[]
@@ -131,7 +134,10 @@ model Website {
   analyticsSessions    AnalyticsSession[]
   analyticsEvents      AnalyticsEvent[]
   aiDecisionLogs       AiDecisionLog[]
+  businessActions      BusinessAction[]
+  actionUrlOverrides   ActionUrlOverride[]
   conversations        Conversation[]
+  leads                Lead[]
   visitors             Visitor[]
   conversationMemories ConversationMemory[]
 
@@ -167,6 +173,53 @@ model BusinessInstruction {
 enum WidgetStatus {
   ACTIVE
   DISABLED
+}
+
+enum BusinessActionDestinationType {
+  URL
+  CHAT
+  WHATSAPP
+  PHONE
+  EMAIL
+}
+
+model BusinessAction {
+  id              String                        @id @default(uuid()) @db.Uuid
+  organizationId  String                        @db.Uuid
+  websiteId       String                        @db.Uuid
+  actionId        String
+  label           String
+  destinationType BusinessActionDestinationType
+  destination     String
+  enabled         Boolean                       @default(false)
+  isStarter       Boolean                       @default(false)
+  sortOrder       Int                           @default(0)
+  createdAt       DateTime                      @default(now())
+  updatedAt       DateTime                      @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  website      Website      @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+
+  @@unique([websiteId, actionId])
+  @@index([organizationId, enabled])
+  @@index([websiteId, enabled])
+}
+
+model ActionUrlOverride {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @db.Uuid
+  websiteId      String   @db.Uuid
+  intent         String
+  url            String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  website      Website      @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+
+  @@unique([websiteId, intent])
+  @@index([organizationId])
+  @@index([websiteId])
 }
 
 /// Public identity of a website's widget. `siteId` is the handle in the embed snippet.
@@ -278,6 +331,7 @@ model AnalyticsEvent {
   numericValue       Float?
   reason             String?
   label              String?
+  actionId           String?
 
   organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   website      Website           @relation(fields: [websiteId], references: [id], onDelete: Cascade)
@@ -290,6 +344,7 @@ model AnalyticsEvent {
   @@index([websiteId, eventName, occurredAt])
   @@index([websiteId, sessionId, occurredAt])
   @@index([websiteId, popupType, occurredAt])
+  @@index([websiteId, actionId, occurredAt])
   @@index([websiteId, pagePath, occurredAt])
 }
 
@@ -321,6 +376,12 @@ model AiDecisionLog {
   generatedPopupTitle String?
   ctaType             String?
   ctaText             String?
+  ctaActionId         String?
+  expectedAction      Boolean  @default(false)
+  primaryActionReturned String?
+  fallbackApplied     Boolean  @default(false)
+  fallbackUsed        String?
+  missingActionReason String?
   llmUsed             Boolean  @default(false)
   validationPassed    Boolean  @default(false)
   finalOutcome        String
@@ -415,6 +476,7 @@ model Conversation {
   visitor      Visitor?              @relation(fields: [visitorRecordId], references: [id], onDelete: SetNull)
   messages     ConversationMessage[]
   memories     ConversationMemory[]
+  leads        Lead[]
 
   @@index([organizationId, lastMessageAt])
   @@index([websiteId, lastMessageAt])
@@ -462,6 +524,53 @@ model ConversationMemory {
   @@index([organizationId, updatedAt])
 }
 
+enum LeadScoreLabel {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum LeadStatus {
+  NEW
+  CONTACTED
+  QUALIFIED
+  WON
+  LOST
+}
+
+model Lead {
+  id                  String         @id @default(uuid()) @db.Uuid
+  organizationId      String         @db.Uuid
+  websiteId           String         @db.Uuid
+  conversationId      String         @db.Uuid
+  visitorId           String?
+  sessionId           String?
+  name                String?
+  email               String?
+  phone               String?
+  interest            String
+  intent              String
+  scorePercent        Int
+  scoreLabel          LeadScoreLabel
+  reason              String
+  lastQuestion        String?
+  pagesVisited        Json           @default("[]")
+  suggestedNextAction String
+  status              LeadStatus     @default(NEW)
+  capturedAt          DateTime       @default(now())
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  website      Website      @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, capturedAt])
+  @@index([websiteId, capturedAt])
+  @@index([conversationId])
+  @@unique([conversationId, email])
+  @@unique([conversationId, phone])
+}
 // ---------------------------------------------------------------------------
 // Knowledge base
 // ---------------------------------------------------------------------------
@@ -546,3 +655,5 @@ model AuditLog {
 
   @@index([organizationId, createdAt])
 }
+
+

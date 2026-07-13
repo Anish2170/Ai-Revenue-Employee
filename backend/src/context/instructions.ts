@@ -16,10 +16,17 @@ const INSTRUCTIONS_PATH = resolve(backendRoot, 'config', 'business-instructions.
 
 const DEFAULTS: BusinessInstructions = {
   businessName: 'this business',
+  companyDescription: '',
+  role: '',
   tone: 'Professional, helpful, and concise.',
+  goal: '',
+  context: '',
+  rules: '',
+  fallbackMessage: '',
   alwaysBookDemo: false,
   avoidDiscounts: false,
   language: 'English',
+  websiteUrl: '',
 };
 
 let cached: BusinessInstructions | null = null;

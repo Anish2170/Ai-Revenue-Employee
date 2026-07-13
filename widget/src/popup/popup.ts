@@ -1,18 +1,16 @@
 /**
- * Popup renderer. Renders ONLY backend-provided content (title/body + CTA). No
- * business copy is hardcoded here; the backend (via the validated popup
- * pipeline) controls whether the popup appears and what it says. Text is set via
- * textContent (never HTML).
+ * Popup renderer. Renders ONLY backend-provided content (title/body + optional
+ * resolved business actions). Text is set via textContent (never HTML).
  */
 import { el } from '../utils/dom.js';
-import type { EngageDecision } from '../types.js';
+import type { BusinessActionConfig, EngageDecision } from '../types.js';
 
 export interface PopupHandle {
   remove: () => void;
 }
 
 export interface PopupCallbacks {
-  onCta: () => void;
+  onCta: (action?: BusinessActionConfig) => void;
   onDismiss: () => void;
 }
 
@@ -30,11 +28,9 @@ export function renderPopup(
   if (decision.popupType) card.setAttribute('data-popup-type', decision.popupType);
   if (decision.tone) card.setAttribute('data-tone', decision.tone);
 
-  // Close button.
   const close = el('button', 'aire-popup__close', 'x');
   close.setAttribute('aria-label', 'Dismiss');
 
-  // Neutral chrome (not business copy).
   const brand = el('div', 'aire-popup__brand');
   brand.appendChild(el('span', 'aire-popup__dot'));
   brand.appendChild(el('span', undefined, 'AI Assistant'));
@@ -42,20 +38,20 @@ export function renderPopup(
   const titleText = decision.title?.trim();
   const bodyText = decision.body?.trim() || decision.message || '';
   const title = titleText ? el('h3', 'aire-popup__title', titleText) : null;
-
-  // Backend-controlled message.
   const msg = el('p', 'aire-popup__msg', bodyText);
 
-  // Backend-controlled CTA.
-  const cta = el('button', 'aire-popup__cta');
-  cta.appendChild(el('span', undefined, decision.cta ?? 'Chat'));
-  const arrow = el('span');
-  arrow.innerHTML = ARROW_SVG; // static, trusted icon markup
-  cta.appendChild(arrow);
+  const primaryCta = decision.action ? popupButton(decision.action.label, 'primary') : decision.cta ? popupButton(decision.cta, 'legacy') : null;
+  const secondaryCta = decision.secondaryActionConfig ? popupButton(decision.secondaryActionConfig.label, 'secondary') : null;
 
   card.append(close, brand);
   if (title) card.appendChild(title);
-  card.append(msg, cta);
+  card.appendChild(msg);
+  if (primaryCta || secondaryCta) {
+    const actions = el('div', 'aire-popup__actions');
+    if (primaryCta) actions.appendChild(primaryCta);
+    if (secondaryCta) actions.appendChild(secondaryCta);
+    card.appendChild(actions);
+  }
   layer.appendChild(card);
 
   let removed = false;
@@ -70,10 +66,23 @@ export function renderPopup(
     cb.onDismiss();
     remove();
   });
-  cta.addEventListener('click', () => {
-    cb.onCta();
+  primaryCta?.addEventListener('click', () => {
+    cb.onCta(decision.action);
+    remove();
+  });
+  secondaryCta?.addEventListener('click', () => {
+    cb.onCta(decision.secondaryActionConfig);
     remove();
   });
 
   return { remove };
+}
+
+function popupButton(label: string, kind: 'primary' | 'secondary' | 'legacy'): HTMLButtonElement {
+  const button = el('button', kind === 'secondary' ? 'aire-popup__cta aire-popup__cta--secondary' : 'aire-popup__cta') as HTMLButtonElement;
+  button.appendChild(el('span', undefined, label));
+  const arrow = el('span');
+  arrow.innerHTML = ARROW_SVG; // static, trusted icon markup
+  button.appendChild(arrow);
+  return button;
 }

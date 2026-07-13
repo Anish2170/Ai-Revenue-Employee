@@ -32,6 +32,7 @@ export interface AnalyticsEventInput extends AnalyticsContext {
   numericValue?: number | null;
   reason?: string | null;
   label?: string | null;
+  actionId?: string | null;
 }
 
 interface QueueItem {
@@ -192,6 +193,7 @@ async function persistEvent({ tenant, context, event }: QueueItem): Promise<void
       numericValue: cleanNumber(event.numericValue),
       reason: cleanText(event.reason, 160),
       label: cleanText(event.label, 240),
+      actionId: cleanText(event.actionId, 80),
     },
   });
 }

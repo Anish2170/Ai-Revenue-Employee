@@ -31,6 +31,7 @@ export type ChatStreamEvent =
   | { type: 'source'; source: ChatSource };
 
 function chatTrace(input: ChatStreamInput, stage: string, detail?: unknown): void {
+  if (!config.debugTrace) return;
   const id = input.debug?.requestId ?? 'no-request-id';
   const suffix = detail === undefined ? '' : ` ${JSON.stringify(detail)}`;
   console.log(`[chat:${id}] ${stage}${suffix}`);
@@ -38,7 +39,7 @@ function chatTrace(input: ChatStreamInput, stage: string, detail?: unknown): voi
 
 function serializeError(err: unknown): Record<string, unknown> {
   if (!(err instanceof Error)) return { value: String(err) };
-  return { name: err.name, message: err.message, stack: err.stack };
+  return { name: err.name, message: err.message };
 }
 
 function retrievedChunkIds(context: ResolvedContext): string[] {
@@ -270,12 +271,19 @@ export async function streamChatReply(input: ChatStreamInput): Promise<AsyncIter
   }
 
   const prompt = promptRegistry.chat.active.build(context, messages, summary, opener, input.conversation);
+  const leadInstructionIndex = prompt.system.indexOf('Intelligent lead capture:');
+  const leadInstructionsPresent = leadInstructionIndex >= 0;
   chatTrace(input, 'prompt_builder', {
     version: promptRegistry.chat.active.version,
     messages: prompt.messages.length,
     conversationSummaryChars: input.conversation?.summary?.length ?? 0,
     conversationMemories: input.conversation?.memories.length ?? 0,
     systemChars: prompt.system.length,
+    leadInstructionsPresent,
+    leadInstructionIndex,
+    charsAfterLeadInstructions: leadInstructionsPresent ? prompt.system.length - leadInstructionIndex : 0,
+    promptTruncatedBeforeSend: false,
+    truncationNote: 'No application-level truncation is applied after prompt construction in this route.',
   });
   chatTrace(input, 'system prompt', prompt.system);
   chatTrace(input, 'final prompt sent to Gemini', {
@@ -293,3 +301,5 @@ export async function streamChatReply(input: ChatStreamInput): Promise<AsyncIter
 
   return withGroundedProviderFallback(input, stream, context, query);
 }
+
+

@@ -11,7 +11,7 @@ import type { VisitorBehaviour } from '../types.js';
 import type { ResolvedContext } from '../context/types.js';
 import type { PreGateResult } from '../rules/rulesEngine.js';
 import { engageJsonSchema, MAX_MESSAGE_LENGTH } from '../validation/engageSchema.js';
-import { renderInstructions, renderKnowledge, renderSiteLinks } from './shared.js';
+import { renderBusinessActions, renderInstructions, renderKnowledge } from './shared.js';
 
 export interface BuiltEngagePrompt {
   system: string;
@@ -39,7 +39,7 @@ export const engagePromptBuilder = {
       renderInstructions(context.instructions),
       '',
       renderKnowledge(context.chunks),
-      renderSiteLinks(context.siteLinks),
+      renderBusinessActions(context.businessActions),
       '',
       'YOUR TASK: Decide whether NOW is the right moment to proactively open a popup for this visitor.',
       'If yes, write ONE short popup message that LEADS WITH VALUE — a specific, relevant fact or a direct',
@@ -51,16 +51,15 @@ export const engagePromptBuilder = {
       '- Ground every claim ONLY in the BUSINESS KNOWLEDGE above. NEVER invent prices, features, numbers, or guarantees.',
       '- If the knowledge above does not contain something concretely useful for this visitor, prefer showPopup=false.',
       `- message: one or two sentences, under ${MAX_MESSAGE_LENGTH} characters, conversational and specific.`,
-      '',
-      'CHOOSING THE BUTTON (be deliberate):',
-      '- Most popups should simply invite a chat. A navigation button is the EXCEPTION, not the default — use it sparingly.',
-      '- Only set ctaUrl when sending the visitor to a DIFFERENT, more relevant page is clearly the best next step.',
-      "- NEVER set ctaUrl to the page the visitor is already on (compare against 'page' below). If the most relevant page",
-      '  IS their current page, leave ctaUrl EMPTY and use a discussion label like "Discuss pricing" so the button opens chat.',
-      '- cta: a short button label under 40 chars. If navigating, name the destination ("Book a demo"). If opening chat, invite discussion.',
-      '- ctaUrl: empty, OR an EXACT copy of one entry from "Site links" above. Never invent/modify a url, and never reuse the current page.',
+      '',      'CHOOSING THE ACTION (business-owned):',
+      '- If a configured action is the right next step, set primaryAction to its exact Action ID from Available Actions.',
+      '- Optionally set secondaryAction only when a second enabled Action ID is genuinely helpful.',
+      '- For conversion-oriented popups, choose an enabled primaryAction when one fits.',
+      '- Only informational popups may leave primaryAction and secondaryAction empty.',
+      '- NEVER invent action IDs. NEVER generate URLs, phone numbers, email addresses, WhatsApp numbers, or CTA labels.',
+      '- Labels and destinations come only from Business Actions configured during onboarding.',
       '- intent: a short snake_case label (e.g. pricing_interest, service_research, ready_to_book).',
-      '- confidence: your 0–1 certainty that engaging now genuinely helps this visitor.',
+      '- confidence: your 0-1 certainty that engaging now genuinely helps this visitor.',
       '- Respond ONLY as JSON matching the provided schema. No prose, no markdown.',
     ]
       .filter(Boolean)
@@ -81,9 +80,10 @@ export const engagePromptBuilder = {
       '',
       `Engagement signals detected by rules engine: ${rules.signals.join(', ') || 'none'} (score ${rules.score}).`,
       '',
-      'Write the value-first decision as JSON.',
+      'Write the value-first decision as JSON.'
     ].join('\n');
 
     return { system, user, schema: engageJsonSchema };
   },
 };
+

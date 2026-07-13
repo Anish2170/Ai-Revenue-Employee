@@ -6,7 +6,9 @@
  */
 import { prisma } from '../db/prisma.js';
 import { hasDatabase } from '../config/index.js';
+import { getEnabledBusinessActions } from '../business-actions/action.service.js';
 import type { BusinessInstructions } from '../context/types.js';
+import type { BusinessActionConfig } from '../business-actions/action.types.js';
 
 export interface TenantContext {
   organizationId: string;
@@ -14,6 +16,7 @@ export interface TenantContext {
   siteId: string;
   websiteUrl: string;
   instructions: BusinessInstructions;
+  businessActions: BusinessActionConfig[];
 }
 
 interface CachedTenant {
@@ -78,12 +81,21 @@ export async function resolveTenant(siteId: string): Promise<TenantContext> {
   const ws = widget.website;
   const instr = ws.instruction;
 
+  const businessActions = await getEnabledBusinessActions(ws.id);
+
   const instructions: BusinessInstructions = {
     businessName: instr?.businessName ?? ws.name,
+    companyDescription: instr?.companyDescription ?? ws.description ?? undefined,
+    role: instr?.role ?? undefined,
     tone: instr?.tone ?? 'Professional, helpful, and concise.',
+    goal: instr?.goal ?? undefined,
+    context: instr?.context ?? undefined,
+    rules: instr?.rules ?? undefined,
+    fallbackMessage: instr?.fallbackMessage ?? undefined,
     alwaysBookDemo: instr?.alwaysBookDemo ?? false,
     avoidDiscounts: instr?.avoidDiscounts ?? false,
     language: instr?.language ?? ws.primaryLanguage ?? 'English',
+    websiteUrl: instr?.websiteUrl ?? ws.url,
   };
 
   const tenant: TenantContext = {
@@ -92,6 +104,7 @@ export async function resolveTenant(siteId: string): Promise<TenantContext> {
     siteId: widget.siteId,
     websiteUrl: ws.url,
     instructions,
+    businessActions,
   };
 
   cache.set(siteId, { tenant, expiresAt: Date.now() + CACHE_TTL_MS });
@@ -111,5 +124,13 @@ export function invalidateTenantCache(siteId?: string): void {
     cache.delete(siteId);
   } else {
     cache.clear();
+  }
+}
+
+
+/** Invalidate any cached tenant context for a website after business-owned config changes. */
+export function invalidateTenantCacheForWebsite(websiteId: string): void {
+  for (const [siteId, cached] of cache.entries()) {
+    if (cached.tenant.websiteId === websiteId) cache.delete(siteId);
   }
 }

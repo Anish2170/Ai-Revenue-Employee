@@ -6,6 +6,7 @@ import { validatePopupResponse } from '../responseValidation.js';
 import { perceive } from '../perceive.js';
 import { buildConversationStrategy, type ConversationStrategy } from '../conversationStrategy.js';
 import { SCENARIOS } from './fixtures.js';
+import type { BusinessActionConfig } from '../../business-actions/action.types.js';
 import type { BusinessInstructions } from '../../context/types.js';
 import type { StrategyKnowledgeResult } from '../knowledgeRetrieval.js';
 import type { PopupLlmResult } from '../popupLlmAdapter.js';
@@ -17,6 +18,12 @@ const instructions: BusinessInstructions = {
   avoidDiscounts: true,
   language: 'English',
 };
+
+const enabledActions: BusinessActionConfig[] = [
+  { actionId: 'pricing', label: 'View Pricing', destinationType: 'URL', destination: 'https://creovix.test/pricing', enabled: true },
+  { actionId: 'book_demo', label: 'Book Demo', destinationType: 'URL', destination: 'https://creovix.test/demo', enabled: true },
+  { actionId: 'schedule_site_visit', label: 'Schedule Site Visit', destinationType: 'URL', destination: 'https://creovix.test/site-visit', enabled: true },
+];
 
 function fixture(name = 'price-wall') {
   const scenario = SCENARIOS.find((s) => s.name === name);
@@ -63,21 +70,100 @@ function validRaw(overrides: Record<string, unknown> = {}) {
   return {
     title: 'Pricing that fits your workflow',
     body: 'Creovix uses custom pricing based on workflow scope and integrations.',
-    cta: 'Discuss pricing',
     tone: 'reassuring',
     popupType: 'pricing',
     ...overrides,
   };
 }
 
-test('responseValidation: approves grounded popup language matching the strategy', () => {
+test('responseValidation: applies enabled fallback action when LLM omits a required action', () => {
   const { strategy } = fixture();
-  const result = validatePopupResponse({ llm: llm(validRaw()), strategy, knowledge: knowledge(), instructions });
+  const result = validatePopupResponse({ llm: llm(validRaw()), strategy, knowledge: knowledge(), instructions, enabledActions });
 
   assert.equal(result.ok, true);
   assert.equal(result.popup.title, 'Pricing that fits your workflow');
-  assert.equal(result.popup.cta, 'Discuss pricing');
+  assert.equal(result.popup.primaryAction, 'pricing');
+  assert.equal(result.actionDebug.expectedAction, true);
+  assert.equal(result.actionDebug.fallbackApplied, true);
+  assert.equal(result.actionDebug.fallbackUsed, 'pricing');
+  assert.equal(result.actionDebug.missingActionReason, 'LLM omitted action');
   assert.deepEqual(result.reasons, []);
+});
+
+test('responseValidation: rejects conversion popups when no valid business action exists', () => {
+  const { strategy } = fixture();
+  const result = validatePopupResponse({ llm: llm(validRaw()), strategy, knowledge: knowledge(), instructions, enabledActions: [] });
+
+  assert.equal(result.ok, false);
+  assert.ok(result.reasons.includes('missing_business_action'));
+  assert.equal(result.fallback.action, 'suppress_popup');
+  assert.equal(result.actionDebug.expectedAction, true);
+  assert.equal(result.actionDebug.fallbackApplied, false);
+  assert.equal(result.actionDebug.missingActionReason, 'LLM omitted action');
+});
+
+test('responseValidation: accepts only enabled configured action IDs', () => {
+  const { strategy } = fixture();
+  const result = validatePopupResponse({
+    llm: llm(validRaw({ primaryAction: 'pricing', secondaryAction: 'book_demo' })),
+    strategy,
+    knowledge: knowledge(),
+    instructions,
+    enabledActions,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.popup.primaryAction, 'pricing');
+  assert.equal(result.popup.secondaryAction, 'book_demo');
+});
+
+test('responseValidation: accepts custom action IDs when configured and enabled', () => {
+  const { strategy } = fixture();
+  const result = validatePopupResponse({
+    llm: llm(validRaw({ primaryAction: 'schedule_site_visit' })),
+    strategy,
+    knowledge: knowledge(),
+    instructions,
+    enabledActions,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.popup.primaryAction, 'schedule_site_visit');
+});
+
+test('responseValidation: rejects missing or disabled action IDs', () => {
+  const { strategy } = fixture();
+  const result = validatePopupResponse({
+    llm: llm(validRaw({ primaryAction: 'whatsapp' })),
+    strategy,
+    knowledge: knowledge(),
+    instructions,
+    enabledActions,
+  });
+
+  assert.equal(result.ok, false);
+  assert.ok(result.reasons.includes('cta_not_allowed'));
+});
+
+test('responseValidation: rejects AI-generated CTA labels and URLs', () => {
+  const { strategy } = fixture();
+  for (const forbidden of [
+    { cta: 'Book Demo' },
+    { ctaLabel: 'Book Demo' },
+    { ctaUrl: 'https://creovix.test/demo' },
+    { destination: 'https://creovix.test/demo' },
+  ]) {
+    const result = validatePopupResponse({
+      llm: llm(validRaw(forbidden)),
+      strategy,
+      knowledge: knowledge(),
+      instructions,
+      enabledActions,
+    });
+
+    assert.equal(result.ok, false, JSON.stringify(forbidden));
+    assert.ok(result.reasons.includes('schema_violation'));
+  }
 });
 
 test('responseValidation: fails closed when the LLM adapter failed', () => {
@@ -87,6 +173,7 @@ test('responseValidation: fails closed when the LLM adapter failed', () => {
     strategy,
     knowledge: knowledge(),
     instructions,
+    enabledActions,
   });
 
   assert.equal(result.ok, false);
@@ -101,6 +188,7 @@ test('responseValidation: rejects malformed or legacy decision-shaped responses'
     strategy,
     knowledge: knowledge(),
     instructions,
+    enabledActions,
   });
 
   assert.equal(result.ok, false);
@@ -114,25 +202,14 @@ test('responseValidation: rejects strategy and popup type drift', () => {
     strategy,
     knowledge: knowledge(),
     instructions,
+    enabledActions,
   });
 
   assert.equal(result.ok, false);
   assert.ok(result.reasons.includes('strategy_mismatch'));
 });
 
-test('responseValidation: rejects CTA that ignores the approved intent', () => {
-  const { strategy } = fixture();
-  const result = validatePopupResponse({
-    llm: llm(validRaw({ cta: 'Book demo' })),
-    strategy,
-    knowledge: knowledge(),
-    instructions,
-  });
-
-  assert.equal(result.ok, false);
-  assert.ok(result.reasons.includes('cta_not_allowed'));
-});
-test('responseValidation: accepts chat-style CTA language for lead capture', () => {
+test('responseValidation: accepts a lead strategy with a configured lead action', () => {
   const { strategy } = fixture();
   const leadStrategy: ConversationStrategy = {
     ...strategy,
@@ -145,68 +222,18 @@ test('responseValidation: accepts chat-style CTA language for lead capture', () 
     llm: llm({
       title: 'Want help choosing the next step?',
       body: 'Tell us what you are trying to improve and we can point you in the right direction.',
-      cta: 'Book a call',
+      primaryAction: 'book_demo',
       tone: 'helpful',
       popupType: 'lead',
     }),
     strategy: leadStrategy,
     knowledge: knowledge('Tell us what you are trying to improve and we can point you in the right direction.'),
     instructions,
+    enabledActions,
   });
 
   assert.equal(result.ok, true);
-  assert.equal(result.popup.cta, 'Book a call');
-});
-
-
-test('responseValidation: accepts common GenerateLead capture_lead CTA variants', () => {
-  const { strategy } = fixture();
-  const leadStrategy: ConversationStrategy = {
-    ...strategy,
-    kind: 'GenerateLead',
-    tone: 'direct',
-    ctaIntent: 'capture_lead',
-  };
-  const ctas = [
-    'Request a Consultation',
-    'Claim Gift Code',
-    'Get Gift Code',
-    'Join Now',
-    'Access Details',
-    'Unlock Details',
-    'Start Now',
-    'Get Started',
-    'Talk to an Expert',
-    'Connect With Us',
-    'Send a Message',
-    "I'm Interested",
-    'Yes, Help Me',
-    'Help Me Start',
-    'Check Eligibility',
-    'Find Out More',
-    'Show Me How',
-    'Begin Setup',
-    'Register Interest',
-    'Ask About This',
-  ];
-
-  for (const cta of ctas) {
-    const result = validatePopupResponse({
-      llm: llm({
-        title: 'Ready to take the next step?',
-        body: 'Share what you need and the team can guide you through the next step.',
-        cta,
-        tone: 'direct',
-        popupType: 'lead',
-      }),
-      strategy: leadStrategy,
-      knowledge: knowledge('Share what you need and the team can guide you through the next step.'),
-      instructions,
-    });
-
-    assert.equal(result.ok, true, `${cta} should be accepted as capture_lead`);
-    assert.equal(result.popup.cta, cta);
-  }
+  assert.equal(result.popup.primaryAction, 'book_demo');
 });
 
 test('responseValidation: rejects invented pricing amounts', () => {
@@ -216,6 +243,7 @@ test('responseValidation: rejects invented pricing amounts', () => {
     strategy,
     knowledge: knowledge('Creovix offers custom pricing based on workflow scope and integrations.'),
     instructions,
+    enabledActions,
   });
 
   assert.equal(result.ok, false);
@@ -229,6 +257,7 @@ test('responseValidation: rejects invented guarantees', () => {
     strategy,
     knowledge: knowledge('Creovix offers custom pricing based on workflow scope and integrations.'),
     instructions,
+    enabledActions,
   });
 
   assert.equal(result.ok, false);
@@ -242,6 +271,7 @@ test('responseValidation: rejects claims not present in knowledge', () => {
     strategy,
     knowledge: knowledge('Creovix supports workflow automation for sales teams.'),
     instructions,
+    enabledActions,
   });
 
   assert.equal(result.ok, false);
@@ -255,11 +285,13 @@ test('responseValidation: rejects invented feature or integration claims', () =>
     strategy,
     knowledge: knowledge('Creovix offers custom pricing based on workflow scope and integrations.'),
     instructions,
+    enabledActions,
   });
 
   assert.equal(result.ok, false);
   assert.ok(result.reasons.includes('unsupported_claim'));
 });
+
 test('responseValidation: rejects discount language when business policy forbids it', () => {
   const { strategy } = fixture();
   const result = validatePopupResponse({
@@ -267,13 +299,14 @@ test('responseValidation: rejects discount language when business policy forbids
     strategy,
     knowledge: knowledge('Creovix offers custom pricing based on workflow scope and integrations.'),
     instructions,
+    enabledActions,
   });
 
   assert.equal(result.ok, false);
   assert.ok(result.reasons.includes('business_policy'));
 });
 
-test('responseValidation: support strategy only accepts support-style CTA and popup type', () => {
+test('responseValidation: support strategy can choose only a configured support action', () => {
   const { strategy } = fixture('nervous-first-timer');
   const supportStrategy: ConversationStrategy = {
     ...strategy,
@@ -286,15 +319,22 @@ test('responseValidation: support strategy only accepts support-style CTA and po
     llm: llm({
       title: 'Need a hand?',
       body: 'Our team can help answer questions about the next step.',
-      cta: 'Get help',
+      primaryAction: 'contact_support',
       tone: 'supportive',
       popupType: 'support',
     }),
     strategy: supportStrategy,
     knowledge: knowledge('Our team can help answer questions about the next step.'),
     instructions,
+    enabledActions: [
+      ...enabledActions,
+      { actionId: 'contact_support', label: 'Contact Support', destinationType: 'EMAIL', destination: 'support@creovix.test', enabled: true },
+    ],
   });
 
   assert.equal(result.ok, true);
   assert.equal(result.popup.popupType, 'support');
+  assert.equal(result.popup.primaryAction, 'contact_support');
 });
+
+

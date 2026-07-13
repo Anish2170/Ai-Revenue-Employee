@@ -21,6 +21,8 @@ export interface LoadedMeta {
   sourceUrl: string;
   siteLinks: SiteLink[];
   pages: Array<{ url: string; path: string; pageType: PageType; contentHash: string; lastCrawled: string }>;
+  debugPages?: KnowledgeSnapshot['debugPages'];
+  actionGraph?: KnowledgeSnapshot['actionGraph'];
   createdAt: string;
   embeddingModel: string;
 }
@@ -82,6 +84,8 @@ export async function persistSnapshot(meta: Omit<LoadedMeta, 'createdAt' | 'embe
     sourceUrl: meta.sourceUrl,
     siteLinks: meta.siteLinks,
     pages: meta.pages,
+    debugPages: meta.debugPages,
+    actionGraph: meta.actionGraph,
     documents,
   };
   const path = await saveSnapshot(snapshot);
@@ -101,3 +105,4 @@ function incompatibleReason(snap: KnowledgeSnapshot): string | null {
   }
   return null;
 }
+

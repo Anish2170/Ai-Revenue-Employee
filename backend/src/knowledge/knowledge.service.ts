@@ -8,6 +8,7 @@ import { ingest } from '../services/ingestService.js';
 import { writeAuditLog } from '../audit/audit.service.js';
 import { enqueueAnalyticsEvent } from '../analytics/analytics.service.js';
 import type { IngestPhase } from '../services/ingestService.js';
+import { reconcileActionUrlOverridesAfterBuild } from '../business-actions/action.service.js';
 
 export type BuildPhaseEvent = {
   phase: IngestPhase;
@@ -65,7 +66,9 @@ export async function startBuild(
 
   const notify = () => { state.resolve?.(); state.resolve = null; };
 
+  let lastPhase: IngestPhase = 'crawling';
   const onPhase = (phase: IngestPhase, detail?: Record<string, unknown>) => {
+    lastPhase = phase;
     events.push({ phase, detail });
     prisma.knowledgeBuild.update({
       where: { id: build.id },
@@ -98,6 +101,8 @@ export async function startBuild(
           storageKey: result.snapshotPath,
         },
       });
+
+      await reconcileActionUrlOverridesAfterBuild(organizationId, websiteId);
 
       await prisma.knowledgeBuild.update({
         where: { id: build.id },
@@ -142,7 +147,7 @@ export async function startBuild(
         sourceUrl,
         reason: message,
       });
-      events.push({ phase: 'crawling', detail: { error: message } });
+      events.push({ phase: lastPhase, detail: { error: message } });
     } finally {
       state.done = true;
       notify();
@@ -207,3 +212,4 @@ export async function listBuilds(websiteId: string, limit = 10) {
     },
   });
 }
+

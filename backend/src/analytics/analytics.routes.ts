@@ -32,6 +32,7 @@ const analyticsEventSchema = z.object({
   numericValue: z.number().optional().nullable(),
   reason: z.string().max(160).optional().nullable(),
   label: z.string().max(240).optional().nullable(),
+  actionId: z.string().max(80).optional().nullable(),
 });
 
 const analyticsIngestSchema = z.object({
@@ -155,6 +156,12 @@ analyticsRouter.get('/api/analytics/decision-log', requireAuth, async (req, res,
         generatedPopupTitle: true,
         ctaType: true,
         ctaText: true,
+        ctaActionId: true,
+        expectedAction: true,
+        primaryActionReturned: true,
+        fallbackApplied: true,
+        fallbackUsed: true,
+        missingActionReason: true,
         llmUsed: true,
         validationPassed: true,
         finalOutcome: true,
@@ -182,7 +189,7 @@ analyticsRouter.get('/api/analytics/summary', requireAuth, async (req, res, next
       ...(websiteId ? { websiteId } : {}),
     };
 
-    const [visitors, conversations, popupDisplayed, popupClicked, chatOpened, messages, aiResponses, endedSessions] = await Promise.all([
+    const [visitors, conversations, popupDisplayed, popupClicked, chatOpened, messages, aiResponses, endedSessions, decisionStats, persistedConversations, messageRows] = await Promise.all([
       prisma.analyticsEvent.findMany({
         where: { ...base, visitorId: { not: null }, eventName: { in: ['visitor_started', 'session_started', 'page_viewed'] } },
         distinct: ['visitorId'],
@@ -202,7 +209,50 @@ analyticsRouter.get('/api/analytics/summary', requireAuth, async (req, res, next
         where: { organizationId: req.auth!.organizationId, startedAt: { gte: startOfToday() }, ...(websiteId ? { websiteId } : {}), endedAt: { not: null } },
         select: { engaged: true },
       }),
+      prisma.aiDecisionLog.findMany({
+        where: { organizationId: req.auth!.organizationId, occurredAt: { gte: startOfToday() }, ...(websiteId ? { websiteId } : {}) },
+        select: { visitorId: true, sessionId: true, popupDisplayed: true, popupClicked: true, chatOpened: true },
+        take: 5000,
+      }),
+      prisma.conversation.findMany({
+        where: { organizationId: req.auth!.organizationId, startedAt: { gte: startOfToday() }, ...(websiteId ? { websiteId } : {}), deletedAt: null },
+        select: { id: true, visitorId: true, sessionId: true },
+        take: 5000,
+      }),
+      prisma.conversationMessage.findMany({
+        where: {
+          timestamp: { gte: startOfToday() },
+          conversation: { organizationId: req.auth!.organizationId, ...(websiteId ? { websiteId } : {}), deletedAt: null },
+        },
+        select: { role: true, conversationId: true },
+        take: 10000,
+      }),
     ]);
+
+    const visitorIds = new Set(visitors.map((row) => row.visitorId).filter(Boolean));
+    const conversationSessions = new Set(conversations.map((row) => row.sessionId).filter(Boolean));
+    let decisionPopupDisplayed = 0;
+    let decisionPopupClicked = 0;
+    let decisionChatOpened = 0;
+    for (const row of decisionStats) {
+      if (row.visitorId) visitorIds.add(row.visitorId);
+      if (row.sessionId && row.chatOpened) conversationSessions.add(row.sessionId);
+      if (row.popupDisplayed) decisionPopupDisplayed += 1;
+      if (row.popupClicked) decisionPopupClicked += 1;
+      if (row.chatOpened) decisionChatOpened += 1;
+    }
+    for (const row of persistedConversations) {
+      if (row.visitorId) visitorIds.add(row.visitorId);
+      conversationSessions.add(row.sessionId ?? row.id);
+    }
+    const persistedMessages = messageRows.filter((row) => row.role === 'USER').length;
+    const persistedAiResponses = messageRows.filter((row) => row.role === 'ASSISTANT').length;
+
+    const totalPopupDisplayed = Math.max(popupDisplayed, decisionPopupDisplayed);
+    const totalPopupClicked = Math.max(popupClicked, decisionPopupClicked);
+    const totalChatOpened = Math.max(chatOpened, decisionChatOpened, persistedConversations.length);
+    const totalMessages = Math.max(messages, persistedMessages);
+    const totalAiResponses = Math.max(aiResponses, persistedAiResponses);
 
     const [topPages, topPopupTypes, deviceBreakdown, websitePerformance] = await Promise.all([
       getTopPages(req.auth!.organizationId, websiteId),
@@ -213,14 +263,14 @@ analyticsRouter.get('/api/analytics/summary', requireAuth, async (req, res, next
 
     res.json({
       today: {
-        visitors: visitors.length,
-        conversations: conversations.length,
-        popupCtr: popupDisplayed === 0 ? 0 : popupClicked / popupDisplayed,
-        popupDisplayed,
-        popupClicked,
-        chatOpens: chatOpened,
-        messages,
-        aiResponses,
+        visitors: visitorIds.size,
+        conversations: Math.max(conversationSessions.size, persistedConversations.length),
+        popupCtr: totalPopupDisplayed === 0 ? 0 : totalPopupClicked / totalPopupDisplayed,
+        popupDisplayed: totalPopupDisplayed,
+        popupClicked: totalPopupClicked,
+        chatOpens: totalChatOpened,
+        messages: totalMessages,
+        aiResponses: totalAiResponses,
         conversationsEndedWithoutEngagement: endedSessions.filter((s) => !s.engaged).length,
       },
       topPages,
@@ -391,3 +441,5 @@ function dayKey(date: Date): string {
   const d = String(date.getDate()).padStart(2, '0');
   return `${y}-${m}-${d}`;
 }
+
+

@@ -26,9 +26,10 @@ import type {
   VisitorBehaviour,
 } from '../types.js';
 import type { BusinessInstructions } from '../context/types.js';
+import type { BusinessActionConfig } from '../business-actions/action.types.js';
 
 export interface EngageOptions {
-  tenant?: { websiteId: string; instructions: BusinessInstructions };
+  tenant?: { websiteId: string; instructions: BusinessInstructions; businessActions?: BusinessActionConfig[] };
 }
 
 function withTrace(decision: EngageDecision, trace: DecisionTrace): EngageDecision {
@@ -76,7 +77,7 @@ export async function evaluateEngagement(
 
     // 5. Validate + sanitize (CTA url allowlisted; never navigate to current page).
     const allowedUrls = (context.siteLinks ?? []).map((l) => l.url);
-    const validated = validateEngageDecision(raw, allowedUrls, behaviour.page);
+    const validated = validateEngageDecision(raw, allowedUrls, behaviour.page, context.businessActions);
 
     // 6. Post-LLM gate — confidence floor + dedup.
     const final = finalizeDecision(validated, session);

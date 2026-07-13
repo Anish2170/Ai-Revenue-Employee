@@ -21,8 +21,10 @@ import { sessionStore } from '../intelligence/session/visitorSession.js';
 import { resolveTenant, TenantNotFoundError, TenantDisabledError } from '../tenant/tenant.resolver.js';
 import { enqueueAnalyticsEvent } from '../analytics/analytics.service.js';
 import { enqueueAiDecisionLog } from '../analytics/decision-log.service.js';
+import { findBusinessAction } from '../business-actions/action.service.js';
 import { cooldownRemainingMs, popupTrace } from '../intelligence/popupTrace.js';
 import type { BusinessInstructions } from '../context/types.js';
+import type { BusinessActionConfig } from '../business-actions/action.types.js';
 import type { GeneratedPopup } from '../intelligence/popupGeneration.js';
 import type { SalesDecision } from '../intelligence/types.js';
 import type { SafePopupPipelineResult } from '../intelligence/popupPipeline.js';
@@ -93,6 +95,10 @@ function validationPassed(pipeline?: SafePopupPipelineResult): boolean {
   return Boolean(pipeline?.trace.responseValidation?.ok);
 }
 
+function actionDebug(pipeline?: SafePopupPipelineResult) {
+  return pipeline?.trace.responseValidation?.actionDebug;
+}
+
 function llmUsed(pipeline?: SafePopupPipelineResult): boolean {
   return Boolean(pipeline?.trace.stages.includes('llm'));
 }
@@ -116,6 +122,7 @@ function enqueuePopupDecisionLog(
   const behaviour = formatBehaviour(decision);
   const intent = formatIntent(decision);
   const rejectedPopup = detail.pipeline?.trace.responseValidation?.ok === false ? detail.pipeline.trace.responseValidation.rejectedPopup : null;
+  const action = actionDebug(detail.pipeline);
   enqueueAiDecisionLog(tenant, {
     ...context,
     occurredAt: new Date(),
@@ -136,17 +143,28 @@ function enqueuePopupDecisionLog(
     generatedPopupType: detail.popup?.popupType ?? rejectedPopup?.popupType ?? null,
     generatedPopupTitle: detail.popup?.title ?? rejectedPopup?.title ?? null,
     ctaType: detail.popup ? ctaIntent(detail.pipeline) : ctaIntent(detail.pipeline),
-    ctaText: detail.popup?.cta ?? rejectedPopup?.cta ?? null,
+    ctaText: detail.popup?.action?.label ?? null,
+    ctaActionId: detail.popup?.primaryAction ?? rejectedPopup?.primaryAction ?? null,
+    expectedAction: action?.expectedAction ?? false,
+    primaryActionReturned: action?.primaryActionReturned ?? null,
+    fallbackApplied: action?.fallbackApplied ?? false,
+    fallbackUsed: action?.fallbackUsed ?? null,
+    missingActionReason: action?.missingActionReason ?? null,
     llmUsed: llmUsed(detail.pipeline),
     validationPassed: validationPassed(detail.pipeline),
     finalOutcome: detail.finalOutcome,
   });
 }
-function publicPopup(popup: GeneratedPopup) {
+function publicPopup(popup: GeneratedPopup, actions: BusinessActionConfig[]) {
+  const action = findBusinessAction(actions, popup.primaryAction);
+  const secondaryAction = findBusinessAction(actions, popup.secondaryAction);
   return {
     title: popup.title,
     body: popup.body,
-    cta: popup.cta,
+    primaryAction: popup.primaryAction,
+    secondaryAction: popup.secondaryAction,
+    action: action ?? undefined,
+    secondaryActionConfig: secondaryAction ?? undefined,
     tone: popup.tone,
     popupType: popup.popupType,
   };
@@ -167,6 +185,7 @@ eventsRouter.post('/events', async (req, res) => {
     let websiteId: string | undefined;
     let organizationId: string | undefined;
     let instructions: BusinessInstructions | undefined;
+    let businessActions: BusinessActionConfig[] = [];
 
     if (body.siteId && hasDatabase) {
       try {
@@ -175,6 +194,7 @@ eventsRouter.post('/events', async (req, res) => {
         websiteId = t.websiteId;
         organizationId = t.organizationId;
         instructions = t.instructions;
+        businessActions = t.businessActions;
       } catch (err) {
         // Unknown/disabled tenant -> ack and drop (never leak, never 500).
         if (err instanceof TenantNotFoundError || err instanceof TenantDisabledError) {
@@ -273,11 +293,12 @@ eventsRouter.post('/events', async (req, res) => {
             business: { name: pipelineInstructions.businessName },
             instructions: pipelineInstructions,
             websiteId,
+            businessActions,
           });
 
           if (sprint42.ok && sprint42.popup.ok) {
             sessionStore.recordInterruption(body.sessionId, result.decisionTs ?? 0);
-            popupArtifact = publicPopup(sprint42.popup.popup);
+            popupArtifact = publicPopup(sprint42.popup.popup, businessActions);
             popupTrace(body.sessionId, '8_popup_generation', {
               passed: true,
               popupGenerated: true,
@@ -291,6 +312,7 @@ eventsRouter.post('/events', async (req, res) => {
               eventName: 'popup_generated',
               popupType: popupArtifact.popupType,
               label: popupArtifact.tone,
+              actionId: popupArtifact.primaryAction,
             });
             enqueuePopupDecisionLog(analyticsTenant, analyticsContext, result.shadowDecision, {
               decision: 'Popup Generated',
@@ -373,3 +395,4 @@ eventsRouter.post('/events', async (req, res) => {
     return res.json(ignoredResponse(['ingest_error']));
   }
 });
+

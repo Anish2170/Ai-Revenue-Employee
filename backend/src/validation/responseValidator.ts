@@ -10,6 +10,8 @@
  * and angle brackets here as defense-in-depth.
  */
 import type { EngageDecision } from '../types.js';
+import { findBusinessAction } from '../business-actions/action.service.js';
+import type { BusinessActionConfig } from '../business-actions/action.types.js';
 import {
   MAX_CTA_LENGTH,
   MAX_MESSAGE_LENGTH,
@@ -26,6 +28,12 @@ function sanitizeText(input: string): string {
     .replace(/[<>]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function sanitizeActionId(input: string | undefined): string | null {
+  if (!input) return null;
+  const clean = sanitizeText(input).slice(0, 80);
+  return /^[a-z][a-z0-9_]{1,63}$/.test(clean) ? clean : null;
 }
 
 function clamp01(n: number): number {
@@ -81,6 +89,7 @@ export function validateEngageDecision(
   raw: unknown,
   allowedUrls: string[] = [],
   currentPath = '',
+  enabledActions: BusinessActionConfig[] = [],
 ): EngageDecision {
   const parsed = engageDecisionZod.safeParse(raw);
   if (!parsed.success) return SAFE_FALLBACK;
@@ -90,10 +99,14 @@ export function validateEngageDecision(
   if (!d.showPopup) return { showPopup: false };
 
   const message = sanitizeText(d.message ?? '').slice(0, MAX_MESSAGE_LENGTH);
-  const cta = sanitizeText(d.cta ?? '').slice(0, MAX_CTA_LENGTH);
+  const legacyCta = sanitizeText(d.cta ?? '').slice(0, MAX_CTA_LENGTH);
+  const primaryActionId = sanitizeActionId(d.primaryAction);
+  const secondaryActionId = sanitizeActionId(d.secondaryAction);
+  const primaryAction = findBusinessAction(enabledActions, primaryActionId);
+  const secondaryAction = findBusinessAction(enabledActions, secondaryActionId);
 
   // A "show" decision is only meaningful with real copy to render.
-  if (message.length === 0 || cta.length === 0) return SAFE_FALLBACK;
+  if (message.length === 0) return SAFE_FALLBACK;
 
   const ctaUrl = resolveCtaUrl(d.ctaUrl, allowedUrls, currentPath);
 
@@ -102,7 +115,9 @@ export function validateEngageDecision(
     intent: d.intent ? sanitizeText(d.intent).slice(0, 60) : 'engagement',
     confidence: clamp01(d.confidence ?? 0),
     message,
-    cta,
-    ...(ctaUrl ? { ctaUrl } : {}),
+    ...(primaryAction ? { primaryAction: primaryAction.actionId, action: primaryAction, cta: primaryAction.label } : {}),
+    ...(secondaryAction ? { secondaryAction: secondaryAction.actionId } : {}),
+    ...(!primaryAction && legacyCta ? { cta: legacyCta } : {}),
+    ...(!primaryAction && ctaUrl ? { ctaUrl } : {}),
   };
 }

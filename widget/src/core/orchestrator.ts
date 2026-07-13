@@ -5,7 +5,7 @@
  * tracker-driven /engage popup automation disabled by default. The persistent
  * launcher is mounted independently so the widget shell still appears.
  */
-import type { WidgetConfig, EngageDecision, EventsClientState, PopupArtifact, VisitorBehaviour } from '../types.js';
+import type { WidgetConfig, BusinessActionConfig, EngageDecision, EventsClientState, PopupArtifact, VisitorBehaviour } from '../types.js';
 import { ApiClient } from '../api/client.js';
 import { SessionManager } from '../session/state.js';
 import { Tracker, type MilestoneEvent } from '../tracker/state.js';
@@ -183,6 +183,10 @@ export class Orchestrator {
       body: artifact.body,
       message: artifact.body,
       cta: artifact.cta,
+      primaryAction: artifact.primaryAction,
+      secondaryAction: artifact.secondaryAction,
+      action: artifact.action,
+      secondaryActionConfig: artifact.secondaryActionConfig,
       popupType: artifact.popupType,
       tone: artifact.tone,
     };
@@ -235,19 +239,22 @@ export class Orchestrator {
       popupType: decision.popupType ?? null,
       tone: decision.tone ?? null,
     });
-    this.analytics?.track('POPUP', 'popup_displayed', { popupType: decision.popupType, label: decision.tone, flush: true });
+    this.analytics?.track('POPUP', 'popup_displayed', { popupType: decision.popupType, label: decision.tone, actionId: decision.primaryAction ?? decision.action?.actionId, flush: true });
     this.log('[popup-trace] stage=10_widget_rendering', { passed: true, popupGenerated: true, popupType: decision.popupType, title: decision.title });
     this.popup = renderPopup(root.layer, decision, {
-      onCta: () => {
+      onCta: (clickedAction) => {
+        const actionId = clickedAction?.actionId ?? decision.action?.actionId ?? decision.primaryAction;
         this.log('popup_clicked', {
           popupType: decision.popupType ?? null,
           tone: decision.tone ?? null,
+          actionId: actionId ?? null,
         });
-        this.analytics?.track('POPUP', 'popup_clicked', { popupType: decision.popupType, label: decision.tone, flush: true });
+        this.analytics?.track('POPUP', 'popup_clicked', { popupType: decision.popupType, label: decision.tone, actionId, flush: true });
+        if (actionId) this.analytics?.track('POPUP', `${actionId}_clicked`, { popupType: decision.popupType, actionId, flush: true });
         this.popup = null;
-        // Link CTAs navigate only; chat CTAs open the active conversation with a natural transition.
+        if (clickedAction && this.executeBusinessAction(clickedAction, decision.title ?? clickedAction.label ?? decision.body ?? decision.message)) return;
         if (decision.ctaUrl && this.navigate(decision.ctaUrl)) return;
-        this.openChat(decision.title ?? decision.cta ?? decision.body ?? decision.message);
+        if (decision.cta) this.openChat(decision.title ?? decision.cta ?? decision.body ?? decision.message);
       },
       onDismiss: () => {
         this.log('popup_dismissed', {
@@ -281,6 +288,19 @@ export class Orchestrator {
     };
   }
 
+  private executeBusinessAction(action: BusinessActionConfig, opener?: string): boolean {
+    if (!action || !action.enabled) return false;
+    if (action.destinationType === 'CHAT') {
+      this.openChat(opener ?? action.label);
+      return true;
+    }
+    const destination = normalizeActionDestination(action.destinationType, action.destination);
+    if (!destination) {
+      this.log('missing business action destination', action.actionId);
+      return false;
+    }
+    return this.navigate(destination, action.destinationType);
+  }
   private dismissPopup(): void {
     this.popup?.remove();
     this.popup = null;
@@ -297,22 +317,22 @@ export class Orchestrator {
    * permits relative paths or http(s) - blocking javascript:/data: and similar.
    * @returns true if navigation was initiated.
    */
-  private navigate(url: string): boolean {
+  private navigate(url: string, destinationType: string = 'URL'): boolean {
     const isRelative = url.startsWith('/') && !url.startsWith('//');
     let safe = isRelative;
     if (!safe) {
       try {
         const proto = new URL(url, window.location.origin).protocol;
-        safe = proto === 'http:' || proto === 'https:';
+        safe = proto === 'http:' || proto === 'https:' || proto === 'tel:' || proto === 'mailto:';
       } catch {
         safe = false;
       }
     }
     if (!safe) {
-      this.log('blocked unsafe ctaUrl', url);
+      this.log('blocked unsafe action destination', url);
       return false;
     }
-    this.log('navigating to', url);
+    this.log('executing action destination', { destinationType, url });
     window.location.assign(url);
     return true;
   }
@@ -340,3 +360,11 @@ export class Orchestrator {
   }
 }
 
+
+function normalizeActionDestination(type: string, destination: string): string | null {
+  const value = destination.trim();
+  if (!value) return null;
+  if (type === 'PHONE') return value.startsWith('tel:') ? value : `tel:${value}`;
+  if (type === 'EMAIL') return value.startsWith('mailto:') ? value : `mailto:${value}`;
+  return value;
+}

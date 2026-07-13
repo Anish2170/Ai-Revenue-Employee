@@ -7,7 +7,7 @@
  */
 export const MAX_POPUP_TITLE_LENGTH = 80;
 export const MAX_POPUP_BODY_LENGTH = 320;
-export const MAX_POPUP_CTA_LENGTH = 40;
+export const MAX_POPUP_ACTION_ID_LENGTH = 64;
 
 export const POPUP_TYPES = ['educational', 'comparison', 'pricing', 'trust', 'booking', 'lead', 'support'] as const;
 export type PopupType = (typeof POPUP_TYPES)[number];
@@ -26,9 +26,13 @@ export const popupJsonSchema = {
       type: 'string',
       description: `One or two grounded sentences, maximum ${MAX_POPUP_BODY_LENGTH} characters.`,
     },
-    cta: {
+    primaryAction: {
       type: 'string',
-      description: `Short CTA label, maximum ${MAX_POPUP_CTA_LENGTH} characters.`,
+      description: 'Optional Action ID chosen only from Available Actions. Empty when no listed action fits.',
+    },
+    secondaryAction: {
+      type: 'string',
+      description: 'Optional secondary Action ID chosen only from Available Actions.',
     },
     tone: {
       type: 'string',
@@ -41,5 +45,5 @@ export const popupJsonSchema = {
       description: 'Popup category matching the approved conversation strategy.',
     },
   },
-  required: ['title', 'body', 'cta', 'tone', 'popupType'],
+  required: ['title', 'body', 'tone', 'popupType'],
 } as const;

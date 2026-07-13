@@ -2,30 +2,45 @@
  * Response Validation (Sprint 4.2 component 6).
  *
  * Validates raw popup language from the LLM adapter before any visitor-facing
- * rendering can exist. This layer does not generate a popup and does not decide
- * whether to interrupt; it only turns untrusted model output into either a
- * trusted language object or a fail-closed fallback.
+ * rendering can exist. Business action destinations are never accepted from the
+ * model; optional action IDs must match the enabled business configuration.
  */
+import type { BusinessActionConfig } from '../business-actions/action.types.js';
+import { findBusinessAction } from '../business-actions/action.service.js';
 import type { BusinessInstructions } from '../context/types.js';
 import {
+  MAX_POPUP_ACTION_ID_LENGTH,
   MAX_POPUP_BODY_LENGTH,
-  MAX_POPUP_CTA_LENGTH,
   MAX_POPUP_TITLE_LENGTH,
   POPUP_TONES,
   POPUP_TYPES,
   type PopupTone,
   type PopupType,
 } from '../validation/popupSchema.js';
-import type { ConversationStrategy, ConversationStrategyKind, StrategyCtaIntent } from './conversationStrategy.js';
+import type { ConversationStrategy, ConversationStrategyKind } from './conversationStrategy.js';
 import type { StrategyKnowledgeResult } from './knowledgeRetrieval.js';
 import type { PopupLlmResult } from './popupLlmAdapter.js';
 
 export interface ValidatedPopupLanguage {
   title: string;
   body: string;
-  cta: string;
+  primaryAction?: string;
+  secondaryAction?: string;
   tone: PopupTone;
   popupType: PopupType;
+}
+
+export type PopupMissingActionReason =
+  | 'Business action disabled'
+  | 'LLM omitted action'
+  | 'Unknown action id'
+
+export interface PopupActionValidationDebug {
+  expectedAction: boolean;
+  primaryActionReturned: string | null;
+  fallbackApplied: boolean;
+  fallbackUsed: string | null;
+  missingActionReason: PopupMissingActionReason | null;
 }
 
 export type PopupResponseRejectReason =
@@ -34,6 +49,7 @@ export type PopupResponseRejectReason =
   | 'schema_violation'
   | 'strategy_mismatch'
   | 'cta_not_allowed'
+  | 'missing_business_action'
   | 'business_policy'
   | 'invented_pricing'
   | 'invented_guarantee'
@@ -44,6 +60,7 @@ export interface PopupResponseValidationInput {
   strategy: ConversationStrategy;
   knowledge: StrategyKnowledgeResult;
   instructions: BusinessInstructions;
+  enabledActions?: BusinessActionConfig[];
 }
 
 export type PopupResponseValidationResult =
@@ -52,6 +69,7 @@ export type PopupResponseValidationResult =
       popup: ValidatedPopupLanguage;
       reasons: [];
       fallback: null;
+      actionDebug: PopupActionValidationDebug;
     }
   | {
       ok: false;
@@ -62,6 +80,7 @@ export type PopupResponseValidationResult =
         reason: string;
       };
       rejectedPopup: ValidatedPopupLanguage | null;
+      actionDebug: PopupActionValidationDebug;
     };
 
 const EXPECTED_POPUP_TYPE: Record<ConversationStrategyKind, PopupType> = {
@@ -75,121 +94,28 @@ const EXPECTED_POPUP_TYPE: Record<ConversationStrategyKind, PopupType> = {
   Support: 'support',
 };
 
-interface CtaValidationRule {
-  expected: string[];
-  patterns: RegExp[];
-}
-
-const CTA_RULES: Record<StrategyCtaIntent, CtaValidationRule> = {
-  learn_more: {
-    expected: ['learn', 'explore', 'see', 'details'],
-    patterns: [/\blearn\b/i, /\bexplore\b/i, /\bsee\b/i, /\bdetails?\b/i],
-  },
-  compare_options: {
-    expected: ['compare', 'options', 'plans'],
-    patterns: [/\bcompare\b/i, /\boptions?\b/i, /\bplans?\b/i],
-  },
-  discuss_pricing: {
-    expected: ['pricing', 'price', 'cost', 'plans', 'talk', 'discuss'],
-    patterns: [/\bpricing\b/i, /\bprice\b/i, /\bcost\b/i, /\bplans?\b/i, /\btalk\b/i, /\bdiscuss\b/i],
-  },
-  book_demo: {
-    expected: ['book', 'schedule', 'demo'],
-    patterns: [/\bbook\b/i, /\bschedule\b/i, /\bdemo\b/i],
-  },
-  book_appointment: {
-    expected: ['book', 'schedule', 'appointment', 'visit'],
-    patterns: [/\bbook\b/i, /\bschedule\b/i, /\bappointment\b/i, /\bvisit\b/i],
-  },
-  capture_lead: {
-    expected: [
-      'contact',
-      'get in touch',
-      'talk',
-      'chat',
-      'message',
-      'tell me',
-      'book',
-      'schedule',
-      'demo',
-      'call',
-      'consultation',
-      'consult',
-      'request',
-      'claim',
-      'get',
-      'join',
-      'sign up',
-      'register',
-      'access',
-      'unlock',
-      'try',
-      'begin',
-      'start',
-      'connect',
-      'speak',
-      'send',
-      'reach',
-      'enquire',
-      'inquire',
-      'ask',
-      'check',
-      'find',
-      'show',
-      'guide',
-      'help',
-      'interested',
-      'yes',
-      'continue',
-    ],
-    patterns: [
-      /\bcontact\b/i,
-      /\bget in touch\b/i,
-      /\btalk\b/i,
-      /\bchat\b/i,
-      /\bmessage\b/i,
-      /\btell me\b/i,
-      /\bbook\b/i,
-      /\bschedule\b/i,
-      /\bdemo\b/i,
-      /\bcall\b/i,
-      /\bconsult(?:ation)?\b/i,
-      /\brequest\b/i,
-      /\bclaim\b/i,
-      /\bget\b/i,
-      /\bjoin\b/i,
-      /\bsign\s*up\b/i,
-      /\bregister\b/i,
-      /\baccess\b/i,
-      /\bunlock\b/i,
-      /\btry\b/i,
-      /\bbegin\b/i,
-      /\bstart\b/i,
-      /\bconnect\b/i,
-      /\bspeak\b/i,
-      /\bsend\b/i,
-      /\breach\b/i,
-      /\benquire\b/i,
-      /\binquire\b/i,
-      /\bask\b/i,
-      /\bcheck\b/i,
-      /\bfind\b/i,
-      /\bshow\b/i,
-      /\bguide\b/i,
-      /\bhelp\b/i,
-      /\binterested\b/i,
-      /\byes\b/i,
-      /\bcontinue\b/i,
-    ],
-  },
-  offer_support: {
-    expected: ['help', 'support', 'question'],
-    patterns: [/\bhelp\b/i, /\bsupport\b/i, /\bquestion\b/i],
-  },
+const FALLBACK_ACTIONS_BY_TYPE: Partial<Record<PopupType, readonly string[]>> = {
+  comparison: ['pricing', 'learn_more'],
+  pricing: ['pricing'],
+  booking: ['book_demo', 'contact'],
+  lead: ['book_demo', 'contact'],
+  support: ['support'],
 };
 
+const CTA_INTENT_FALLBACKS: Partial<Record<ConversationStrategy['ctaIntent'], readonly string[]>> = {
+  compare_options: ['pricing', 'learn_more'],
+  discuss_pricing: ['pricing'],
+  capture_lead: ['book_demo', 'contact'],
+  book_demo: ['book_demo', 'contact'],
+  book_appointment: ['book_demo', 'contact'],
+  offer_support: ['support'],
+  learn_more: ['learn_more'],
+};
+
+const POPUP_TYPES_REQUIRING_ACTION = new Set<PopupType>(['comparison', 'pricing', 'booking', 'lead', 'support']);
+
 const DISCOUNT_PATTERN = /\b(discount|coupon|promo|promotion|special offer|limited[- ]time|deal|save\s+\d+|%\s*off|\d+\s*%\s*off)\b/i;
-const PRICE_AMOUNT_PATTERN = /(?:[$â‚¹â‚¬Â£]\s*\d+(?:[.,]\d+)?|\b\d+(?:[.,]\d+)?\s*(?:usd|inr|eur|gbp|dollars?|rupees?)\b|\b\d+(?:[.,]\d+)?\s*\/\s*(?:mo|month|year|yr)\b)/i;
+const PRICE_AMOUNT_PATTERN = /(?:[$?€£]\s*\d+(?:[.,]\d+)?|\b\d+(?:[.,]\d+)?\s*(?:usd|inr|eur|gbp|dollars?|rupees?)\b|\b\d+(?:[.,]\d+)?\s*\/\s*(?:mo|month|year|yr)\b)/i;
 const GUARANTEE_PATTERN = /\b(guarantee|guaranteed|money[- ]back|refund|risk[- ]free|no[- ]risk)\b/i;
 
 const CLAIM_PATTERNS: RegExp[] = [
@@ -215,28 +141,36 @@ const CLAIM_PATTERNS: RegExp[] = [
 const FEATURE_CLAIM_PATTERN =
   /\b(?:includes|offers|supports|provides|has|features|comes with)\s+([a-z0-9][a-z0-9 -]{1,90}?\b(?:integration|integrations|automation|automations|dashboard|dashboards|analytics|reporting|crm|api|apis|feature|features|tool|tools))\b/i;
 
-const REQUIRED_KEYS = ['title', 'body', 'cta', 'tone', 'popupType'] as const;
-const FORBIDDEN_KEYS = ['showPopup', 'confidence', 'rawEvents', 'events', 'debug', 'reasoning'] as const;
+const REQUIRED_KEYS = ['title', 'body', 'tone', 'popupType'] as const;
+const OPTIONAL_KEYS = ['primaryAction', 'secondaryAction'] as const;
+const FORBIDDEN_KEYS = ['cta', 'ctaLabel', 'ctaUrl', 'destination', 'showPopup', 'confidence', 'rawEvents', 'events', 'debug', 'reasoning'] as const;
 
 export function validatePopupResponse(input: PopupResponseValidationInput): PopupResponseValidationResult {
-  if (!input.llm.ok) return reject(['llm_failed']);
+  if (!input.llm.ok) return reject(['llm_failed'], null, defaultActionDebug(null, false));
 
   const parsed = parseRawPopup(input.llm.raw);
-  if (!parsed.ok) return reject(parsed.reasons);
+  if (!parsed.ok) return reject(parsed.reasons, null, defaultActionDebug(null, false));
 
   const popup = parsed.popup;
   const reasons: PopupResponseRejectReason[] = [];
+  const actionResolution = resolvePopupActions(popup, input.strategy, input.enabledActions ?? []);
+  const validatedPopup = actionResolution.popup;
 
   if (popup.tone !== input.strategy.tone || popup.popupType !== EXPECTED_POPUP_TYPE[input.strategy.kind]) {
     reasons.push('strategy_mismatch');
   }
 
-  if (!ctaMatchesIntent(popup.cta, input.strategy.ctaIntent)) {
+  if (actionResolution.invalidAction) {
     reasons.push('cta_not_allowed');
-    logCtaValidationFailure(popup, input.strategy);
+    logActionValidationFailure(popup, input.enabledActions ?? [], actionResolution.actionDebug);
   }
 
-  const combined = `${popup.title} ${popup.body} ${popup.cta}`;
+  if (!actionResolution.ok) {
+    reasons.push('missing_business_action');
+    logMissingActionFailure(popup, input.enabledActions ?? [], actionResolution.actionDebug);
+  }
+
+  const combined = `${popup.title} ${popup.body}`;
   const knowledgeText = input.knowledge.chunks.map((chunk) => chunk.content).join(' ');
 
   if (input.instructions.avoidDiscounts && DISCOUNT_PATTERN.test(combined)) {
@@ -259,7 +193,105 @@ export function validatePopupResponse(input: PopupResponseValidationInput): Popu
     reasons.push('unsupported_claim');
   }
 
-  return reasons.length > 0 ? reject(unique(reasons), popup) : { ok: true, popup, reasons: [], fallback: null };
+  return reasons.length > 0
+    ? reject(unique(reasons), popup, actionResolution.actionDebug)
+    : { ok: true, popup: validatedPopup, reasons: [], fallback: null, actionDebug: actionResolution.actionDebug };
+}
+
+function resolvePopupActions(
+  popup: ValidatedPopupLanguage,
+  strategy: ConversationStrategy,
+  enabledActions: BusinessActionConfig[],
+): { ok: boolean; popup: ValidatedPopupLanguage; invalidAction: boolean; actionDebug: PopupActionValidationDebug } {
+  const expectedAction = POPUP_TYPES_REQUIRING_ACTION.has(popup.popupType);
+  const primaryActionReturned = popup.primaryAction ?? null;
+  const primary = findBusinessAction(enabledActions, popup.primaryAction);
+  const secondary = findBusinessAction(enabledActions, popup.secondaryAction);
+  const invalidAction = Boolean((popup.primaryAction && !primary) || (popup.secondaryAction && !secondary));
+
+  if (primary) {
+    return {
+      ok: true,
+      popup: {
+        ...popup,
+        primaryAction: primary.actionId,
+        ...(secondary ? { secondaryAction: secondary.actionId } : {}),
+      },
+      invalidAction,
+      actionDebug: {
+        expectedAction,
+        primaryActionReturned,
+        fallbackApplied: false,
+        fallbackUsed: null,
+        missingActionReason: null,
+      },
+    };
+  }
+
+  const fallback = expectedAction ? findFallbackAction(enabledActions, popup.popupType, strategy.ctaIntent) : null;
+  if (fallback) {
+    return {
+      ok: true,
+      popup: { ...popup, primaryAction: fallback.actionId, ...(secondary ? { secondaryAction: secondary.actionId } : {}) },
+      invalidAction,
+      actionDebug: {
+        expectedAction,
+        primaryActionReturned,
+        fallbackApplied: true,
+        fallbackUsed: fallback.actionId,
+        missingActionReason: primaryActionReturned ? null : 'LLM omitted action',
+      },
+    };
+  }
+
+  const missingActionReason: PopupMissingActionReason | null = !expectedAction
+    ? null
+    : primaryActionReturned
+      ? invalidActionReason(primaryActionReturned, enabledActions)
+      : 'LLM omitted action';
+
+  return {
+    ok: !expectedAction,
+    popup: { ...popup, ...(secondary ? { secondaryAction: secondary.actionId } : {}) },
+    invalidAction,
+    actionDebug: {
+      expectedAction,
+      primaryActionReturned,
+      fallbackApplied: false,
+      fallbackUsed: null,
+      missingActionReason,
+    },
+  };
+}
+
+function findFallbackAction(
+  enabledActions: BusinessActionConfig[],
+  popupType: PopupType,
+  ctaIntent: ConversationStrategy['ctaIntent'],
+): BusinessActionConfig | null {
+  for (const actionId of fallbackCandidates(popupType, ctaIntent)) {
+    const action = findBusinessAction(enabledActions, actionId);
+    if (action) return action;
+  }
+  return null;
+}
+
+function fallbackCandidates(popupType: PopupType, ctaIntent: ConversationStrategy['ctaIntent']): readonly string[] {
+  return [...(CTA_INTENT_FALLBACKS[ctaIntent] ?? []), ...(FALLBACK_ACTIONS_BY_TYPE[popupType] ?? [])].filter((actionId, index, list) => list.indexOf(actionId) === index);
+}
+
+function invalidActionReason(actionId: string, enabledActions: BusinessActionConfig[]): PopupMissingActionReason {
+  return enabledActions.some((action) => action.actionId === actionId && !action.enabled) ? 'Business action disabled' : 'Unknown action id';
+}
+
+function defaultActionDebug(primaryActionReturned: string | null, expectedAction: boolean): PopupActionValidationDebug {
+  return {
+    expectedAction,
+    primaryActionReturned,
+    fallbackApplied: false,
+    fallbackUsed: null,
+    missingActionReason: null,
+  };
 }
 
 function parseRawPopup(raw: unknown): { ok: true; popup: ValidatedPopupLanguage } | { ok: false; reasons: PopupResponseRejectReason[] } {
@@ -268,27 +300,29 @@ function parseRawPopup(raw: unknown): { ok: true; popup: ValidatedPopupLanguage 
   const keys = Object.keys(raw);
   if (FORBIDDEN_KEYS.some((key) => keys.includes(key))) return { ok: false, reasons: ['schema_violation'] };
   if (!REQUIRED_KEYS.every((key) => keys.includes(key))) return { ok: false, reasons: ['schema_violation'] };
-  if (keys.some((key) => !REQUIRED_KEYS.includes(key as (typeof REQUIRED_KEYS)[number]))) {
+  const allowedKeys = [...REQUIRED_KEYS, ...OPTIONAL_KEYS];
+  if (keys.some((key) => !allowedKeys.includes(key as (typeof allowedKeys)[number]))) {
     return { ok: false, reasons: ['schema_violation'] };
   }
 
   const title = sanitizeString(raw.title);
   const body = sanitizeString(raw.body);
-  const cta = sanitizeString(raw.cta);
   const tone = raw.tone;
   const popupType = raw.popupType;
+  const primaryAction = sanitizeActionId(raw.primaryAction);
+  const secondaryAction = sanitizeActionId(raw.secondaryAction);
 
   if (
     !title ||
     !body ||
-    !cta ||
     title.length > MAX_POPUP_TITLE_LENGTH ||
     body.length > MAX_POPUP_BODY_LENGTH ||
-    cta.length > MAX_POPUP_CTA_LENGTH ||
     typeof tone !== 'string' ||
     typeof popupType !== 'string' ||
     !POPUP_TONES.includes(tone as PopupTone) ||
-    !POPUP_TYPES.includes(popupType as PopupType)
+    !POPUP_TYPES.includes(popupType as PopupType) ||
+    primaryAction === false ||
+    secondaryAction === false
   ) {
     return { ok: false, reasons: ['schema_violation'] };
   }
@@ -298,7 +332,8 @@ function parseRawPopup(raw: unknown): { ok: true; popup: ValidatedPopupLanguage 
     popup: {
       title,
       body,
-      cta,
+      ...(primaryAction ? { primaryAction } : {}),
+      ...(secondaryAction ? { secondaryAction } : {}),
       tone: tone as PopupTone,
       popupType: popupType as PopupType,
     },
@@ -315,21 +350,34 @@ function sanitizeString(value: unknown): string {
     .trim();
 }
 
-function ctaMatchesIntent(cta: string, intent: StrategyCtaIntent): boolean {
-  return CTA_RULES[intent].patterns.some((pattern) => pattern.test(cta));
+function sanitizeActionId(value: unknown): string | null | false {
+  if (value === undefined || value === null || value === '') return null;
+  const clean = sanitizeString(value);
+  if (clean.length > MAX_POPUP_ACTION_ID_LENGTH) return false;
+  return /^[a-z][a-z0-9_]{1,63}$/.test(clean) ? clean : false;
 }
 
-function logCtaValidationFailure(popup: ValidatedPopupLanguage, strategy: ConversationStrategy): void {
-  const rule = CTA_RULES[strategy.ctaIntent];
+function logActionValidationFailure(popup: ValidatedPopupLanguage, enabledActions: BusinessActionConfig[], actionDebug: PopupActionValidationDebug): void {
   console.warn('[popup-validation] cta_not_allowed', JSON.stringify({
     generatedPopupTitle: popup.title,
-    generatedCtaText: popup.cta,
-    generatedCtaType: strategy.ctaIntent,
-    validationRuleFailed: `CTA_RULES.${strategy.ctaIntent}`,
-    exactValidatorBranch: 'validatePopupResponse -> ctaMatchesIntent',
-    expectedAllowedValues: rule.expected,
-    strategy: strategy.kind,
+    generatedPrimaryAction: popup.primaryAction ?? null,
+    generatedSecondaryAction: popup.secondaryAction ?? null,
+    allowedActionIds: enabledActions.map((action) => action.actionId),
+    exactValidatorBranch: 'validatePopupResponse -> resolvePopupActions',
     popupType: popup.popupType,
+    actionDebug,
+  }));
+}
+
+function logMissingActionFailure(popup: ValidatedPopupLanguage, enabledActions: BusinessActionConfig[], actionDebug: PopupActionValidationDebug): void {
+  console.warn('[popup-validation] missing_business_action', JSON.stringify({
+    generatedPopupTitle: popup.title,
+    generatedPrimaryAction: popup.primaryAction ?? null,
+    generatedSecondaryAction: popup.secondaryAction ?? null,
+    allowedActionIds: enabledActions.map((action) => action.actionId),
+    exactValidatorBranch: 'validatePopupResponse -> resolvePopupActions',
+    popupType: popup.popupType,
+    actionDebug,
   }));
 }
 
@@ -368,7 +416,11 @@ function unique<T>(items: T[]): T[] {
   return Array.from(new Set(items));
 }
 
-function reject(reasons: PopupResponseRejectReason[], rejectedPopup: ValidatedPopupLanguage | null = null): PopupResponseValidationResult {
+function reject(
+  reasons: PopupResponseRejectReason[],
+  rejectedPopup: ValidatedPopupLanguage | null = null,
+  actionDebug: PopupActionValidationDebug,
+): PopupResponseValidationResult {
   const safeReasons = unique(reasons);
   return {
     ok: false,
@@ -379,5 +431,8 @@ function reject(reasons: PopupResponseRejectReason[], rejectedPopup: ValidatedPo
       reason: safeReasons.join(','),
     },
     rejectedPopup,
+    actionDebug,
   };
 }
+
+

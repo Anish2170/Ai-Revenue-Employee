@@ -52,11 +52,11 @@ export default function ConversationsPage() {
 
   useEffect(() => {
     if (!selectedId) {
-      setDetail(null);
+      queueMicrotask(() => setDetail(null));
       return;
     }
     let alive = true;
-    setDetailLoading(true);
+    queueMicrotask(() => setDetailLoading(true));
     api.getConversation(selectedId)
       .then((data) => { if (alive) setDetail(data as ConversationDetail); })
       .catch((err) => alive && setError(err instanceof Error ? err.message : 'Unable to load conversation'))
@@ -195,3 +195,5 @@ function Info({ label, value }: { label: string; value: string }) {
     </div>
   );
 }
+
+

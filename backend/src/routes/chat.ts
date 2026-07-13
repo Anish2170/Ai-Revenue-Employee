@@ -9,9 +9,10 @@ import { validateBody } from '../middleware/validate.js';
 import { chatRequestSchema } from '../validation/requestSchemas.js';
 import { llmAvailable } from '../llm/index.js';
 import { streamChatReply } from '../services/chatService.js';
-import { hasDatabase } from '../config/index.js';
+import { config, hasDatabase } from '../config/index.js';
 import { resolveTenant, TenantNotFoundError, TenantDisabledError } from '../tenant/tenant.resolver.js';
 import { appendAssistantMessage, prepareConversationForChat, scheduleConversationMaintenance, type PromptConversationContext } from '../conversations/conversation.service.js';
+import { captureLeadFromConversation } from '../leads/lead.service.js';
 import { resolveTenantFromRequestOrigin } from '../tenant/originSnapshotTenant.resolver.js';
 import type { BusinessInstructions } from '../context/types.js';
 import type { ChatRequest } from '../validation/requestSchemas.js';
@@ -20,10 +21,11 @@ export const chatRouter = Router();
 
 function serializeError(err: unknown): Record<string, unknown> {
   if (!(err instanceof Error)) return { value: String(err) };
-  return { name: err.name, message: err.message, stack: err.stack };
+  return { name: err.name, message: err.message };
 }
 
 function chatTrace(requestId: string, stage: string, detail?: unknown): void {
+  if (!config.debugTrace) return;
   const suffix = detail === undefined ? '' : ` ${JSON.stringify(detail)}`;
   console.log(`[chat:${requestId}] ${stage}${suffix}`);
 }
@@ -187,6 +189,17 @@ chatRouter.post('/chat', validateBody(chatRequestSchema), async (req, res) => {
 
     if (conversation) {
       await appendAssistantMessage({ conversationId: conversation.id, content: finalResponse, source });
+      if (tenant?.organizationId) {
+        await captureLeadFromConversation({
+          tenant: { organizationId: tenant.organizationId, websiteId: tenant.websiteId },
+          conversationId: conversation.id,
+          visitorId: visitorId || sessionId || requestId,
+          sessionId,
+          messages: promptContext?.recentMessages ?? messages,
+          assistantReply: finalResponse,
+          behaviour,
+        });
+      }
       scheduleConversationMaintenance(conversation.id);
     }
 
@@ -206,6 +219,9 @@ chatRouter.post('/chat', validateBody(chatRequestSchema), async (req, res) => {
     done();
   }
 });
+
+
+
 
 
 

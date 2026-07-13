@@ -1,5 +1,5 @@
-﻿/**
- * Context Provider â€” the single source of truth for all AI context.
+/**
+ * Context Provider - the single source of truth for all AI context.
  *
  * Sprint 3: accepts an optional `tenant` parameter. When present, uses the
  * per-website store (registry) and DB-backed instructions. When absent, falls
@@ -11,6 +11,7 @@ import { staticBusinessContext } from './staticContext.js';
 import { getLoadedMeta, knowledgeReady } from '../vectorstore/index.js';
 import { getWebsiteMeta, knowledgeReadyForWebsite } from '../vectorstore/registry.js';
 import type { BusinessInstructions, ResolvedContext, RetrievedChunk } from './types.js';
+import type { BusinessActionConfig } from '../business-actions/action.types.js';
 import type { SiteLink, VisitorBehaviour } from '../types.js';
 
 export interface ContextRequest {
@@ -20,11 +21,13 @@ export interface ContextRequest {
   tenant?: {
     websiteId: string;
     instructions: BusinessInstructions;
+    businessActions?: BusinessActionConfig[];
   };
 }
 
 export async function getBusinessContext(req: ContextRequest): Promise<ResolvedContext> {
   const instructions = req.tenant?.instructions ?? getBusinessInstructions();
+  const businessActions = req.tenant?.businessActions ?? [];
   const websiteId = req.tenant?.websiteId;
   const query = req.query?.trim() || (req.behaviour ? buildBehaviourQuery(req.behaviour) : '');
 
@@ -39,41 +42,48 @@ export async function getBusinessContext(req: ContextRequest): Promise<ResolvedC
         instructions,
         chunks,
         siteLinks: meta?.siteLinks ?? [],
+        businessActions,
         source: 'rag',
         scores,
       };
     }
 
     if (websiteId) {
-      console.warn(`[knowledge] tenant ${websiteId.slice(0, 8)} returned no chunks for query="${query.slice(0, 60)}" — no global fallback allowed.`);
-      return buildTenantEmptyContext(instructions, meta?.siteLinks ?? []);
+      console.warn(`[knowledge] tenant ${websiteId.slice(0, 8)} returned no chunks for query="${query.slice(0, 60)}" - no global fallback allowed.`);
+      return buildTenantEmptyContext(instructions, meta?.siteLinks ?? [], businessActions);
     }
 
-    console.warn(`[knowledge] no chunks passed threshold for query="${query.slice(0, 60)}" — using fallback.`);
+    console.warn(`[knowledge] no chunks passed threshold for query="${query.slice(0, 60)}" - using fallback.`);
   } else {
     if (websiteId) {
       const meta = await getWebsiteMeta(websiteId);
-      console.warn(`[knowledge] tenant index not ready (website ${websiteId.slice(0, 8)}) — no global fallback allowed.`);
-      return buildTenantEmptyContext(instructions, meta?.siteLinks ?? []);
+      console.warn(`[knowledge] tenant index not ready (website ${websiteId.slice(0, 8)}) - no global fallback allowed.`);
+      return buildTenantEmptyContext(instructions, meta?.siteLinks ?? [], businessActions);
     }
 
-    console.warn('[knowledge] index not ready — using fallback.');
+    console.warn('[knowledge] index not ready - using fallback.');
   }
 
-  return buildFallback(instructions);
+  return buildFallback(instructions, businessActions);
 }
 
-function buildTenantEmptyContext(instructions: BusinessInstructions, siteLinks: SiteLink[]): ResolvedContext {
+function buildTenantEmptyContext(
+  instructions: BusinessInstructions,
+  siteLinks: SiteLink[],
+  businessActions: BusinessActionConfig[] = [],
+): ResolvedContext {
   return {
     business: { name: instructions.businessName },
     instructions,
     chunks: [],
     siteLinks,
+    businessActions,
     source: 'rag',
     scores: [],
   };
 }
-function buildFallback(instructions?: BusinessInstructions): ResolvedContext {
+
+function buildFallback(instructions?: BusinessInstructions, businessActions: BusinessActionConfig[] = []): ResolvedContext {
   const s = staticBusinessContext;
   const instr = instructions ?? getBusinessInstructions();
   const now = new Date().toISOString();
@@ -111,8 +121,8 @@ function buildFallback(instructions?: BusinessInstructions): ResolvedContext {
     instructions: instr,
     chunks,
     siteLinks,
+    businessActions,
     source: 'fallback',
     scores: chunks.map(() => 1),
   };
 }
-

@@ -1,4 +1,10 @@
-const BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8787';
+﻿function getBaseUrl() {
+  if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL;
+  if (typeof window !== 'undefined') {
+    return `${window.location.protocol}//${window.location.hostname}:8787`;
+  }
+  return 'http://localhost:8787';
+}
 
 export class ApiError extends Error {
   status: number;
@@ -11,7 +17,7 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const res = await fetch(`${BASE_URL}${path}`, {
+  const res = await fetch(`${getBaseUrl()}${path}`, {
     credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
@@ -24,7 +30,16 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     let message = res.statusText;
     try {
       const body = await res.json();
-      message = body.message || body.error || message;
+      if (Array.isArray(body.details) && body.details.length > 0) {
+        message = body.details
+          .map((detail: { path?: string; message?: string }) => {
+            const field = detail.path ? `${detail.path}: ` : '';
+            return `${field}${detail.message || 'Invalid value'}`;
+          })
+          .join('; ');
+      } else {
+        message = body.message || body.error || message;
+      }
     } catch {
       // ignore non-JSON error bodies
     }
@@ -101,6 +116,11 @@ class ApiClient {
     return request('/api/analytics/decision-log' + (qs ? '?' + qs : ''));
   }
 
+
+  listLeads(websiteId?: string) {
+    const qs = websiteId ? '?websiteId=' + encodeURIComponent(websiteId) : '';
+    return request('/api/leads' + qs);
+  }
   listConversations(websiteId?: string) {
     const qs = websiteId ? '?websiteId=' + encodeURIComponent(websiteId) : '';
     return request('/api/conversations' + qs);
@@ -149,10 +169,152 @@ class ApiClient {
     });
   }
 
+
+  getDiscoveredWebsiteActions(websiteId: string) {
+    return request(`/api/websites/${websiteId}/actions/discovered`);
+  }
+
+  updateDiscoveredActionUrlOverride(websiteId: string, intent: string, url: string) {
+    return request(`/api/websites/${websiteId}/actions/discovered/${intent}/override`, {
+      method: 'PUT',
+      body: JSON.stringify({ url }),
+    });
+  }
+
+  clearDiscoveredActionUrlOverride(websiteId: string, intent: string) {
+    return request(`/api/websites/${websiteId}/actions/discovered/${intent}/override`, { method: 'DELETE' });
+  }
+
+  listBusinessActions(websiteId: string) {
+    return request(`/api/websites/${websiteId}/actions`);
+  }
+
+  createBusinessAction(websiteId: string, data: unknown) {
+    return request(`/api/websites/${websiteId}/actions`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  updateBusinessAction(websiteId: string, actionId: string, data: unknown) {
+    return request(`/api/websites/${websiteId}/actions/${actionId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  }
+
+  deleteBusinessAction(websiteId: string, actionId: string) {
+    return request(`/api/websites/${websiteId}/actions/${actionId}`, { method: 'DELETE' });
+  }
   getWidget(websiteId: string) {
     return request(`/api/websites/${websiteId}/widget`);
   }
 
+  verifyWidgetInstallation(websiteId: string) {
+    return request(`/api/websites/${websiteId}/widget/verify`, { method: 'POST' });
+  }
+
+  async sendTestChat(siteId: string, messages: Array<{ role: 'user' | 'assistant'; content: string }>) {
+    const res = await fetch(`${getBaseUrl()}/chat`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        siteId,
+        visitorId: 'owner-onboarding',
+        sessionId: `onboarding-${Date.now()}`,
+        messages,
+        behaviour: {
+          page: '/onboarding-test',
+          pageTitle: 'Owner onboarding test chat',
+          timeOnPage: 0,
+          scrollDepth: 0,
+          mouseInactive: 0,
+          clickedElements: [],
+          formInteracted: false,
+          viewport: { width: 1280, height: 800 },
+          exitIntent: false,
+        },
+      }),
+    });
+
+    if (!res.ok || !res.body) {
+      throw new ApiError(res.status, res.statusText || 'Failed to send test message');
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let reply = '';
+    let error = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const frames = buffer.split('\n\n');
+      buffer = frames.pop() ?? '';
+
+      for (const frame of frames) {
+        for (const line of frame.split('\n')) {
+          if (!line.startsWith('data:')) continue;
+          const data = line.slice(5).trim();
+          if (!data || data === '[DONE]') continue;
+          try {
+            const parsed = JSON.parse(data) as { token?: string; error?: string };
+            if (parsed.token) reply += parsed.token;
+            if (parsed.error) error = parsed.error;
+          } catch {
+            // Ignore malformed stream frames.
+          }
+        }
+      }
+    }
+
+    if (error) throw new Error(error);
+    return { reply };
+  }
+
+  getKnowledgeDebugOverview(websiteId: string) {
+    return request(`/api/websites/${websiteId}/knowledge/debug/overview`);
+  }
+
+  getKnowledgeDebugPages(websiteId: string, page = 1, limit = 20) {
+    return request(`/api/websites/${websiteId}/knowledge/debug/pages?page=${page}&limit=${limit}`);
+  }
+
+  getKnowledgeDebugPageDetail(websiteId: string, url: string) {
+    return request(`/api/websites/${websiteId}/knowledge/debug/pages/detail?url=${encodeURIComponent(url)}`);
+  }
+
+  getKnowledgeDebugChunks(websiteId: string, page = 1, limit = 20, pageUrl?: string) {
+    const params = new URLSearchParams({ page: String(page), limit: String(limit) });
+    if (pageUrl) params.set('pageUrl', pageUrl);
+    return request(`/api/websites/${websiteId}/knowledge/debug/chunks?${params.toString()}`);
+  }
+
+  getKnowledgeDebugChunkDetail(websiteId: string, chunkId: string) {
+    return request(`/api/websites/${websiteId}/knowledge/debug/chunks/${encodeURIComponent(chunkId)}`);
+  }
+
+  runKnowledgeDebugSearch(websiteId: string, question: string) {
+    return request(`/api/websites/${websiteId}/knowledge/debug/search-test`, {
+      method: 'POST',
+      body: JSON.stringify({ question }),
+    });
+  }
+
+  getKnowledgeDebugActions(websiteId: string) {
+    return request(`/api/websites/${websiteId}/knowledge/debug/actions`);
+  }
+
+  getKnowledgeDebugQualityChecks(websiteId: string) {
+    return request(`/api/websites/${websiteId}/knowledge/debug/quality-checks`);
+  }
+
+  getKnowledgeDebugVisualFlow(websiteId: string) {
+    return request(`/api/websites/${websiteId}/knowledge/debug/visual-flow`);
+  }
   getKnowledgeStatus(websiteId: string) {
     return request(`/api/websites/${websiteId}/knowledge/status`);
   }
@@ -190,7 +352,7 @@ class ApiClient {
 
     async function run() {
       try {
-        const res = await fetch(`${BASE_URL}/api/websites/${websiteId}/knowledge/build`, {
+        const res = await fetch(`${getBaseUrl()}/api/websites/${websiteId}/knowledge/build`, {
           method: 'POST',
           credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
@@ -236,10 +398,16 @@ class ApiClient {
               parsed = data;
             }
 
-            if (event === 'complete') {
+            if (event === 'complete' || event.endsWith(':complete')) {
               completeCb?.(parsed);
-            } else if (event === 'error') {
-              errorCb?.(new Error(typeof parsed === 'string' ? parsed : JSON.stringify(parsed)));
+            } else if (event === 'error' || event.endsWith(':error')) {
+              const message =
+                typeof parsed === 'string'
+                  ? parsed
+                  : parsed && typeof parsed === 'object' && 'error' in parsed
+                    ? String((parsed as { error?: unknown }).error)
+                    : JSON.stringify(parsed);
+              errorCb?.(new Error(message));
             } else {
               phaseCb?.(event, parsed);
             }
@@ -256,3 +424,7 @@ class ApiClient {
 }
 
 export const api = new ApiClient();
+
+
+
+

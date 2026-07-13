@@ -7,6 +7,8 @@
  * the backend returns. All intelligence lives here.
  */
 
+import type { BusinessActionConfig } from './business-actions/action.types.js';
+
 /**
  * A summarized snapshot of one visitor's behaviour on the current page.
  * The widget aggregates raw browser events into this shape before sending it —
@@ -61,8 +63,13 @@ export interface EngageDecision {
   confidence?: number;
   /** The popup body text. Rendered as textContent (never innerHTML). */
   message?: string;
-  /** Call-to-action label for the popup button. */
+  /** Call-to-action label for legacy popups or resolved business actions. */
   cta?: string;
+  /** Stable business-configured Action ID chosen by the AI. */
+  primaryAction?: string;
+  secondaryAction?: string;
+  /** Resolved business-owned destination for primaryAction. */
+  action?: BusinessActionConfig;
   /**
    * Optional navigation target for the CTA. When present, clicking the CTA
    * navigates here instead of opening chat. Always one of the site's allowlisted
