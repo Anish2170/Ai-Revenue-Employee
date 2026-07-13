@@ -1,21 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-const PUBLIC_PATHS = ['/', '/login', '/signup', '/_next', '/favicon.ico'];
-
-export function middleware(req: NextRequest) {
-  const { pathname } = req.nextUrl;
-
-  if (PUBLIC_PATHS.some((path) => (path === '/' ? pathname === '/' : pathname.startsWith(path)))) {
-    return NextResponse.next();
-  }
-
-  const hasSession = req.cookies.has('aire_session');
-
-  if (!hasSession) {
-    const loginUrl = new URL('/login', req.url);
-    return NextResponse.redirect(loginUrl);
-  }
-
+/**
+ * Auth is validated by the dashboard client against the backend API.
+ *
+ * The backend session cookie is scoped to the Render API domain, so Vercel
+ * middleware cannot reliably read it. Keeping this middleware as pass-through
+ * prevents a login bounce while preserving the existing route structure.
+ */
+export function middleware(_req: NextRequest) {
   return NextResponse.next();
 }
 
