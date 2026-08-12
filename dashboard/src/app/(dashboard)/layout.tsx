@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
-import { api, errorMessage } from '@/lib/api';
+import { api } from '@/lib/api';
 import { Icon } from '@/components/Icon';
 
 type Site = { id: string; name: string; url: string };
@@ -14,6 +14,10 @@ const CONFIGURE: NavLink[] = [{ href: '/websites', label: 'Sites', icon: 'langua
 const ADVANCED: NavLink[] = [{ href: '/ai-decision-log', label: 'Decision log', icon: 'psychology' }, { href: '/knowledge-debug', label: 'Knowledge diagnostics', icon: 'search_check' }];
 const SITE_KEY = 'dashboard:selectedWebsiteId';
 
+function workspaceError(error: unknown) {
+  return error instanceof Error ? error.message : 'Unable to load your workspace.';
+}
+
 function active(pathname: string, href: string, label: string) { if (label === 'Knowledge') return pathname.startsWith('/websites/'); return pathname === href || pathname.startsWith(`${href}/`); }
 function NavItem({ link, pathname }: { link: NavLink; pathname: string }) { const selected = active(pathname, link.href, link.label); return <Link href={link.href} className={`ops-nav-item ${selected ? 'is-active' : ''}`}><Icon name={link.icon} /><span>{link.label}</span></Link>; }
 function NavGroup({ label, children }: { label: string; children: React.ReactNode }) { return <section className="ops-nav-group"><p>{label}</p>{children}</section>; }
@@ -22,7 +26,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const { user, role, loading: authLoading, logout } = useAuth(); const pathname = usePathname(); const router = useRouter(); const [sites, setSites] = useState<Site[]>([]); const [siteId, setSiteId] = useState(''); const [loadingSites, setLoadingSites] = useState(true); const [error, setError] = useState(''); const [mobileOpen, setMobileOpen] = useState(false);
   const canDiagnose = role === 'OWNER' || role === 'ADMIN';
   useEffect(() => { if (!authLoading && !user) router.replace('/login'); }, [authLoading, router, user]);
-  useEffect(() => { let alive = true; api.listWebsites().then((data) => { if (!alive) return; const list = data as Site[]; setSites(list); setSiteId(window.localStorage.getItem(SITE_KEY) || list[0]?.id || ''); }).catch((cause) => alive && setError(errorMessage(cause, 'Unable to load your workspace.'))).finally(() => alive && setLoadingSites(false)); return () => { alive = false; }; }, []);
+  useEffect(() => { let alive = true; api.listWebsites().then((data) => { if (!alive) return; const list = data as Site[]; setSites(list); setSiteId(window.localStorage.getItem(SITE_KEY) || list[0]?.id || ''); }).catch((cause) => alive && setError(workspaceError(cause))).finally(() => alive && setLoadingSites(false)); return () => { alive = false; }; }, []);
   useEffect(() => { setMobileOpen(false); }, [pathname]);
   useEffect(() => { if (!loadingSites && sites.length === 0 && pathname !== '/onboarding' && pathname !== '/settings' && !error) router.replace('/onboarding'); }, [error, loadingSites, pathname, router, sites.length]);
   const selectSite = (value: string) => { setSiteId(value); if (value) window.localStorage.setItem(SITE_KEY, value); };
