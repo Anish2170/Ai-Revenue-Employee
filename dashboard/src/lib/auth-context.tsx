@@ -13,11 +13,13 @@ interface User {
 interface Organization {
   id: string;
   name: string;
+  role: 'OWNER' | 'ADMIN' | 'MEMBER';
 }
 
 interface AuthContextValue {
   user: User | null;
   organization: Organization | null;
+  role: Organization['role'] | null;
   loading: boolean;
   login: (email: string, password: string) => Promise<void>;
   signup: (email: string, password: string, name: string, organizationName?: string) => Promise<void>;
@@ -47,6 +49,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .finally(() => setLoading(false));
   }, []);
 
+  useEffect(() => {
+    const onUnauthenticated = () => {
+      setUser(null);
+      setOrganization(null);
+      // The landing page is public. Its initial /auth/me request is expected to
+      // be anonymous for most visitors and must not trigger a login bounce.
+      if (window.location.pathname === '/') return;
+      router.replace('/login');
+    };
+    window.addEventListener('aire:unauthenticated', onUnauthenticated);
+    return () => window.removeEventListener('aire:unauthenticated', onUnauthenticated);
+  }, [router]);
+
   async function login(email: string, password: string) {
     const data = (await api.login(email, password)) as { user: User; organization: Organization };
     setUser(data.user);
@@ -70,7 +85,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   return (
-    <AuthContext.Provider value={{ user, organization, loading, login, signup, logout }}>
+    <AuthContext.Provider value={{ user, organization, role: organization?.role ?? null, loading, login, signup, logout }}>
       {children}
     </AuthContext.Provider>
   );
