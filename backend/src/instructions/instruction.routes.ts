@@ -5,6 +5,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { requireAuth } from '../auth/auth.middleware.js';
 import { validateBody } from '../middleware/validate.js';
+import { authUserKey, minutes, rateLimit } from '../middleware/rateLimit.js';
 import { OwnershipError } from '../websites/website.service.js';
 import * as instructionService from './instruction.service.js';
 
@@ -32,7 +33,11 @@ const updateSchema = z.object({
   websiteUrl: optionalText(2048),
 });
 
-instructionRouter.use(requireAuth);
+const dashboardInstructionLimiter = rateLimit([
+  { name: 'dashboard_instructions_user', limit: 600, windowMs: minutes(1), key: authUserKey },
+]);
+
+instructionRouter.use(requireAuth, dashboardInstructionLimiter);
 
 instructionRouter.get('/api/websites/:id/instructions', async (req, res, next) => {
   try {

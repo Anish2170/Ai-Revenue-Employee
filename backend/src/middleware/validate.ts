@@ -6,6 +6,7 @@
  */
 import type { NextFunction, Request, Response } from 'express';
 import type { ZodTypeAny, infer as ZodInfer } from 'zod';
+import { sendApiError } from './errorHandler.js';
 
 export function validateBody<S extends ZodTypeAny>(schema: S) {
   return (req: Request, res: Response, next: NextFunction): void => {
@@ -15,11 +16,7 @@ export function validateBody<S extends ZodTypeAny>(schema: S) {
       const message = details
         .map((detail) => `${detail.path ? `${detail.path}: ` : ''}${detail.message}`)
         .join('; ');
-      res.status(400).json({
-        error: 'invalid_request',
-        message: message || 'Invalid request.',
-        details,
-      });
+      sendApiError(res, req, 400, 'invalid_request', message || 'Invalid request.', { details });
       return;
     }
     req.body = result.data as ZodInfer<S>;

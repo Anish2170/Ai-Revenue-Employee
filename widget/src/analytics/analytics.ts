@@ -1,9 +1,11 @@
 import type { WidgetConfig } from '../types.js';
-import { getSessionId, getVisitorId, resolveReturning } from '../sensors/session.js';
+import { resolveReturning } from '../sensors/session.js';
+import type { WidgetIdentity } from '../api/client.js';
 
 type AnalyticsCategory = 'VISITOR' | 'PAGE' | 'POPUP' | 'CHAT' | 'KNOWLEDGE' | 'WIDGET';
 
 interface AnalyticsEvent {
+  eventId: string;
   category: AnalyticsCategory;
   eventName: string;
   occurredAt: string;
@@ -29,11 +31,15 @@ export interface TrackOptions extends Partial<Omit<AnalyticsEvent, 'category' | 
 }
 
 const FLUSH_MS = 5000;
-const MAX_BUFFER = 20;
+const MAX_BUFFER = 50;
+const MAX_RETRIES = 2;
+const RETRY_DELAYS_MS = [500, 1500];
+const REQUEST_TIMEOUT_MS = 5000;
 
 export class AnalyticsTracker {
-  private readonly visitorId = getVisitorId();
-  private readonly sessionId = getSessionId();
+  private readonly visitorId: string;
+  private readonly sessionId: string;
+  private readonly visitorToken: string;
   private readonly returning = resolveReturning();
   private readonly device = detectDevice();
   private readonly browser = detectBrowser();
@@ -42,11 +48,17 @@ export class AnalyticsTracker {
   private pageStartedAt = Date.now();
   private pageKey = this.currentPageKey();
   private buffer: AnalyticsEvent[] = [];
+  private flushing = false;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
   private stopped = false;
   private sessionEnded = false;
 
-  constructor(private readonly cfg: WidgetConfig) {}
+  constructor(private readonly cfg: WidgetConfig, identity: WidgetIdentity) {
+    this.visitorId = identity.visitorId;
+    this.sessionId = identity.sessionId;
+    this.visitorToken = identity.visitorToken;
+  }
 
   start(): void {
     if (this.timer) return;
@@ -78,6 +90,7 @@ export class AnalyticsTracker {
   track(category: AnalyticsCategory, eventName: string, opts: TrackOptions = {}): void {
     if (this.stopped && eventName !== 'session_ended') return;
     const event: AnalyticsEvent = {
+      eventId: createEventId(),
       category,
       eventName,
       occurredAt: new Date().toISOString(),
@@ -136,12 +149,25 @@ export class AnalyticsTracker {
   }
 
   private flush(useBeacon = false): void {
-    if (this.buffer.length === 0) return;
-    const events = this.buffer;
-    this.buffer = [];
+    if (this.buffer.length === 0 || this.flushing) return;
+    if (useBeacon) {
+      const events = this.buffer.splice(0, this.buffer.length);
+      const payload = this.payloadFor(events);
+      if (typeof navigator.sendBeacon === 'function' && navigator.sendBeacon(`${this.cfg.backendUrl}/analytics/events`, new Blob([payload], { type: 'application/json' }))) return;
+      this.buffer.unshift(...events);
+    }
+    this.flushing = true;
+    const events = this.buffer.splice(0, Math.min(this.buffer.length, MAX_BUFFER));
+    void this.send(events, 0).finally(() => {
+      this.flushing = false;
+      if (this.buffer.length > 0 && !this.retryTimer) this.flush();
+    });
+  }
 
-    const payload = JSON.stringify({
+  private payloadFor(events: AnalyticsEvent[]): string {
+    return JSON.stringify({
       siteId: this.cfg.siteId,
+      visitorToken: this.visitorToken,
       visitorId: this.visitorId,
       sessionId: this.sessionId,
       returning: this.returning,
@@ -151,20 +177,29 @@ export class AnalyticsTracker {
       surface: this.surface,
       events,
     });
+  }
 
-    if (useBeacon && typeof navigator.sendBeacon === 'function') {
-      const ok = navigator.sendBeacon(`${this.cfg.backendUrl}/analytics/events`, new Blob([payload], { type: 'application/json' }));
-      if (ok) return;
+  private async send(events: AnalyticsEvent[], attempt: number): Promise<void> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    try {
+      const response = await fetch(`${this.cfg.backendUrl}/analytics/events`, {
+        method: 'POST', credentials: 'omit', headers: { 'Content-Type': 'application/json' },
+        body: this.payloadFor(events), keepalive: true, signal: controller.signal,
+      });
+      if (response.ok || !shouldRetryAnalyticsResponse(response.status, attempt)) return;
+      throw new Error(`analytics_http_${response.status}`);
+    } catch {
+      if (attempt >= MAX_RETRIES || this.stopped) return;
+      this.retryTimer = setTimeout(() => {
+        this.retryTimer = null;
+        void this.send(events, attempt + 1).finally(() => {
+          if (this.buffer.length > 0 && !this.retryTimer) this.flush();
+        });
+      }, RETRY_DELAYS_MS[attempt]);
+    } finally {
+      clearTimeout(timeout);
     }
-
-    void fetch(`${this.cfg.backendUrl}/analytics/events`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: payload,
-      keepalive: true,
-    }).catch(() => {
-      /* analytics transport is intentionally silent */
-    });
   }
 
   private pageContext() {
@@ -179,6 +214,20 @@ export class AnalyticsTracker {
   private currentPageKey(): string {
     return `${window.location.pathname}${window.location.search}${window.location.hash}`;
   }
+}
+
+export function shouldRetryAnalyticsResponse(status: number, attempt: number): boolean {
+  return status >= 500 && status <= 599 && attempt < MAX_RETRIES;
+}
+
+function createEventId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 function stripFlush(opts: TrackOptions): Omit<TrackOptions, 'flush'> {

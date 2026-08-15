@@ -1,4 +1,6 @@
 import { config } from '../config/index.js';
+import { logger } from '../logging/logger.js';
+import { safeIdentifier } from '../logging/sanitize.js';
 
 export interface PopupTraceDetail {
   passed?: boolean;
@@ -8,12 +10,7 @@ export interface PopupTraceDetail {
 
 export function popupTrace(sessionId: string, stage: string, detail: PopupTraceDetail = {}): void {
   if (!config.debugTrace) return;
-  const safeDetail = JSON.stringify(detail, (_key, value) => {
-    if (value instanceof Set) return Array.from(value);
-    if (typeof value === 'number' && !Number.isFinite(value)) return String(value);
-    return value;
-  });
-  console.log(`[popup-trace:${sessionId.slice(0, 8)}] stage=${stage} ${safeDetail}`);
+  logger.debug(`[popup-trace:${safeIdentifier(sessionId)}] stage=${stage}`, detail);
 }
 
 export function cooldownRemainingMs(lastInterruptionTs: number | null, now: number, cooldownMs: number): number {

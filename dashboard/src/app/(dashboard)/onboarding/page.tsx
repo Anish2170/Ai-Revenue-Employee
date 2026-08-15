@@ -2,7 +2,7 @@
 
 import { FormEvent, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { api, type KnowledgeBuildHandle } from '@/lib/api';
+import { api, errorMessage, type KnowledgeBuildHandle } from '@/lib/api';
 import { Badge, Button, Card, Input, Spinner } from '@/components/ui';
 
 type Website = { id: string; name: string; url: string; industry?: string; description?: string };
@@ -39,6 +39,16 @@ type ActionRow = {
 type ActionsPayload = { actions: ActionRow[]; summary?: { discoveredActions: number; needsReview: number } };
 type ChatMessage = { role: 'user' | 'assistant'; content: string };
 type Platform = 'html' | 'wordpress' | 'shopify' | 'react' | 'nextjs' | 'webflow' | 'framer' | 'other';
+
+const onboardingChecklist = [
+  'Create Website',
+  'Build Knowledge',
+  'Add Business Instructions',
+  'Review Website Actions',
+  'Test Your AI',
+  'Install Widget',
+  'Launch Complete',
+];
 
 const steps = [
   'Create Website',
@@ -264,18 +274,35 @@ function OnboardingContent() {
     if (!websiteId || step !== 2 || building) return;
     void Promise.resolve().then(async () => {
       try {
-        const status = (await api.getKnowledgeStatus(websiteId)) as { hasKnowledge?: boolean; latestBuild?: { status?: string } };
-        if (status.hasKnowledge || status.latestBuild?.status === 'SUCCESS') {
+        const status = (await api.getKnowledgeStatus(websiteId)) as { hasKnowledge?: boolean; lastBuild?: { status?: string; phase?: string; error?: string } };
+        const build = status.lastBuild;
+        if (build?.phase) setPhases((prev) => (prev.includes(build.phase!) ? prev : [...prev, build.phase!]));
+        if (build?.status === 'QUEUED' || build?.status === 'RUNNING' || build?.status === 'RETRY_WAIT') setBuilding(true);
+        if (build?.status === 'FAILED') { setBuilding(false); setBuildError('Knowledge build failed. Please try again.'); }
+        if (status.hasKnowledge || build?.status === 'SUCCESS') {
           setBuildComplete(true);
           setBuilding(false);
           setPhases((prev) => (prev.includes('complete') ? prev : [...prev, 'complete']));
           setStep(3);
         }
       } catch {
-        // Stay on the build step if status is unavailable.
+        setBuildError('Connection lost. Retrying...');
       }
     });
   }, [building, step, websiteId]);
+
+  useEffect(() => {
+    if (!websiteId || step !== 2) return;
+    const timer = window.setInterval(() => { void api.getKnowledgeStatus(websiteId).then((data) => {
+      const build = (data as { lastBuild?: { status?: string; phase?: string; error?: string } }).lastBuild;
+      if (!build) return;
+      if (build.phase) setPhases((prev) => (prev.includes(build.phase!) ? prev : [...prev, build.phase!]));
+      if (build.status === 'QUEUED' || build.status === 'RUNNING' || build.status === 'RETRY_WAIT') setBuilding(true);
+      if (build.status === 'FAILED') { setBuilding(false); setBuildError('Knowledge build failed. Please try again.'); }
+      if (build.status === 'SUCCESS') { setBuilding(false); setBuildComplete(true); setStep(3); }
+    }).catch(() => setBuildError('Connection lost. Retrying...')); }, 1500);
+    return () => window.clearInterval(timer);
+  }, [step, websiteId]);
 
   const snippet = useMemo(() => {
     if (!widget) return '';
@@ -320,7 +347,7 @@ function OnboardingContent() {
       setStep(1);
       router.replace(`/onboarding?websiteId=${created.id}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create website.');
+      setError(errorMessage(err, 'Failed to create website. Try again.'));
     } finally {
       setCreating(false);
     }
@@ -358,12 +385,14 @@ function OnboardingContent() {
 
     const handle = api.buildKnowledge(websiteId, normalizeUrl(url))
       .onPhase((phase) => {
+        if (phase === 'connection_lost') { setBuildError('Connection lost. Retrying...'); return; }
+        setBuildError('');
         setPhases((prev) => [...prev, phase]);
         if (phase === 'complete' || phase.endsWith(':complete')) finishBuild();
       })
       .onComplete(finishBuild)
       .onError((err) => {
-        setBuildError(err.message);
+        setBuildError(errorMessage(err, 'Knowledge build failed. Please try again.'));
         setBuilding(false);
       });
     buildHandle.current = handle;
@@ -441,12 +470,14 @@ function OnboardingContent() {
       const result = (await api.verifyWidgetInstallation(websiteId)) as { installed: boolean; reason?: string; checkedUrl?: string };
       setVerifyState(result.installed ? 'installed' : 'missing');
       setVerifyMessage(result.reason || 'Verification completed.');
-      if (result.installed) setStep(8);
+      if (result.installed) router.push('/analytics?launched=1');
     } catch (err) {
       setVerifyState('missing');
       setVerifyMessage(err instanceof Error ? err.message : 'Verification failed.');
     }
   }
+
+  const firstTimeWelcome = !website && websites.length === 0;
 
   if (loading) return <div className="flex h-64 items-center justify-center"><Spinner /></div>;
 
@@ -470,18 +501,60 @@ function OnboardingContent() {
         )}
       </header>
 
-      <div className="grid gap-2 md:grid-cols-9">
+      {!firstTimeWelcome && <div className="grid gap-2 md:grid-cols-9">
         {steps.map((label, index) => (
           <div key={label} className="rounded-lg border p-3" style={{ borderColor: index <= step ? 'var(--accent)' : 'var(--border)', background: index === step ? 'rgba(24, 69, 59, 0.10)' : 'var(--bg-card)' }}>
             <div className="text-xs" style={{ color: index <= step ? 'var(--accent-hover)' : 'var(--text-muted)' }}>Step {index + 1}</div>
             <div className="mt-1 text-xs font-medium" style={{ color: 'var(--text)' }}>{label}</div>
           </div>
         ))}
-      </div>
+      </div>}
 
       {error && <div className="rounded-lg border px-4 py-3 text-sm" style={{ borderColor: 'var(--danger)', background: 'rgba(239,68,68,0.12)' }}>{error}</div>}
 
-      {step === 0 && (
+      {firstTimeWelcome && (
+        <div className="grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
+          <section className="rounded-xl border border-[var(--landing-soft-border)] bg-white p-8 shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
+            <p className="text-sm font-semibold uppercase tracking-[0.08em] text-[var(--accent)]">Guided Setup</p>
+            <h2 className="mt-3 text-3xl font-semibold text-[var(--text)]">Welcome to AI Revenue Employee</h2>
+            <p className="mt-3 text-base text-[var(--text-muted)]">Let&apos;s launch your AI Employee in just a few minutes.</p>
+            <div className="mt-8 rounded-lg border border-[var(--landing-soft-border)] bg-[var(--landing-layer-low)] p-5">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <div className="text-2xl font-semibold text-[var(--text)]">0% Setup Complete</div>
+                  <div className="mt-1 text-sm text-[var(--text-muted)]">Estimated setup time: 4-5 minutes</div>
+                </div>
+                <Badge variant="neutral">Start here</Badge>
+              </div>
+              <div className="mt-5 h-2 overflow-hidden rounded-full bg-white">
+                <div className="h-full w-0 rounded-full bg-[var(--accent)]" />
+              </div>
+              <ul className="mt-6 space-y-3">
+                {onboardingChecklist.map((item) => (
+                  <li key={item} className="flex items-center gap-3 text-sm text-[var(--text)]">
+                    <span className="flex h-5 w-5 items-center justify-center rounded-full border border-[var(--border)] bg-white" aria-hidden="true" />
+                    <span>{item}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </section>
+
+          <Card className="rounded-xl">
+            <h2 className="text-xl font-semibold">Create Website</h2>
+            <p className="mt-2 text-sm text-[var(--text-muted)]">Add the website where your AI Employee will learn, engage visitors, and capture leads.</p>
+            <form onSubmit={createWebsite} className="mt-6 space-y-4">
+              <Input label="Website Name" value={createForm.name} onChange={(e) => setCreateForm({ ...createForm, name: e.target.value })} placeholder="My Website" required />
+              <Input label="URL" value={createForm.url} onChange={(e) => setCreateForm({ ...createForm, url: e.target.value })} placeholder="https://example.com" required />
+              <Input label="Industry" value={createForm.industry} onChange={(e) => setCreateForm({ ...createForm, industry: e.target.value })} placeholder="SaaS, healthcare, real estate" />
+              <Input label="Description" value={createForm.description} onChange={(e) => setCreateForm({ ...createForm, description: e.target.value })} placeholder="Brief business description" />
+              <Button type="submit" loading={creating} className="w-full">Create Website</Button>
+            </form>
+          </Card>
+        </div>
+      )}
+
+      {!firstTimeWelcome && step === 0 && (
         <Card className="rounded-lg">
           <div className="flex items-start justify-between gap-6">
             <div>
@@ -686,7 +759,7 @@ function OnboardingContent() {
           </div>
           <div className="mt-6 flex justify-between">
             <Button variant="secondary" onClick={() => setStep(6)}>Back</Button>
-            <Button variant="ghost" onClick={() => setStep(8)}>Finish later</Button>
+            <Button variant="ghost" onClick={() => router.push('/analytics?launched=1')}>Finish Setup</Button>
           </div>
         </Card>
       )}

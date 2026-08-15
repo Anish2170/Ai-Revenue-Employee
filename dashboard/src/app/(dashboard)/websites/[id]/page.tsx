@@ -299,6 +299,13 @@ function KnowledgeTab({ websiteId, websiteUrl }: { websiteId: string; websiteUrl
     fetchStatus();
   }, [fetchStatus]);
 
+  useEffect(() => {
+    const active = ['QUEUED', 'RUNNING', 'RETRY_WAIT'].includes(String(status?.lastBuild?.status));
+    if (!active) return;
+    const timer = window.setInterval(fetchStatus, 1500);
+    return () => window.clearInterval(timer);
+  }, [fetchStatus, status?.lastBuild?.status]);
+
   const startBuild = () => {
     if (!buildUrl) return;
     setBuilding(true);
@@ -347,6 +354,14 @@ function KnowledgeTab({ websiteId, websiteUrl }: { websiteId: string; websiteUrl
           <p className="text-[var(--text-muted)] text-sm">No knowledge base built yet. Crawl your website below to get started.</p>
         )}
       </Card>
+
+      {status?.lastBuild && (
+        <Card>
+          <h2 className="text-lg font-semibold mb-2">Latest Build</h2>
+          <p className="text-sm text-[var(--text-muted)]">{String(status.lastBuild.status).replace('_', ' ')} · {status.lastBuild.phase || 'queued'} · attempt {status.lastBuild.attempt ?? 0}/{status.lastBuild.maxAttempts ?? 3}</p>
+          {status.lastBuild.error && <p className="mt-2 text-sm text-[var(--danger)]">{status.lastBuild.error}</p>}
+        </Card>
+      )}
 
       {/* Build */}
       <Card>

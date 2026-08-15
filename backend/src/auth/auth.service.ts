@@ -7,6 +7,7 @@
  * its hash is stored.
  */
 import { prisma } from '../db/prisma.js';
+import type { MemberRole } from '@prisma/client';
 import { config } from '../config/index.js';
 import { generateToken, hashPassword, hashToken, verifyPassword } from './password.js';
 import { writeAuditLog } from '../audit/audit.service.js';
@@ -14,7 +15,7 @@ import { writeAuditLog } from '../audit/audit.service.js';
 export interface AuthResult {
   token: string; // raw session token → set as cookie by the caller
   user: { id: string; email: string; name: string };
-  organization: { id: string; name: string; slug: string };
+  organization: { id: string; name: string; slug: string; role: MemberRole };
 }
 
 /** Build a URL-safe, reasonably-unique org slug from a name. */
@@ -64,7 +65,7 @@ export async function signup(input: SignupInput): Promise<AuthResult> {
   return {
     token,
     user: { id: user.id, email: user.email, name: user.name },
-    organization: { id: organization.id, name: organization.name, slug: organization.slug },
+    organization: { id: organization.id, name: organization.name, slug: organization.slug, role: 'OWNER' },
   };
 }
 
@@ -78,10 +79,17 @@ export async function login(input: LoginInput): Promise<AuthResult> {
   const email = input.email.trim().toLowerCase();
   const user = await prisma.user.findUnique({
     where: { email },
-    include: { memberships: { include: { organization: true }, orderBy: { createdAt: 'asc' }, take: 1 } },
+    include: {
+      memberships: {
+        where: { organization: { deletedAt: null } },
+        include: { organization: true },
+        orderBy: { createdAt: 'asc' },
+        take: 1,
+      },
+    },
   });
   // Constant-ish failure path — same error whether email or password is wrong.
-  if (!user || !user.passwordHash || !(await verifyPassword(input.password, user.passwordHash))) {
+  if (!user || user.deletedAt || !user.passwordHash || !(await verifyPassword(input.password, user.passwordHash))) {
     throw new AuthError('invalid_credentials', 'Invalid email or password.', 401);
   }
   const membership = user.memberships[0];
@@ -97,6 +105,7 @@ export async function login(input: LoginInput): Promise<AuthResult> {
       id: membership.organization.id,
       name: membership.organization.name,
       slug: membership.organization.slug,
+      role: membership.role,
     },
   };
 }
@@ -112,10 +121,27 @@ export async function logout(token: string): Promise<void> {
 /** Resolve a raw session token to its auth context, or null if invalid/expired/revoked. */
 export async function resolveSession(
   token: string,
-): Promise<{ userId: string; organizationId: string } | null> {
-  const session = await prisma.session.findUnique({ where: { tokenHash: hashToken(token) } });
+): Promise<{ userId: string; organizationId: string; role: MemberRole } | null> {
+  const tokenHash = hashToken(token);
+  const session = await prisma.session.findUnique({
+    where: { tokenHash },
+    include: {
+      user: { select: { id: true, deletedAt: true } },
+      organization: { select: { id: true, deletedAt: true } },
+    },
+  });
   if (!session || session.revokedAt || session.expiresAt < new Date()) return null;
-  return { userId: session.userId, organizationId: session.organizationId };
+
+  const membership = await prisma.organizationMember.findUnique({
+    where: { organizationId_userId: { organizationId: session.organizationId, userId: session.userId } },
+    select: { role: true },
+  });
+  if (!session.user || session.user.deletedAt || !session.organization || session.organization.deletedAt || !membership) {
+    // This session can never become valid again without a new membership/session.
+    await prisma.session.updateMany({ where: { id: session.id, revokedAt: null }, data: { revokedAt: new Date() } });
+    return null;
+  }
+  return { userId: session.userId, organizationId: session.organizationId, role: membership.role };
 }
 
 /** Typed auth error carrying an HTTP status. */

@@ -1,14 +1,25 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { requireAuth } from '../auth/auth.middleware.js';
+import { requirePrivilegedDashboardRole } from '../auth/authorization.js';
 import { validateBody } from '../middleware/validate.js';
+import { authUserKey, hours, minutes, rateLimit } from '../middleware/rateLimit.js';
 import { getOrCreateInstructions } from '../instructions/instruction.service.js';
 import { assertWebsiteOwnership, OwnershipError } from '../websites/website.service.js';
 import * as debugService from './knowledge-debug.service.js';
 
 export const knowledgeDebugRouter = Router();
 
-knowledgeDebugRouter.use(requireAuth);
+const dashboardKnowledgeDebugLimiter = rateLimit([
+  { name: 'dashboard_knowledge_debug_user', limit: 600, windowMs: minutes(1), key: authUserKey },
+]);
+
+const knowledgeDebugSearchLimiter = rateLimit([
+  { name: 'knowledge_debug_search_user', limit: 20, windowMs: hours(1), key: authUserKey },
+  { name: 'knowledge_debug_search_org', limit: 60, windowMs: hours(1), key: (req) => req.auth?.organizationId ?? null },
+]);
+
+knowledgeDebugRouter.use(requireAuth, requirePrivilegedDashboardRole, dashboardKnowledgeDebugLimiter);
 
 const searchSchema = z.object({
   question: z.string().min(1),
@@ -80,7 +91,7 @@ knowledgeDebugRouter.get('/api/websites/:id/knowledge/debug/chunks/:chunkId', as
   }
 });
 
-knowledgeDebugRouter.post('/api/websites/:id/knowledge/debug/search-test', validateBody(searchSchema), async (req, res, next) => {
+knowledgeDebugRouter.post('/api/websites/:id/knowledge/debug/search-test', knowledgeDebugSearchLimiter, validateBody(searchSchema), async (req, res, next) => {
   try {
     await guard(req.auth!.organizationId, req.params.id);
     const instructions = await getOrCreateInstructions(req.auth!.organizationId, req.params.id);

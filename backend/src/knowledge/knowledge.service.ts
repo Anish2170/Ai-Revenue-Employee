@@ -1,215 +1,75 @@
-/**
- * Knowledge build service — orchestrates ingestion with DB build/snapshot
- * records and emits phase events for SSE streaming.
- */
-import { prisma } from '../db/prisma.js';
+/** Durable PostgreSQL queue and status operations for knowledge builds. */
+import { Prisma } from '@prisma/client';
 import { config } from '../config/index.js';
-import { ingest } from '../services/ingestService.js';
-import { writeAuditLog } from '../audit/audit.service.js';
-import { enqueueAnalyticsEvent } from '../analytics/analytics.service.js';
-import type { IngestPhase } from '../services/ingestService.js';
-import { reconcileActionUrlOverridesAfterBuild } from '../business-actions/action.service.js';
+import { prisma } from '../db/prisma.js';
+import { randomUUID } from 'node:crypto';
 
-export type BuildPhaseEvent = {
-  phase: IngestPhase;
-  detail?: Record<string, unknown>;
-};
+const ACTIVE = ['QUEUED', 'RUNNING', 'RETRY_WAIT'] as const;
 
-export interface BuildProgress {
-  buildId: string;
-  events: AsyncIterable<BuildPhaseEvent>;
-}
+export type KnowledgeBuildStatus = 'QUEUED' | 'RUNNING' | 'RETRY_WAIT' | 'SUCCESS' | 'FAILED' | 'CANCELLED';
 
-/**
- * Start a knowledge build for a website. Returns an async iterable of phase
- * events the route can relay as SSE.
- */
-export async function startBuild(
-  organizationId: string,
-  websiteId: string,
-  sourceUrl: string,
-  userId: string,
-  language?: string,
-): Promise<BuildProgress> {
-  const build = await prisma.knowledgeBuild.create({
-    data: {
-      websiteId,
-      organizationId,
-      status: 'RUNNING',
-      currentPhase: 'crawling',
-    },
-  });
-
-  const analyticsTenant = { organizationId, websiteId };
-  enqueueAnalyticsEvent(analyticsTenant, {}, {
-    category: 'KNOWLEDGE',
-    eventName: 'knowledge_build_started',
-    knowledgeBuildId: build.id,
-    sourceUrl,
-  });
-
-  const events: BuildPhaseEvent[] = [];
-  const state = { resolve: null as (() => void) | null, done: false };
-
-  const queue = {
-    async *[Symbol.asyncIterator](): AsyncIterableIterator<BuildPhaseEvent> {
-      let idx = 0;
-      while (!state.done || idx < events.length) {
-        if (idx < events.length) {
-          yield events[idx++];
-        } else {
-          await new Promise<void>((r) => { state.resolve = r; });
-        }
-      }
-    },
-  };
-
-  const notify = () => { state.resolve?.(); state.resolve = null; };
-
-  let lastPhase: IngestPhase = 'crawling';
-  const onPhase = (phase: IngestPhase, detail?: Record<string, unknown>) => {
-    lastPhase = phase;
-    events.push({ phase, detail });
-    prisma.knowledgeBuild.update({
-      where: { id: build.id },
-      data: { currentPhase: phase, ...(detail?.pages ? { pages: detail.pages as number } : {}), ...(detail?.chunks ? { chunks: detail.chunks as number } : {}) },
-    }).catch(() => {});
-    notify();
-  };
-
-  // Run ingestion in the background (don't await — caller consumes events via the iterable)
-  (async () => {
-    try {
-      const result = await ingest(sourceUrl, {
-        websiteId,
-        organizationId,
-        language,
-        onPhase,
+export async function enqueueBuild(
+  organizationId: string, websiteId: string, sourceUrl: string, userId: string, language?: string, idempotencyKey?: string,
+) {
+  try {
+    return await prisma.$transaction(async (tx) => {
+      // This serializes enqueue attempts for this website across all web instances.
+      await tx.$queryRaw`SELECT "id" FROM "Website" WHERE "id" = ${websiteId}::uuid FOR UPDATE`;
+      const active = await tx.knowledgeBuild.findFirst({
+        where: { websiteId, status: { in: [...ACTIVE] } }, orderBy: { createdAt: 'desc' },
       });
+      if (active) return { build: active, created: false };
 
-      // Create snapshot record
-      const snapshot = await prisma.knowledgeSnapshot.create({
+      const snapshot = await tx.knowledgeSnapshot.create({
         data: {
-          websiteId,
-          organizationId,
-          embeddingModel: config.gemini.embeddingModel,
-          dimensions: result.dimensions,
-          pagesCrawled: result.pages,
-          chunkCount: result.chunks,
-          sourceUrl,
-          status: 'READY',
-          storageKey: result.snapshotPath,
+          id: randomUUID(), websiteId, organizationId, sourceUrl,
+          embeddingModel: config.gemini.embeddingModel, dimensions: 0, pagesCrawled: 0, chunkCount: 0,
+          status: 'BUILDING', storageProvider: config.knowledgeStorage === 'r2' ? 'R2' : 'LOCAL', storageKey: '',
         },
       });
-
-      await reconcileActionUrlOverridesAfterBuild(organizationId, websiteId);
-
-      await prisma.knowledgeBuild.update({
-        where: { id: build.id },
-        data: {
-          status: 'SUCCESS',
-          snapshotId: snapshot.id,
-          pages: result.pages,
-          chunks: result.chunks,
-          finishedAt: new Date(),
-        },
+      const build = await tx.knowledgeBuild.create({
+        data: { websiteId, organizationId, snapshotId: snapshot.id, status: 'QUEUED', currentPhase: 'queued', requestedByUserId: userId, sourceUrl, language: language ?? null, idempotencyKey: idempotencyKey ?? null, maxAttempts: 3 },
       });
-
-      enqueueAnalyticsEvent(analyticsTenant, {}, {
-        category: 'KNOWLEDGE',
-        eventName: 'knowledge_build_completed',
-        knowledgeBuildId: build.id,
-        sourceUrl,
-        numericValue: result.chunks,
-        durationMs: result.durationMs,
-      });
-
-      events.push({ phase: 'saving', detail: { done: true, pages: result.pages, chunks: result.chunks, durationMs: result.durationMs } });
-
-      await writeAuditLog({
-        action: 'knowledge.built',
-        organizationId,
-        userId,
-        targetType: 'website',
-        targetId: websiteId,
-        metadata: { pages: result.pages, chunks: result.chunks },
-      });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Unknown error';
-      await prisma.knowledgeBuild.update({
-        where: { id: build.id },
-        data: { status: 'FAILED', error: message, finishedAt: new Date() },
-      }).catch(() => {});
-      enqueueAnalyticsEvent(analyticsTenant, {}, {
-        category: 'KNOWLEDGE',
-        eventName: 'knowledge_build_failed',
-        knowledgeBuildId: build.id,
-        sourceUrl,
-        reason: message,
-      });
-      events.push({ phase: lastPhase, detail: { error: message } });
-    } finally {
-      state.done = true;
-      notify();
+      return { build, created: true };
+    });
+  } catch (error) {
+    // The partial unique index is the final race guard if an enqueue arrives outside the row lock.
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+      const active = await prisma.knowledgeBuild.findFirst({ where: { websiteId, status: { in: [...ACTIVE] } }, orderBy: { createdAt: 'desc' } });
+      if (active) return { build: active, created: false };
     }
-  })();
-
-  return { buildId: build.id, events: queue };
+    throw error;
+  }
 }
 
-/** Get the latest snapshot status for a website. */
+function publicBuild(build: Awaited<ReturnType<typeof prisma.knowledgeBuild.findUniqueOrThrow>>) {
+  return {
+    id: build.id, status: build.status, phase: build.currentPhase,
+    progress: { pages: build.pages, pagesSkipped: build.pagesSkipped, actionsDiscovered: build.actionsDiscovered, chunks: build.chunks, embeddingsCompleted: build.embeddingsCompleted },
+    attempt: build.attempt, maxAttempts: build.maxAttempts, error: build.error,
+    startedAt: build.startedAt, finishedAt: build.finishedAt, createdAt: build.createdAt,
+  };
+}
+
+export async function getBuildStatus(organizationId: string, websiteId: string, buildId: string) {
+  const build = await prisma.knowledgeBuild.findFirst({ where: { id: buildId, organizationId, websiteId } });
+  return build ? publicBuild(build) : null;
+}
+
+/** Get the latest snapshot status and the latest durable job, for refresh/reopen UI recovery. */
 export async function getKnowledgeStatus(websiteId: string) {
   const [latestSnapshot, latestBuild] = await Promise.all([
-    prisma.knowledgeSnapshot.findFirst({
-      where: { websiteId, status: 'READY' },
-      orderBy: { createdAt: 'desc' },
-    }),
-    prisma.knowledgeBuild.findFirst({
-      where: { websiteId },
-      orderBy: { startedAt: 'desc' },
-    }),
+    prisma.knowledgeSnapshot.findFirst({ where: { websiteId, status: 'READY' }, orderBy: { createdAt: 'desc' } }),
+    prisma.knowledgeBuild.findFirst({ where: { websiteId }, orderBy: { createdAt: 'desc' } }),
   ]);
-
   return {
     hasKnowledge: !!latestSnapshot,
-    snapshot: latestSnapshot ? {
-      id: latestSnapshot.id,
-      pagesCrawled: latestSnapshot.pagesCrawled,
-      chunkCount: latestSnapshot.chunkCount,
-      sourceUrl: latestSnapshot.sourceUrl,
-      embeddingModel: latestSnapshot.embeddingModel,
-      dimensions: latestSnapshot.dimensions,
-      createdAt: latestSnapshot.createdAt,
-    } : null,
-    lastBuild: latestBuild ? {
-      id: latestBuild.id,
-      status: latestBuild.status,
-      currentPhase: latestBuild.currentPhase,
-      pages: latestBuild.pages,
-      chunks: latestBuild.chunks,
-      error: latestBuild.error,
-      startedAt: latestBuild.startedAt,
-      finishedAt: latestBuild.finishedAt,
-    } : null,
+    snapshot: latestSnapshot ? { id: latestSnapshot.id, pagesCrawled: latestSnapshot.pagesCrawled, chunkCount: latestSnapshot.chunkCount, sourceUrl: latestSnapshot.sourceUrl, embeddingModel: latestSnapshot.embeddingModel, dimensions: latestSnapshot.dimensions, createdAt: latestSnapshot.createdAt } : null,
+    lastBuild: latestBuild ? publicBuild(latestBuild) : null,
   };
 }
 
-/** List build history for a website. */
 export async function listBuilds(websiteId: string, limit = 10) {
-  return prisma.knowledgeBuild.findMany({
-    where: { websiteId },
-    orderBy: { startedAt: 'desc' },
-    take: limit,
-    select: {
-      id: true,
-      status: true,
-      currentPhase: true,
-      pages: true,
-      chunks: true,
-      error: true,
-      startedAt: true,
-      finishedAt: true,
-    },
-  });
+  const builds = await prisma.knowledgeBuild.findMany({ where: { websiteId }, orderBy: { createdAt: 'desc' }, take: limit });
+  return builds.map(publicBuild);
 }
-

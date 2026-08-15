@@ -2,7 +2,7 @@
 
 AI Revenue Employee is an embeddable AI sales assistant for SaaS and service businesses. It learns from a website, watches visitor behavior through a lightweight widget, starts helpful conversations at the right moment, captures leads, and gives teams a dashboard for analytics, website actions, and AI decision logs.
 
-The project is designed as a production-ready v1.0 SaaS foundation: a Next.js dashboard, an Express/Prisma backend, a PostgreSQL data layer, Google Gemini for generation and embeddings, and a standalone JavaScript widget that can run on customer websites.
+The project is designed as a production-ready v1.0 SaaS foundation: a Next.js dashboard, an Express/Prisma backend, a PostgreSQL data layer, OpenAI GPT-5 mini for primary generation, Gemini 2.5 Flash for fallback generation and embeddings, and a standalone JavaScript widget that can run on customer websites.
 
 ## Features
 
@@ -26,7 +26,9 @@ flowchart LR
   dashboard["Next.js dashboard on Vercel"] --> backend
   backend --> db["Neon Postgres"]
   backend --> prisma["Prisma ORM"]
-  backend --> gemini["Google Gemini"]
+  backend --> openai["OpenAI GPT-5 mini (primary)"]
+  backend --> gemini["Gemini 2.5 Flash (fallback + embeddings)"]
+  backend --> r2["Cloudflare R2 knowledge snapshots"]
   backend --> crawler["Crawler and Knowledge Build"]
   crawler --> knowledge["Knowledge index"]
   knowledge --> backend
@@ -42,7 +44,7 @@ flowchart LR
 | Dashboard | Next.js 16, React 19, TypeScript, Tailwind CSS |
 | Backend | Node.js, Express, TypeScript |
 | Database | PostgreSQL, Prisma |
-| AI | Google Gemini generation and embedding models |
+| AI | OpenAI GPT-5 mini primary; Gemini 2.5 Flash fallback and embeddings |
 | Widget | TypeScript, esbuild, browser IIFE bundle |
 | Deployment | Vercel dashboard, Render API, Neon Postgres |
 
@@ -142,8 +144,13 @@ The backend environment is documented in [backend/.env.example](backend/.env.exa
 | `NODE_ENV` | Runtime mode. Use `production` in deployed environments. |
 | `PORT` | API server port. Render usually provides this automatically. |
 | `DATABASE_URL` | PostgreSQL connection string. |
-| `GEMINI_API_KEY` | Google Gemini API key. |
-| `GEMINI_MODEL` | Generation model, for example `gemini-2.5-flash`. |
+| `PRIMARY_LLM_PROVIDER` | Production primary provider: `openai`. |
+| `PRIMARY_LLM_MODEL` | Production primary model: `gpt-5-mini`. |
+| `OPENAI_API_KEY` | Server-only OpenAI API key. |
+| `FALLBACK_LLM_PROVIDER` | Production fallback provider: `gemini`. |
+| `FALLBACK_LLM_MODEL` | Production fallback model: `gemini-2.5-flash`. |
+| `GEMINI_API_KEY` | Server-only Gemini key for fallback generation and embeddings. |
+| `GEMINI_MODEL` | Gemini model used for embeddings client configuration. |
 | `EMBEDDING_MODEL` | Embedding model for knowledge retrieval. |
 | `SESSION_SECRET` | Secret used to sign session cookies. |
 | `SESSION_TTL_DAYS` | Session lifetime. |
@@ -157,6 +164,8 @@ The backend environment is documented in [backend/.env.example](backend/.env.exa
 | `RETRIEVAL_MAX_CONTEXT_CHARS` | Maximum retrieved context sent to the model. |
 | `KNOWLEDGE_DIR` | Local knowledge storage directory. |
 | `KNOWLEDGE_SNAPSHOT_PATH` | Knowledge index file path. |
+| `KNOWLEDGE_STORAGE` | `r2` for production durable snapshots; `local` for local development. |
+| `R2_ACCOUNT_ID`, `R2_BUCKET`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT`, `R2_REGION` | Server-only R2 configuration required when storage is `r2`. |
 | `CRAWL_MAX_PAGES` | Maximum pages crawled per website. |
 | `CRAWL_CONCURRENCY` | Crawler concurrency. |
 | `CRAWL_TIMEOUT_MS` | Per-page crawl timeout. |
@@ -166,11 +175,11 @@ The backend environment is documented in [backend/.env.example](backend/.env.exa
 
 ### Vercel
 
-Deploy `dashboard/` as the frontend application. Configure the dashboard to call the Render API URL and allow that dashboard origin in backend CORS settings.
+Deploy `dashboard/` as the frontend application. Set only `NEXT_PUBLIC_API_URL` to the public Render API URL; it is intentionally public. Never expose database, session, LLM, or R2 credentials through a `NEXT_PUBLIC_*` value.
 
 ### Render
 
-Deploy `backend/` as the API service. Use `npm install`, `npm run build`, `npm run prisma:migrate:deploy`, and `npm start` according to your Render service setup. Add all required environment variables in Render, especially `DATABASE_URL`, `GEMINI_API_KEY`, `SESSION_SECRET`, `FRONTEND_URL`, `DASHBOARD_ORIGIN`, `WIDGET_BASE_URL`, and `CORS_ORIGIN`.
+Deploy `backend/` as the API service. Use the documented Render build/start commands and `npm run prisma:migrate:deploy`—never `prisma migrate dev`—for production migrations. Add all required server-only configuration from `backend/.env.example`, including OpenAI primary, Gemini fallback/embeddings, origins, and R2 when enabled.
 
 ### Neon
 

@@ -17,6 +17,7 @@ import type {
   StreamRequest,
   StructuredRequest,
 } from './types.js';
+import { logger } from '../../logging/logger.js';
 
 /** Map our neutral task type to Gemini's embedding taskType enum value. */
 function geminiTaskType(t: EmbedTaskType): string {
@@ -91,12 +92,11 @@ function serializeProviderError(err: unknown): Record<string, unknown> {
 function chatTrace(req: StreamRequest, stage: string, detail?: unknown): void {
   if (!config.debugTrace) return;
   const id = req.debug?.requestId ?? 'no-request-id';
-  const suffix = detail === undefined ? '' : ` ${JSON.stringify(detail)}`;
-  console.log(`[chat:${id}] ${stage}${suffix}`);
+  logger.debug(`[chat:${id}] ${stage}`, detail);
 }
-export function createGeminiProvider(): LLMProvider {
+export function createGeminiProvider(modelOverride = config.llm.fallback.model): LLMProvider {
   const ai = new GoogleGenAI({ apiKey: config.gemini.apiKey });
-  const model = config.gemini.model;
+  const model = modelOverride;
 
   return {
     id: `gemini:${model}`,
@@ -140,14 +140,14 @@ export function createGeminiProvider(): LLMProvider {
           const text = chunk.text;
           if (text) {
             raw += text;
-            chatTrace(req, 'raw Gemini chunk', { chars: text.length, text });
+            chatTrace(req, 'Gemini chunk received', { chars: text.length });
             yield text;
           }
         }
 
-        chatTrace(req, 'raw Gemini response', { chars: raw.length, text: raw });
+        chatTrace(req, 'Gemini response received', { chars: raw.length });
       } catch (err) {
-        console.error(`[chat:${req.debug?.requestId ?? 'no-request-id'}] Gemini provider error`, serializeProviderError(err));
+        logger.error(`[chat:${req.debug?.requestId ?? 'no-request-id'}] Gemini provider error`, serializeProviderError(err));
         throw err;
       }
     },

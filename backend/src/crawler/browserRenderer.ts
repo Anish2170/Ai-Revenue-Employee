@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import { config } from '../config/index.js';
+import { resolvePublicUrl } from '../security/ssrf.js';
 
 interface CdpMessage {
   id?: number;
@@ -145,6 +146,9 @@ class CdpClient {
 }
 
 export async function renderPage(url: string, timeoutMs: number): Promise<RenderedPage> {
+  // Validate before Chrome starts navigation. Fetch interception below repeats
+  // this check for every browser request, including redirect destinations.
+  await resolvePublicUrl(url);
   const executable = findBrowserExecutable();
   if (!executable) throw new Error('No Chrome/Edge executable found. Set CRAWL_BROWSER_PATH or CHROME_PATH.');
 
@@ -195,8 +199,17 @@ export async function renderPage(url: string, timeoutMs: number): Promise<Render
       }
     });
 
+    client.on('Fetch.requestPaused', (params) => {
+      const paused = params as { requestId?: string; request?: { url?: string } };
+      if (!paused.requestId || !paused.request?.url) return;
+      void resolvePublicUrl(paused.request.url)
+        .then(() => client?.send('Fetch.continueRequest', { requestId: paused.requestId }, timeoutMs))
+        .catch(() => client?.send('Fetch.failRequest', { requestId: paused.requestId, errorReason: 'BlockedByClient' }, timeoutMs));
+    });
+
     await client.send('Page.enable');
     await client.send('Network.enable');
+    await client.send('Fetch.enable', { patterns: [{ urlPattern: '*' }] });
     await client.send('Runtime.enable');
 
     const waitStrategy = ['domcontentloaded', 'load', 'networkidle', 'stable_innerText'];
@@ -208,6 +221,7 @@ export async function renderPage(url: string, timeoutMs: number): Promise<Render
     await waitForNetworkQuiet(activeRequests, () => lastNetworkChange, 600, Math.min(timeoutMs, 8_000));
     const snapshot = await waitForStableDom(client, timeoutMs);
     const finalUrl = await currentUrl(client, responseUrl);
+    await resolvePublicUrl(finalUrl);
 
     return {
       url: finalUrl,

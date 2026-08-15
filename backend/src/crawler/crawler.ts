@@ -15,6 +15,8 @@ import { extractActionsFromHtml, type RawDiscoveredAction } from '../business-ac
 import { renderPage, type RenderedPage } from './browserRenderer.js';
 import { classifyPage, isCrawlablePath, isSameOrigin, normalizeUrl } from './links.js';
 import type { CrawledPage } from '../context/types.js';
+import { safeFetch } from '../security/ssrf.js';
+import { logger } from '../logging/logger.js';
 
 export interface CrawlOptions {
   maxPages?: number;
@@ -46,19 +48,15 @@ function sha256(input: string): string {
 
 async function fetchHtml(url: string, timeoutMs: number): Promise<FetchResult> {
   try {
-    const res = await fetch(url, {
-      redirect: 'follow',
-      signal: AbortSignal.timeout(timeoutMs),
-      headers: { 'User-Agent': 'AIRevenueEmployee-Crawler/1.0' },
-    });
-    const type = res.headers.get('content-type') ?? '';
-    if (!res.ok) {
+    const res = await safeFetch(url, { timeoutMs, headers: { 'User-Agent': 'AIRevenueEmployee-Crawler/1.0' } });
+    const type = String(res.headers['content-type'] ?? '');
+    if (res.status < 200 || res.status >= 300) {
       return { ok: false, url: res.url || url, status: res.status, contentType: type, html: null, error: `http_status_${res.status}` };
     }
     if (!type.includes('text/html')) {
       return { ok: false, url: res.url || url, status: res.status, contentType: type, html: null, error: `non_html_content_type:${type || 'missing'}` };
     }
-    return { ok: true, url: res.url || url, status: res.status, contentType: type, html: await res.text(), error: null };
+    return { ok: true, url: res.url || url, status: res.status, contentType: type, html: res.body.toString('utf8'), error: null };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return { ok: false, url, status: null, contentType: '', html: null, error: `fetch_error:${message}` };
@@ -131,7 +129,6 @@ async function crawlOnePage(url: string, timeoutMs: number): Promise<{ url: stri
       finalUrl: fetched.url,
       readyState: 'not_loaded',
       bodyTextLength: 0,
-      bodyTextFirst500: '',
       headingCount: 0,
       paragraphCount: 0,
       linkCount: 0,
@@ -155,7 +152,6 @@ async function crawlOnePage(url: string, timeoutMs: number): Promise<{ url: stri
     finalUrl: fetched.url,
     readyState: 'static_html_no_js',
     bodyTextLength: staticInspection.bodyText.length,
-    bodyTextFirst500: staticInspection.bodyText.slice(0, 500),
     headingCount: staticInspection.headingCount,
     paragraphCount: staticInspection.paragraphCount,
     linkCount: staticInspection.linkCount,
@@ -192,7 +188,6 @@ async function crawlOnePage(url: string, timeoutMs: number): Promise<{ url: stri
       finalUrl: fetched.url,
       readyState: 'render_failed',
       bodyTextLength: staticInspection.bodyText.length,
-      bodyTextFirst500: staticInspection.bodyText.slice(0, 500),
       headingCount: staticInspection.headingCount,
       paragraphCount: staticInspection.paragraphCount,
       linkCount: staticInspection.linkCount,
@@ -230,7 +225,6 @@ function logRenderedCrawlPage(
     finalUrl: rendered.url,
     readyState: rendered.readyState,
     bodyTextLength: rendered.bodyText.length,
-    bodyTextFirst500: rendered.bodyText.slice(0, 500),
     headingCount: rendered.headingCount,
     paragraphCount: rendered.paragraphCount,
     linkCount: rendered.linkCount,
@@ -247,7 +241,6 @@ function logCrawlPage(detail: {
   finalUrl: string;
   readyState: string;
   bodyTextLength: number;
-  bodyTextFirst500: string;
   headingCount: number;
   paragraphCount: number;
   linkCount: number;
@@ -256,5 +249,6 @@ function logCrawlPage(detail: {
   rejectionReason: string | null;
 }): void {
   if (!config.debugTrace) return;
-  console.log('[crawl:page]', JSON.stringify(detail));
+  const { requestedUrl, finalUrl, ...operational } = detail;
+  logger.debug('[crawl:page]', { ...operational, hasRequestedUrl: Boolean(requestedUrl), hasFinalUrl: Boolean(finalUrl) });
 }

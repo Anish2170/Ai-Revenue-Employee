@@ -3,17 +3,44 @@ import { z } from 'zod';
 import { prisma } from '../db/prisma.js';
 import { hasDatabase } from '../config/index.js';
 import { requireAuth } from '../auth/auth.middleware.js';
+import { requirePrivilegedDashboardRole } from '../auth/authorization.js';
+import { authUserKey, clientIp, hours, minutes, rateLimit, siteIdFromRequest, visitorKeyFromRequest } from '../middleware/rateLimit.js';
 import { resolveTenant, TenantDisabledError, TenantNotFoundError } from '../tenant/tenant.resolver.js';
+import { verifyPublicWidgetIdentity } from '../widget/publicIdentity.js';
 import * as websiteService from '../websites/website.service.js';
-import { daysAgoStart, enqueueAnalyticsEvents, startOfToday } from './analytics.service.js';
+import { daysAgoStart, persistAnalyticsEvents, startOfToday } from './analytics.service.js';
 import { enqueueAiDecisionOutcomes } from './decision-log.service.js';
 import type { AnalyticsEventCategory } from '@prisma/client';
+import { logger } from '../logging/logger.js';
 
 export const analyticsRouter = Router();
 
+const publicAnalyticsLimiter = rateLimit(
+  [
+    { name: 'public_analytics_ip', limit: 300, windowMs: minutes(1), key: (req) => clientIp(req) },
+    { name: 'public_analytics_site', limit: 10000, windowMs: hours(1), key: siteIdFromRequest },
+    {
+      name: 'public_analytics_site_session',
+      limit: 120,
+      windowMs: minutes(1),
+      key: (req) => {
+        const siteId = siteIdFromRequest(req);
+        const visitor = visitorKeyFromRequest(req);
+        return siteId && visitor ? `${siteId}:${visitor}` : null;
+      },
+    },
+  ],
+  { onLimited: 'ignore', ignoredBody: { status: 'ignored', reason: 'rate_limited' } },
+);
+
+const dashboardAnalyticsLimiter = rateLimit([
+  { name: 'dashboard_analytics_user', limit: 600, windowMs: minutes(1), key: authUserKey },
+]);
+
 const categorySchema = z.enum(['VISITOR', 'PAGE', 'POPUP', 'CHAT', 'KNOWLEDGE', 'WIDGET']);
 
-const analyticsEventSchema = z.object({
+export const analyticsEventSchema = z.object({
+  eventId: z.string().uuid(),
   category: categorySchema,
   eventName: z.string().min(1).max(80),
   occurredAt: z.string().datetime().optional(),
@@ -33,10 +60,11 @@ const analyticsEventSchema = z.object({
   reason: z.string().max(160).optional().nullable(),
   label: z.string().max(240).optional().nullable(),
   actionId: z.string().max(80).optional().nullable(),
-});
+}).strict();
 
-const analyticsIngestSchema = z.object({
+export const analyticsIngestSchema = z.object({
   siteId: z.string().min(1).max(100),
+  visitorToken: z.string().min(1).max(1000),
   visitorId: z.string().min(8).max(128),
   sessionId: z.string().min(8).max(128),
   returning: z.boolean().default(false),
@@ -48,7 +76,32 @@ const analyticsIngestSchema = z.object({
   browser: z.string().max(80).optional().nullable(),
   surface: z.string().max(40).optional().nullable(),
   events: z.array(analyticsEventSchema).min(1).max(50),
-});
+}).strict();
+
+const ALLOWED_EVENT_NAMES: Record<z.infer<typeof categorySchema>, readonly string[]> = {
+  VISITOR: ['visitor_started', 'returning_visitor', 'session_started', 'session_ended'],
+  PAGE: ['page_viewed', 'page_exited'],
+  POPUP: ['popup_displayed', 'popup_clicked', 'popup_dismissed', 'popup_suppressed'],
+  CHAT: ['chat_opened', 'chat_closed', 'message_sent', 'ai_response_completed', 'source_button_clicked'],
+  KNOWLEDGE: [],
+  WIDGET: ['widget_loaded', 'widget_initialized'],
+};
+
+const MAX_PAST_SKEW_MS = 1000 * 60 * 60 * 24 * 7;
+const MAX_FUTURE_SKEW_MS = 1000 * 60 * 15;
+
+export function isAllowedAnalyticsEventName(category: z.infer<typeof categorySchema>, eventName: string): boolean {
+  return ALLOWED_EVENT_NAMES[category].includes(eventName)
+    || (category === 'POPUP' && /^[a-z0-9][a-z0-9_-]{0,78}_clicked$/i.test(eventName));
+}
+
+export function normalizeAnalyticsOccurredAt(value: string | undefined, receivedAt = new Date()): Date | null {
+  if (!value) return receivedAt;
+  const occurredAt = new Date(value);
+  if (!Number.isFinite(occurredAt.getTime())) return null;
+  if (occurredAt.getTime() < receivedAt.getTime() - MAX_PAST_SKEW_MS || occurredAt.getTime() > receivedAt.getTime() + MAX_FUTURE_SKEW_MS) return null;
+  return occurredAt;
+}
 
 const chartMetricSchema = z.enum(['daily_visitors', 'daily_chats', 'popup_ctr', 'conversation_trend']);
 const decisionFilterSchema = z.enum(['Popup Generated', 'Suppressed']);
@@ -60,12 +113,21 @@ async function resolveDashboardWebsiteId(organizationId: string, rawWebsiteId: u
   return websiteId;
 }
 
-analyticsRouter.post('/analytics/events', async (req, res) => {
+analyticsRouter.post('/analytics/events', publicAnalyticsLimiter, async (req, res) => {
   const parsed = analyticsIngestSchema.safeParse(req.body);
-  if (!parsed.success || !hasDatabase) return res.json({ status: 'ignored' });
+  if (!parsed.success) return res.status(400).json({ status: 'ignored', reason: 'invalid_payload' });
+  if (!hasDatabase) return res.status(503).json({ status: 'ignored', reason: 'storage_unavailable' });
 
   try {
     const body = parsed.data;
+    const identity = verifyPublicWidgetIdentity(body.visitorToken, body.siteId);
+    if (!identity || identity.visitorId !== body.visitorId || identity.sessionId !== body.sessionId) return res.status(403).json({ status: 'ignored', reason: 'invalid_identity' });
+    if (!body.events.every((event) => isAllowedAnalyticsEventName(event.category, event.eventName))) {
+      return res.status(400).json({ status: 'ignored', reason: 'invalid_event_type' });
+    }
+    const receivedAt = new Date();
+    const normalizedEvents = body.events.map((event) => ({ event, occurredAt: normalizeAnalyticsOccurredAt(event.occurredAt, receivedAt) }));
+    if (normalizedEvents.some(({ occurredAt }) => !occurredAt)) return res.status(400).json({ status: 'ignored', reason: 'invalid_timestamp' });
     const tenant = await resolveTenant(body.siteId);
     const context = {
       visitorId: body.visitorId,
@@ -79,25 +141,25 @@ analyticsRouter.post('/analytics/events', async (req, res) => {
       browser: body.browser,
       surface: body.surface,
     };
-    const events = body.events.map((event) => ({
+    const events = normalizedEvents.map(({ event, occurredAt }) => ({
       ...event,
       category: event.category as AnalyticsEventCategory,
-      occurredAt: event.occurredAt ? new Date(event.occurredAt) : undefined,
+      occurredAt: occurredAt!,
     }));
-    enqueueAnalyticsEvents(tenant, context, events);
-    enqueueAiDecisionOutcomes(tenant, context, events);
-    return res.json({ status: 'ack', accepted: body.events.length });
+    const persistedEvents = await persistAnalyticsEvents(tenant, context, events);
+    enqueueAiDecisionOutcomes(tenant, context, persistedEvents);
+    return res.json({ status: 'ack', accepted: body.events.length, persisted: persistedEvents.length });
   } catch (err) {
     if (err instanceof TenantNotFoundError || err instanceof TenantDisabledError) {
-      return res.json({ status: 'ignored' });
+      return res.status(403).json({ status: 'ignored', reason: 'invalid_site' });
     }
-    console.warn('[analytics] ingest ignored:', err instanceof Error ? err.message : String(err));
-    return res.json({ status: 'ignored' });
+    logger.warn('[analytics] ingest storage failure', { error: err });
+    return res.status(503).json({ status: 'ignored', reason: 'storage_unavailable' });
   }
 });
 
 
-analyticsRouter.get('/api/analytics/decision-log', requireAuth, async (req, res, next) => {
+analyticsRouter.get('/api/analytics/decision-log', requireAuth, requirePrivilegedDashboardRole, dashboardAnalyticsLimiter, async (req, res, next) => {
   try {
     const websiteId = await resolveDashboardWebsiteId(req.auth!.organizationId, req.query.websiteId);
     const exportMode = req.query.export === '1';
@@ -180,7 +242,7 @@ analyticsRouter.get('/api/analytics/decision-log', requireAuth, async (req, res,
     next(err);
   }
 });
-analyticsRouter.get('/api/analytics/summary', requireAuth, async (req, res, next) => {
+analyticsRouter.get('/api/analytics/summary', requireAuth, dashboardAnalyticsLimiter, async (req, res, next) => {
   try {
     const websiteId = await resolveDashboardWebsiteId(req.auth!.organizationId, req.query.websiteId);
     const base = {
@@ -286,7 +348,7 @@ analyticsRouter.get('/api/analytics/summary', requireAuth, async (req, res, next
   }
 });
 
-analyticsRouter.get('/api/analytics/charts', requireAuth, async (req, res, next) => {
+analyticsRouter.get('/api/analytics/charts', requireAuth, dashboardAnalyticsLimiter, async (req, res, next) => {
   try {
     const metric = chartMetricSchema.parse(req.query.metric ?? 'daily_visitors');
     const days = Math.min(Math.max(Number(req.query.days ?? 14) || 14, 1), 60);

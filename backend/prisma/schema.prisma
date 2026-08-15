@@ -308,6 +308,9 @@ model AnalyticsEvent {
   id                 String                 @id @default(uuid()) @db.Uuid
   organizationId     String                 @db.Uuid
   websiteId          String                 @db.Uuid
+  /// Client-generated for public widget events; server-generated for internal events.
+  /// Scoped to a website so unrelated tenants can use the same identifier.
+  eventId            String?
   analyticsVisitorId String?                @db.Uuid
   analyticsSessionId String?                @db.Uuid
   visitorId          String?
@@ -346,6 +349,7 @@ model AnalyticsEvent {
   @@index([websiteId, popupType, occurredAt])
   @@index([websiteId, actionId, occurredAt])
   @@index([websiteId, pagePath, occurredAt])
+  @@unique([websiteId, eventId])
 }
 
 model AiDecisionLog {
@@ -581,6 +585,11 @@ enum SnapshotStatus {
   FAILED
 }
 
+enum KnowledgeStorageProvider {
+  LOCAL
+  R2
+}
+
 /// Metadata of a knowledge ARTIFACT (what is actually live/queryable). One row per successful build.
 model KnowledgeSnapshot {
   id             String         @id @default(uuid()) @db.Uuid
@@ -593,7 +602,11 @@ model KnowledgeSnapshot {
   chunkCount     Int
   sourceUrl      String
   status         SnapshotStatus @default(BUILDING)
-  storageKey     String // e.g. data/knowledge/<websiteId>.json
+  storageProvider KnowledgeStorageProvider @default(LOCAL)
+  storageKey     String // logical provider key; R2 uses knowledge/v1/org/.../snapshot/<id>.json
+  contentSha256  String?
+  contentBytes   Int?
+  etag           String?
   error          String?
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
@@ -606,9 +619,12 @@ model KnowledgeSnapshot {
 }
 
 enum BuildStatus {
+  QUEUED
   RUNNING
+  RETRY_WAIT
   SUCCESS
   FAILED
+  CANCELLED
 }
 
 /// Append-only EVENT LOG of every KB build attempt (incl. failures). `currentPhase` powers live progress.
@@ -622,6 +638,20 @@ model KnowledgeBuild {
   pages          Int?
   chunks         Int?
   error          String?
+  lastErrorCode  String?
+  requestedByUserId String?  @db.Uuid
+  sourceUrl      String?
+  language       String?
+  idempotencyKey String?
+  attempt        Int         @default(0)
+  maxAttempts    Int         @default(3)
+  nextRunAt      DateTime    @default(now())
+  lockedBy       String?
+  leaseExpiresAt DateTime?
+  heartbeatAt    DateTime?
+  pagesSkipped   Int?
+  actionsDiscovered Int?
+  embeddingsCompleted Int?
   startedAt      DateTime    @default(now())
   finishedAt     DateTime?
   createdAt      DateTime    @default(now())
@@ -632,6 +662,9 @@ model KnowledgeBuild {
   snapshot     KnowledgeSnapshot? @relation(fields: [snapshotId], references: [id], onDelete: SetNull)
 
   @@index([websiteId, startedAt])
+  @@index([status, nextRunAt])
+  @@index([status, leaseExpiresAt])
+  @@index([websiteId, createdAt])
 }
 
 // ---------------------------------------------------------------------------
@@ -654,6 +687,20 @@ model AuditLog {
   user         User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   @@index([organizationId, createdAt])
+}
+
+model RateLimitBucket {
+  id          String   @id
+  limiter     String
+  bucket      String
+  windowStart DateTime
+  count       Int      @default(0)
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([limiter, bucket])
+  @@index([expiresAt])
 }
 
 

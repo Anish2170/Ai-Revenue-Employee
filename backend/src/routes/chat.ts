@@ -6,6 +6,7 @@
 import { randomUUID } from 'node:crypto';
 import { Router } from 'express';
 import { validateBody } from '../middleware/validate.js';
+import { clientIp, hours, minutes, rateLimit, siteIdFromRequest, visitorKeyFromRequest } from '../middleware/rateLimit.js';
 import { chatRequestSchema } from '../validation/requestSchemas.js';
 import { llmAvailable } from '../llm/index.js';
 import { streamChatReply } from '../services/chatService.js';
@@ -16,23 +17,39 @@ import { captureLeadFromConversation } from '../leads/lead.service.js';
 import { resolveTenantFromRequestOrigin } from '../tenant/originSnapshotTenant.resolver.js';
 import type { BusinessInstructions } from '../context/types.js';
 import type { ChatRequest } from '../validation/requestSchemas.js';
+import { logger } from '../logging/logger.js';
+import { verifyPublicWidgetRequestIdentity } from '../widget/publicIdentity.js';
 
 export const chatRouter = Router();
 
-function serializeError(err: unknown): Record<string, unknown> {
-  if (!(err instanceof Error)) return { value: String(err) };
-  return { name: err.name, message: err.message };
-}
+const chatLimiter = rateLimit([
+  { name: 'public_chat_ip', limit: 30, windowMs: minutes(1), key: (req) => clientIp(req) },
+  { name: 'public_chat_site', limit: 300, windowMs: hours(1), key: siteIdFromRequest },
+  {
+    name: 'public_chat_site_visitor',
+    limit: 20,
+    windowMs: minutes(1),
+    key: (req) => {
+      const siteId = siteIdFromRequest(req);
+      const visitor = visitorKeyFromRequest(req);
+      return siteId && visitor ? `${siteId}:${visitor}` : null;
+    },
+  },
+]);
 
 function chatTrace(requestId: string, stage: string, detail?: unknown): void {
   if (!config.debugTrace) return;
-  const suffix = detail === undefined ? '' : ` ${JSON.stringify(detail)}`;
-  console.log(`[chat:${requestId}] ${stage}${suffix}`);
+  logger.debug(`[chat:${requestId}] ${stage}`, detail);
 }
 
-chatRouter.post('/chat', validateBody(chatRequestSchema), async (req, res) => {
+chatRouter.post('/chat', chatLimiter, validateBody(chatRequestSchema), async (req, res) => {
   const requestId = randomUUID().slice(0, 8);
   chatTrace(requestId, 'entered /chat');
+
+  const body = req.body as ChatRequest;
+  if (!verifyPublicWidgetRequestIdentity(body)) {
+    return res.status(403).json({ error: 'INVALID_WIDGET_SESSION' });
+  }
 
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
@@ -49,18 +66,16 @@ chatRouter.post('/chat', validateBody(chatRequestSchema), async (req, res) => {
 
   if (!llmAvailable()) {
     chatTrace(requestId, 'LLM unavailable', { reason: 'missing GEMINI_API_KEY' });
-    send({ error: 'LLM not configured.' });
+    send({ error: "Sorry, I'm having trouble responding right now. Please try again in a moment." });
     return done();
   }
 
   try {
-    const { siteId, conversationId, visitorId, sessionId, messages, behaviour } = req.body as ChatRequest;
+    const { siteId, conversationId, visitorId, sessionId, messages, behaviour } = body;
     chatTrace(requestId, 'request parsed', {
       siteId: siteId || null,
       messages: messages.length,
-      conversationId: conversationId || null,
-      visitorId: visitorId || null,
-      sessionId: sessionId || null,
+      hasConversationId: Boolean(conversationId), hasVisitorId: Boolean(visitorId), hasSessionId: Boolean(sessionId),
       hasBehaviour: Boolean(behaviour),
       databaseEnabled: hasDatabase,
     });
@@ -68,7 +83,7 @@ chatRouter.post('/chat', validateBody(chatRequestSchema), async (req, res) => {
     let tenant: { organizationId?: string; websiteId: string; instructions: BusinessInstructions } | undefined;
     let tenantSource: 'database' | 'origin_snapshot' | 'none' = 'none';
 
-    if (siteId && hasDatabase) {
+    if (hasDatabase) {
       chatTrace(requestId, 'tenant_resolve:start', { siteId });
       try {
         const t = await resolveTenant(siteId);
@@ -78,8 +93,6 @@ chatRouter.post('/chat', validateBody(chatRequestSchema), async (req, res) => {
           source: tenantSource,
           siteId: t.siteId,
           websiteId: t.websiteId,
-          websiteUrl: t.websiteUrl,
-          businessInstructions: t.instructions,
         });
       } catch (err) {
         if (err instanceof TenantNotFoundError || err instanceof TenantDisabledError) {
@@ -88,7 +101,7 @@ chatRouter.post('/chat', validateBody(chatRequestSchema), async (req, res) => {
           return done();
         }
 
-        console.error(`[chat:${requestId}] tenant_resolve:error`, serializeError(err));
+        logger.error(`[chat:${requestId}] tenant_resolve:error`, { error: err });
         const originTenant = await resolveTenantFromRequestOrigin({
           siteId,
           origin: req.get('origin'),
@@ -97,8 +110,6 @@ chatRouter.post('/chat', validateBody(chatRequestSchema), async (req, res) => {
         if (!originTenant) {
           chatTrace(requestId, 'tenant_resolve:failed_closed', {
             reason: 'tenant database unavailable and no unique origin-matched tenant snapshot found',
-            origin: req.get('origin') ?? null,
-            referer: req.get('referer') ?? null,
           });
           send({ error: 'Tenant context unavailable. Please try again shortly.' });
           return done();
@@ -111,12 +122,9 @@ chatRouter.post('/chat', validateBody(chatRequestSchema), async (req, res) => {
           matchedBy: originTenant.matchedBy,
           siteId: originTenant.tenant.siteId,
           websiteId: originTenant.tenant.websiteId,
-          websiteUrl: originTenant.tenant.websiteUrl,
-          sourceUrl: originTenant.sourceUrl,
-          businessInstructions: originTenant.tenant.instructions,
         });
       }
-    } else if (siteId) {
+    } else {
       chatTrace(requestId, 'tenant_resolve:database_disabled', { siteId });
       const originTenant = await resolveTenantFromRequestOrigin({
         siteId,
@@ -131,22 +139,15 @@ chatRouter.post('/chat', validateBody(chatRequestSchema), async (req, res) => {
           matchedBy: originTenant.matchedBy,
           siteId: originTenant.tenant.siteId,
           websiteId: originTenant.tenant.websiteId,
-          websiteUrl: originTenant.tenant.websiteUrl,
-          sourceUrl: originTenant.sourceUrl,
-          businessInstructions: originTenant.tenant.instructions,
         });
       } else {
         chatTrace(requestId, 'tenant_resolve:failed_closed', {
           reason: 'database disabled and no unique origin-matched tenant snapshot found',
-          origin: req.get('origin') ?? null,
-          referer: req.get('referer') ?? null,
         });
       }
-    } else {
-      chatTrace(requestId, 'tenant_resolve:skipped', { reason: 'missing siteId; dev fallback allowed' });
     }
 
-    if (siteId && !tenant) {
+    if (!tenant) {
       chatTrace(requestId, 'tenant_resolve:failed_closed', { reason: 'siteId request has no tenant context' });
       send({ error: 'Tenant context unavailable. Please try again shortly.' });
       return done();
@@ -155,7 +156,6 @@ chatRouter.post('/chat', validateBody(chatRequestSchema), async (req, res) => {
     chatTrace(requestId, 'resolved tenant', {
       source: tenantSource,
       websiteId: tenant?.websiteId ?? null,
-      businessInstructions: tenant?.instructions ?? null,
     });
 
     let conversation: { id: string; title: string; titleStatus: string } | undefined;
@@ -164,7 +164,7 @@ chatRouter.post('/chat', validateBody(chatRequestSchema), async (req, res) => {
       const prepared = await prepareConversationForChat({
         tenant: { organizationId: tenant.organizationId, websiteId: tenant.websiteId },
         conversationId,
-        visitorId: visitorId || sessionId || requestId,
+        visitorId,
         sessionId,
         messages,
         behaviour,
@@ -193,7 +193,7 @@ chatRouter.post('/chat', validateBody(chatRequestSchema), async (req, res) => {
         await captureLeadFromConversation({
           tenant: { organizationId: tenant.organizationId, websiteId: tenant.websiteId },
           conversationId: conversation.id,
-          visitorId: visitorId || sessionId || requestId,
+          visitorId,
           sessionId,
           messages: promptContext?.recentMessages ?? messages,
           assistantReply: finalResponse,
@@ -210,12 +210,11 @@ chatRouter.post('/chat', validateBody(chatRequestSchema), async (req, res) => {
     chatTrace(requestId, 'final response', {
       chars: finalResponse.length,
       empty: finalResponse.length === 0,
-      text: finalResponse,
     });
     done();
   } catch (err) {
-    console.error(`[chat:${requestId}] stream error`, serializeError(err));
-    send({ error: 'Sorry, something went wrong generating a reply.' });
+    logger.error(`[chat:${requestId}] stream error`, { error: err });
+    send({ error: "Sorry, I'm having trouble responding right now. Please try again in a moment." });
     done();
   }
 });

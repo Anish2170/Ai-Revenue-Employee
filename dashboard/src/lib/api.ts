@@ -8,28 +8,83 @@
 
 export class ApiError extends Error {
   status: number;
+  code?: string;
+  requestId?: string;
+  retryAfterSeconds?: number;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, options: { code?: string; requestId?: string; retryAfterSeconds?: number } = {}) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    this.code = options.code;
+    this.requestId = options.requestId;
+    this.retryAfterSeconds = options.retryAfterSeconds;
   }
 }
 
-async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const res = await fetch(`${getBaseUrl()}${path}`, {
+const REQUEST_TIMEOUT_MS = 15_000;
+
+export function errorMessage(error: unknown, fallback = 'Something went wrong. Please try again.'): string {
+  if (error instanceof ApiError) {
+    const reference = error.requestId ? ` Reference: ${error.requestId}` : '';
+    if (error.status === 403) return `You don't have permission to access this section.${reference}`;
+    if (error.status === 404) return `The requested resource was not found.${reference}`;
+    if (error.status === 409) return `This action is already in progress or conflicts with an existing change.${reference}`;
+    if (error.status === 429) return `You're doing that a little too quickly. Please try again${error.retryAfterSeconds ? ` in ${error.retryAfterSeconds} seconds` : ' in a moment'}.${reference}`;
+    if (error.status >= 500) return `Something went wrong on our side. Try again.${reference}`;
+    return `${error.message}${reference}`;
+  }
+  return error instanceof Error && error.name === 'AbortError' ? 'The request took too long. Please try again.' : fallback;
+}
+
+let csrfToken: string | undefined;
+let csrfTokenRequest: Promise<string> | undefined;
+
+function needsCsrf(path: string, method: string | undefined): boolean {
+  return !['GET', 'HEAD', 'OPTIONS'].includes((method ?? 'GET').toUpperCase())
+    && !['/auth/signup', '/auth/login', '/auth/forgot', '/auth/reset'].includes(path);
+}
+
+async function getCsrfToken(): Promise<string> {
+  if (csrfToken) return csrfToken;
+  csrfTokenRequest ??= fetch(`${getBaseUrl()}/auth/csrf`, {
     credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-      ...options.headers,
-    },
-    ...options,
-  });
+    headers: { 'Content-Type': 'application/json' },
+  })
+    .then(async (res) => {
+      if (!res.ok) throw new ApiError(res.status, 'Unable to establish CSRF protection.');
+      const body = await res.json() as { csrfToken?: string };
+      if (!body.csrfToken) throw new Error('CSRF token missing from server response.');
+      csrfToken = body.csrfToken;
+      return csrfToken;
+    })
+    .finally(() => { csrfTokenRequest = undefined; });
+  return csrfTokenRequest;
+}
+
+async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const headers = new Headers(options.headers);
+  headers.set('Content-Type', 'application/json');
+  if (needsCsrf(path, options.method)) headers.set('X-CSRF-Token', await getCsrfToken());
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  let res: Response;
+  try {
+    res = await fetch(`${getBaseUrl()}${path}`, { credentials: 'include', headers, ...options, signal: controller.signal });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw new ApiError(0, 'The request took too long. Please try again.', { code: 'timeout' });
+    throw new ApiError(0, 'Unable to connect. Check your connection and try again.', { code: 'network_error' });
+  } finally {
+    window.clearTimeout(timeout);
+  }
 
   if (!res.ok) {
-    let message = res.statusText;
+    let message = res.statusText || 'Request failed.';
+    let code: string | undefined;
+    let requestId = res.headers.get('X-Request-Id') ?? undefined;
+    let retryAfterSeconds = Number(res.headers.get('Retry-After')) || undefined;
     try {
-      const body = await res.json();
+      const body = await res.json() as { error?: string | { code?: string; message?: string; requestId?: string }; message?: string; details?: Array<{ path?: string; message?: string }>; retryAfterSeconds?: number };
       if (Array.isArray(body.details) && body.details.length > 0) {
         message = body.details
           .map((detail: { path?: string; message?: string }) => {
@@ -38,12 +93,25 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
           })
           .join('; ');
       } else {
-        message = body.message || body.error || message;
+        if (typeof body.error === 'object') {
+          code = body.error.code;
+          message = body.error.message || message;
+          requestId = body.error.requestId || requestId;
+        } else {
+          code = body.error;
+          message = body.message || body.error || message;
+        }
+        retryAfterSeconds = body.retryAfterSeconds || retryAfterSeconds;
       }
     } catch {
       // ignore non-JSON error bodies
     }
-    throw new ApiError(res.status, message);
+    const error = new ApiError(res.status, message, { code, requestId, retryAfterSeconds });
+    if (res.status === 401 && typeof window !== 'undefined' && !window.location.pathname.startsWith('/login') && !window.location.pathname.startsWith('/signup')) {
+      csrfToken = undefined;
+      window.dispatchEvent(new CustomEvent('aire:unauthenticated'));
+    }
+    throw error;
   }
 
   if (res.status === 204) {
@@ -62,22 +130,28 @@ export interface KnowledgeBuildHandle {
 }
 
 class ApiClient {
-  signup(email: string, password: string, name: string, organizationName?: string) {
-    return request('/auth/signup', {
+  async signup(email: string, password: string, name: string, organizationName?: string) {
+    const result = await request<{ csrfToken?: string }>('/auth/signup', {
       method: 'POST',
       body: JSON.stringify({ email, password, name, organizationName }),
     });
+    csrfToken = result.csrfToken;
+    return result;
   }
 
-  login(email: string, password: string) {
-    return request('/auth/login', {
+  async login(email: string, password: string) {
+    const result = await request<{ csrfToken?: string }>('/auth/login', {
       method: 'POST',
       body: JSON.stringify({ email, password }),
     });
+    csrfToken = result.csrfToken;
+    return result;
   }
 
-  logout() {
-    return request('/auth/logout', { method: 'POST' });
+  async logout() {
+    const result = await request('/auth/logout', { method: 'POST' });
+    csrfToken = undefined;
+    return result;
   }
 
   me() {
@@ -215,14 +289,31 @@ class ApiClient {
   }
 
   async sendTestChat(siteId: string, messages: Array<{ role: 'user' | 'assistant'; content: string }>) {
+    const identityResponse = await fetch(`${getBaseUrl()}/widget/session`, {
+      method: 'POST',
+      credentials: 'omit',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ siteId }),
+    });
+    if (!identityResponse.ok) throw await responseError(identityResponse);
+    const identity = await identityResponse.json() as {
+      visitorId?: string;
+      sessionId?: string;
+      visitorToken?: string;
+    };
+    if (!identity.visitorId || !identity.sessionId || !identity.visitorToken) {
+      throw new ApiError(502, 'Unable to establish a widget test session.');
+    }
+
     const res = await fetch(`${getBaseUrl()}/chat`, {
       method: 'POST',
-      credentials: 'include',
+      credentials: 'omit',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         siteId,
-        visitorId: 'owner-onboarding',
-        sessionId: `onboarding-${Date.now()}`,
+        visitorId: identity.visitorId,
+        sessionId: identity.sessionId,
+        visitorToken: identity.visitorToken,
         messages,
         behaviour: {
           page: '/onboarding-test',
@@ -323,6 +414,10 @@ class ApiClient {
     return request(`/api/websites/${websiteId}/knowledge/builds`);
   }
 
+  getKnowledgeBuild(websiteId: string, buildId: string) {
+    return request(`/api/websites/${websiteId}/knowledge/build/${buildId}`);
+  }
+
   buildKnowledge(websiteId: string, url: string): KnowledgeBuildHandle {
     let phaseCb: ((phase: string, data?: unknown) => void) | undefined;
     let completeCb: ((data?: unknown) => void) | undefined;
@@ -355,64 +450,36 @@ class ApiClient {
         const res = await fetch(`${getBaseUrl()}/api/websites/${websiteId}/knowledge/build`, {
           method: 'POST',
           credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': await getCsrfToken() },
           body: JSON.stringify({ url }),
           signal: controller.signal,
         });
 
-        if (!res.ok || !res.body) {
-          throw new ApiError(res.status, res.statusText);
-        }
-
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          buffer += decoder.decode(value, { stream: true });
-          const frames = buffer.split('\n\n');
-          buffer = frames.pop() ?? '';
-
-          for (const frame of frames) {
-            const lines = frame.split('\n');
-            let event = 'message';
-            let data = '';
-
-            for (const line of lines) {
-              if (line.startsWith('event:')) {
-                event = line.slice(6).trim();
-              } else if (line.startsWith('data:')) {
-                data += line.slice(5).trim();
-              }
+        if (!res.ok) throw await responseError(res);
+        const queued = await res.json() as { buildId: string };
+        let lastPhase = '';
+        let transientFailures = 0;
+        const poll = async (): Promise<void> => {
+          if (controller.signal.aborted) return;
+          let build: { status?: string; phase?: string; error?: string; progress?: unknown };
+          try {
+            build = await request(`/api/websites/${websiteId}/knowledge/build/${queued.buildId}`) as typeof build;
+            transientFailures = 0;
+          } catch (error) {
+            if (error instanceof ApiError && (error.status === 0 || error.status === 502 || error.status === 503) && transientFailures < 3) {
+              transientFailures += 1;
+              phaseCb?.('connection_lost', { attempt: transientFailures });
+              window.setTimeout(() => { void poll(); }, 1500 * transientFailures);
+              return;
             }
-
-            if (!data) continue;
-
-            let parsed: unknown;
-            try {
-              parsed = JSON.parse(data);
-            } catch {
-              parsed = data;
-            }
-
-            if (event === 'complete' || event.endsWith(':complete')) {
-              completeCb?.(parsed);
-            } else if (event === 'error' || event.endsWith(':error')) {
-              const message =
-                typeof parsed === 'string'
-                  ? parsed
-                  : parsed && typeof parsed === 'object' && 'error' in parsed
-                    ? String((parsed as { error?: unknown }).error)
-                    : JSON.stringify(parsed);
-              errorCb?.(new Error(message));
-            } else {
-              phaseCb?.(event, parsed);
-            }
+            throw error;
           }
-        }
+          if (build.phase && build.phase !== lastPhase) { lastPhase = build.phase; phaseCb?.(build.phase, build.progress); }
+          if (build.status === 'SUCCESS') { completeCb?.(build); return; }
+          if (build.status === 'FAILED' || build.status === 'CANCELLED') { errorCb?.(new Error('Knowledge build failed. Please try again.')); return; }
+          window.setTimeout(() => { void poll().catch((err) => errorCb?.(err instanceof Error ? err : new Error(String(err)))); }, 1500);
+        };
+        await poll();
       } catch (err) {
         if (err instanceof Error && err.name === 'AbortError') return;
         errorCb?.(err instanceof Error ? err : new Error(String(err)));
@@ -421,6 +488,20 @@ class ApiClient {
 
     return handle;
   }
+}
+
+async function responseError(res: Response): Promise<ApiError> {
+  let message = res.statusText || 'Request failed.';
+  let code: string | undefined;
+  let requestId = res.headers.get('X-Request-Id') ?? undefined;
+  let retryAfterSeconds = Number(res.headers.get('Retry-After')) || undefined;
+  try {
+    const body = await res.json() as { error?: string | { code?: string; message?: string; requestId?: string }; message?: string; retryAfterSeconds?: number };
+    if (typeof body.error === 'object') { code = body.error.code; message = body.error.message || message; requestId = body.error.requestId || requestId; }
+    else { code = body.error; message = body.message || body.error || message; }
+    retryAfterSeconds = body.retryAfterSeconds || retryAfterSeconds;
+  } catch { /* use the safe status text */ }
+  return new ApiError(res.status, message, { code, requestId, retryAfterSeconds });
 }
 
 export const api = new ApiClient();

@@ -35,6 +35,7 @@ export const eventsClientStateSchema = z.object({
 export const eventsRequestSchema = z.object({
   /** Public tenant handle (optional in dev-fallback). */
   siteId: z.string().max(100).optional(),
+  visitorToken: z.string().min(1).max(1000).optional(),
   /** Anonymous, widget-generated first-party session id. */
   sessionId: z.string().min(8).max(128),
   /** Anonymous, first-party visitor id for analytics. */

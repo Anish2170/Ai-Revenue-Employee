@@ -25,7 +25,7 @@ export default function LoginPage() {
       let destination = '/onboarding';
       try {
         const websites = (await api.listWebsites()) as unknown[];
-        destination = websites.length === 0 ? '/onboarding' : '/dashboard';
+        destination = websites.length === 0 ? '/onboarding' : '/analytics';
       } catch {
         destination = '/onboarding';
       }
@@ -86,6 +86,5 @@ export default function LoginPage() {
     </main>
   );
 }
-
 
 

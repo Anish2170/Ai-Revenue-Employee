@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '@/lib/api';
-import { Card, Spinner, EmptyState } from '@/components/ui';
+import { Button, Card, Spinner, EmptyState } from '@/components/ui';
 
 interface Summary {
   today: {
@@ -182,7 +182,9 @@ export function AnalyticsView({ websiteId, websiteName }: { websiteId?: string; 
   const [customEndDate, setCustomEndDate] = useState(todayInputValue());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [launched] = useState(() => typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('launched') === '1');
   const scoped = Boolean(websiteId);
+
 
   useEffect(() => {
     if (!websiteId) return;
@@ -271,6 +273,15 @@ export function AnalyticsView({ websiteId, websiteName }: { websiteId?: string; 
   const recentActivity = useMemo(() => buildRecentActivity(filteredLeads, filteredConversations), [filteredLeads, filteredConversations]);
   const topPerformers = useMemo(() => buildTopPerformers(summary, filteredLeads), [summary, filteredLeads]);
   const leadStats = useMemo(() => getLeadStats(filteredLeads), [filteredLeads]);
+  const hasAnalyticsActivity = displayedVisitors > 0
+    || displayedConversations > 0
+    || displayedChatOpens > 0
+    || filteredLeads.length > 0
+    || filteredConversations.length > 0
+    || summary.topPages.length > 0
+    || summary.topPopupTypes.length > 0
+    || summary.deviceBreakdown.length > 0
+    || summary.websitePerformance.length > 0;
 
   if (loading) {
     return (
@@ -294,8 +305,18 @@ export function AnalyticsView({ websiteId, websiteName }: { websiteId?: string; 
         <div className="text-sm text-[var(--text-muted)]">{rangeConfig.label}</div>
       </div>
 
+      {launched && <LaunchSuccessBanner />}
+
       {error && <div className="rounded-lg border border-[var(--danger)] px-4 py-3 text-sm text-[var(--danger)]">{error}</div>}
 
+      {!hasAnalyticsActivity && !error ? (
+        <EmptyState
+          title="No conversations yet."
+          description="Install your widget to start collecting visitors. Analytics will appear once your AI begins interacting with visitors."
+          action={<Button onClick={() => { window.location.href = '/onboarding'; }}>Open Guided Setup</Button>}
+        />
+      ) : (
+        <>
       <FilterBar
         scoped={scoped}
         websites={websites}
@@ -425,9 +446,26 @@ export function AnalyticsView({ websiteId, websiteName }: { websiteId?: string; 
       </div>
 
       <RecentLeadsCard leads={filteredLeads} />
+        </>
+      )}
     </div>
   );
 }
+
+function LaunchSuccessBanner() {
+  return (
+    <Card className="rounded-lg border-[rgba(34,197,94,0.28)] bg-[rgba(34,197,94,0.10)]">
+      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+        <div>
+          <h2 className="text-lg font-semibold text-[var(--text)]">Your AI Employee is Live</h2>
+          <p className="mt-1 text-sm text-[var(--text-muted)]">Your website has been connected successfully. You can now monitor conversations, leads, and performance from your dashboard.</p>
+        </div>
+        <Button onClick={() => { window.location.href = '/analytics'; }}>Go to Analytics</Button>
+      </div>
+    </Card>
+  );
+}
+
 export function AiDecisionLogView({ websiteId, websiteName }: { websiteId?: string; websiteName?: string }) {
   const [summary, setSummary] = useState<Summary>(emptySummary);
   const [logs, setLogs] = useState<AiDecisionLog[]>([]);

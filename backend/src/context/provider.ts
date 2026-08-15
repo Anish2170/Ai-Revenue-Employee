@@ -13,6 +13,7 @@ import { getWebsiteMeta, knowledgeReadyForWebsite } from '../vectorstore/registr
 import type { BusinessInstructions, ResolvedContext, RetrievedChunk } from './types.js';
 import type { BusinessActionConfig } from '../business-actions/action.types.js';
 import type { SiteLink, VisitorBehaviour } from '../types.js';
+import { logger } from '../logging/logger.js';
 
 export interface ContextRequest {
   query: string;
@@ -49,15 +50,15 @@ export async function getBusinessContext(req: ContextRequest): Promise<ResolvedC
     }
 
     if (websiteId) {
-      console.warn(`[knowledge] tenant ${websiteId.slice(0, 8)} returned no chunks for query="${query.slice(0, 60)}" - no global fallback allowed.`);
+      logger.warn('[knowledge] tenant returned no chunks; no global fallback allowed', { websiteId });
       return buildTenantEmptyContext(instructions, meta?.siteLinks ?? [], businessActions);
     }
 
-    console.warn(`[knowledge] no chunks passed threshold for query="${query.slice(0, 60)}" - using fallback.`);
+    logger.warn('[knowledge] no chunks passed threshold; using fallback');
   } else {
     if (websiteId) {
       const meta = await getWebsiteMeta(websiteId);
-      console.warn(`[knowledge] tenant index not ready (website ${websiteId.slice(0, 8)}) - no global fallback allowed.`);
+      logger.warn('[knowledge] tenant index not ready; no global fallback allowed', { websiteId });
       return buildTenantEmptyContext(instructions, meta?.siteLinks ?? [], businessActions);
     }
 

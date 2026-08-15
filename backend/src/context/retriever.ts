@@ -13,6 +13,7 @@ import { getWebsiteStore } from '../vectorstore/registry.js';
 import type { VectorStore } from '../vectorstore/types.js';
 import type { VisitorBehaviour } from '../types.js';
 import type { RetrievedChunk } from './types.js';
+import { logger } from '../logging/logger.js';
 
 export interface RetrievalResult {
   chunks: RetrievedChunk[];
@@ -59,12 +60,9 @@ export async function retrieve(query: string, websiteId?: string): Promise<Retri
   const keptScores = kept.map((h) => Number(h.score.toFixed(3)));
 
   if (config.debugTrace) {
-    console.log(
-      `[retrieval] query="${query.slice(0, 60)}" topK=${hits.length} scores=[${allScores.join(', ')}] ` +
-        `kept=${kept.length} (threshold ${retrievalConfig.similarityThreshold}, ` +
-        `chars ${retrievalConfig.maxContextChars - charBudget}/${retrievalConfig.maxContextChars})` +
-        (websiteId ? ` website=${websiteId.slice(0, 8)}` : ''),
-    );
+    logger.debug('[retrieval] completed', { topK: hits.length, scores: allScores, kept: kept.length,
+      threshold: retrievalConfig.similarityThreshold, contextChars: retrievalConfig.maxContextChars - charBudget,
+      maxContextChars: retrievalConfig.maxContextChars, websiteId: websiteId ?? null });
   }
 
   return { chunks: kept, scores: keptScores };

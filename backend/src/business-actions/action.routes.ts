@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { requireAuth } from '../auth/auth.middleware.js';
 import { validateBody } from '../middleware/validate.js';
+import { authUserKey, minutes, rateLimit } from '../middleware/rateLimit.js';
 import { OwnershipError } from '../websites/website.service.js';
 import { BUSINESS_ACTION_DESTINATION_TYPES } from './action.types.js';
 import * as actionService from './action.service.js';
@@ -29,7 +30,11 @@ const overrideSchema = z.object({
   url: z.string().min(1).max(2048),
 });
 
-businessActionRouter.use(requireAuth);
+const dashboardActionLimiter = rateLimit([
+  { name: 'dashboard_actions_user', limit: 600, windowMs: minutes(1), key: authUserKey },
+]);
+
+businessActionRouter.use(requireAuth, dashboardActionLimiter);
 
 businessActionRouter.get('/api/websites/:id/actions', async (req, res, next) => {
   try {

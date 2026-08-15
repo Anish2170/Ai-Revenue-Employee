@@ -38,28 +38,28 @@ export class Orchestrator {
   constructor(private readonly cfg: WidgetConfig) {}
 
   start(): void {
-    this.startAnalytics();
     this.mountUiShell();
-    this.analytics?.track('WIDGET', 'widget_initialized');
+    void this.startPublicTransports();
+  }
 
-    // Sprint 4.1 (shadow mode): stream semantic events to POST /events for the
-    // backend perception loop. Fully isolated so sensor failure cannot affect
-    // the host page or the legacy engagement path.
-    this.startSensors();
-
-    if (this.cfg.legacyEngagement) {
-      this.startLegacyEngagement();
-    } else {
-      this.log('perception-only shadow mode active; legacy engagement disabled');
+  private async startPublicTransports(): Promise<void> {
+    const identity = await this.api?.getIdentity();
+    if (!identity) {
+      this.log('widget identity unavailable; public telemetry remains disabled');
+      return;
     }
-
+    this.startAnalytics(identity);
+    this.analytics?.track('WIDGET', 'widget_initialized');
+    this.startSensors(identity);
+    if (this.cfg.legacyEngagement) this.startLegacyEngagement();
+    else this.log('perception-only shadow mode active; legacy engagement disabled');
     this.log('widget started', this.cfg);
   }
 
-  private startAnalytics(): void {
+  private startAnalytics(identity: import('../api/client.js').WidgetIdentity): void {
     if (this.analytics) return;
     try {
-      this.analytics = new AnalyticsTracker(this.cfg);
+      this.analytics = new AnalyticsTracker(this.cfg, identity);
       this.analytics.start();
     } catch (err) {
       this.analytics = null;
@@ -104,11 +104,12 @@ export class Orchestrator {
     };
   }
 
-  private startSensors(): void {
+  private startSensors(identity: import('../api/client.js').WidgetIdentity): void {
     try {
       this.sensors = new SensorEngine({
         siteId: this.cfg.siteId,
         backendUrl: this.cfg.backendUrl,
+        identity,
         debug: this.cfg.debug,
         getClientState: () => this.eventsClientState(),
         onPopup: (popup) => this.onPipelinePopup(popup),

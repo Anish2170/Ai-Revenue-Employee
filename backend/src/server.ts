@@ -29,12 +29,17 @@ import { analyticsRouter } from './analytics/analytics.routes.js';
 import { conversationRouter, widgetConversationRouter } from './conversations/conversation.routes.js';
 import { businessActionRouter } from './business-actions/action.routes.js';
 import { leadRouter } from './leads/lead.routes.js';
+import { publicIdentityRouter } from './widget/publicIdentity.routes.js';
 import { knowledgeReady, loadOnBoot } from './vectorstore/index.js';
+import { startKnowledgeBuildWorker, stopKnowledgeBuildWorker } from './knowledge/knowledge.worker.js';
+import { installSanitizedConsole } from './logging/logger.js';
+import { requestLogging } from './middleware/requestLogging.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const publicDir = join(__dirname, '..', 'public');
 
 const app = express();
+installSanitizedConsole();
 app.disable('x-powered-by');
 app.set('trust proxy', 1);
 
@@ -57,30 +62,26 @@ app.use(
 app.use(corsMiddleware);
 app.use(express.json({ limit: '64kb' }));
 app.use(cookieParser());
+app.use(requestLogging);
 
 // --- Health check ---
-app.get('/health', async (_req, res) => {
-  let databaseStatus: 'ok' | 'not_configured' | 'error' = hasDatabase ? 'ok' : 'not_configured';
-
-  if (hasDatabase) {
-    try {
-      await prisma.$queryRaw`SELECT 1`;
-    } catch {
-      databaseStatus = 'error';
-    }
-  }
-
+app.get('/health', (_req, res) => {
+  // Liveness must not fail during a temporary database or provider outage.
+  // Production configuration is validated before the listener starts; detailed
+  // dependency failures are logged and surfaced through normal request paths.
+  const databaseStatus = hasDatabase ? 'configured' : 'not_configured';
   const llmStatus = hasLLM ? 'configured' : 'not_configured';
-  const status = databaseStatus === 'error' || !hasLLM ? 'degraded' : 'ok';
 
-  res.status(status === 'ok' ? 200 : 503).json({
-    status,
+  res.status(200).json({
+    status: 'ok',
     services: {
       database: { status: databaseStatus },
       llm: {
         status: llmStatus,
-        provider: 'gemini',
-        model: config.gemini.model,
+        provider: config.llm.primary.provider,
+        model: config.llm.primary.model,
+        fallbackProvider: config.llm.fallback.provider,
+        fallbackModel: config.llm.fallback.model,
         embeddingModel: config.gemini.embeddingModel,
       },
       knowledge: { ready: knowledgeReady() },
@@ -91,6 +92,7 @@ app.get('/health', async (_req, res) => {
 });
 
 // --- Public widget routes (no auth, siteId-scoped) ---
+app.use(publicIdentityRouter);
 app.use(engageRouter);
 app.use(eventsRouter);
 app.use(chatRouter);
@@ -134,6 +136,7 @@ validateProductionConfig();
 
 // Load the persisted knowledge snapshot before accepting traffic.
 await loadOnBoot();
+startKnowledgeBuildWorker();
 
 const server = app.listen(config.port, config.host, () => {
   console.info('[startup] AI Revenue Employee backend ready', {
@@ -148,12 +151,15 @@ const server = app.listen(config.port, config.host, () => {
 });
 
 async function shutdown(signal: NodeJS.Signals): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
   console.info(`[shutdown] received ${signal}; closing HTTP server`);
   const forceExit = setTimeout(() => {
     console.error('[shutdown] timed out; forcing exit');
     process.exit(1);
   }, 10000);
   forceExit.unref();
+  stopKnowledgeBuildWorker();
 
   server.close(async (err) => {
     if (err) console.error('[shutdown] server close failed', err instanceof Error ? err.message : String(err));
@@ -163,6 +169,7 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
   });
 }
 
+let shuttingDown = false;
 process.on('SIGTERM', () => void shutdown('SIGTERM'));
 process.on('SIGINT', () => void shutdown('SIGINT'));
 

@@ -1,106 +1,50 @@
-/**
- * Knowledge routes: /api/websites/:id/knowledge
- *
- * - POST /build — trigger a KB rebuild (SSE progress stream)
- * - GET /status — current knowledge state + last build
- * - GET /builds — build history
- */
+/** Durable knowledge job routes. Build work never depends on this HTTP response staying open. */
 import { Router } from 'express';
 import { z } from 'zod';
 import { requireAuth } from '../auth/auth.middleware.js';
 import { validateBody } from '../middleware/validate.js';
+import { authUserKey, days, hours, rateLimit } from '../middleware/rateLimit.js';
 import { assertWebsiteOwnership, OwnershipError } from '../websites/website.service.js';
 import * as knowledgeService from './knowledge.service.js';
+import { UnsafeUrlError, resolvePublicUrl } from '../security/ssrf.js';
 
 export const knowledgeRouter = Router();
-
 knowledgeRouter.use(requireAuth);
+const buildSchema = z.object({ url: z.string().url(), language: z.string().min(2).max(32).optional(), idempotencyKey: z.string().min(8).max(128).optional() });
+const knowledgeBuildLimiter = rateLimit([
+  { name: 'knowledge_build_user', limit: 5, windowMs: hours(1), key: authUserKey },
+  { name: 'knowledge_build_org', limit: 20, windowMs: days(1), key: (req) => req.auth?.organizationId ?? null },
+  { name: 'knowledge_build_website', limit: 3, windowMs: hours(1), key: (req) => req.auth?.organizationId ? `${req.auth.organizationId}:${req.params.id}` : null },
+]);
 
-const buildSchema = z.object({
-  url: z.string().url(),
+knowledgeRouter.post('/api/websites/:id/knowledge/build', knowledgeBuildLimiter, validateBody(buildSchema), async (req, res, next) => {
+  try {
+    await assertWebsiteOwnership(req.auth!.organizationId, req.params.id);
+    const body = req.body as z.infer<typeof buildSchema>;
+    await resolvePublicUrl(body.url);
+    const result = await knowledgeService.enqueueBuild(req.auth!.organizationId, req.params.id, body.url, req.auth!.userId, body.language, body.idempotencyKey);
+    res.status(202).json({ buildId: result.build.id, created: result.created, status: result.build.status });
+  } catch (error) {
+    if (error instanceof OwnershipError) return res.status(error.status).json({ error: error.code, message: error.message });
+    if (error instanceof UnsafeUrlError) return res.status(400).json({ error: 'unsafe_website_url', message: error.message });
+    next(error);
+  }
 });
 
-/** POST /api/websites/:id/knowledge/build — SSE progress stream. */
-knowledgeRouter.post(
-  '/api/websites/:id/knowledge/build',
-  validateBody(buildSchema),
-  async (req, res) => {
-    try {
-      await assertWebsiteOwnership(req.auth!.organizationId, req.params.id);
-    } catch (err) {
-      if (err instanceof OwnershipError) {
-        return res.status(err.status).json({ error: err.code, message: err.message });
-      }
-      return res.status(500).json({ error: 'internal' });
-    }
+knowledgeRouter.get('/api/websites/:id/knowledge/build/:buildId', async (req, res, next) => {
+  try {
+    await assertWebsiteOwnership(req.auth!.organizationId, req.params.id);
+    const build = await knowledgeService.getBuildStatus(req.auth!.organizationId, req.params.id, req.params.buildId);
+    if (!build) return res.status(404).json({ error: 'build_not_found', message: 'Knowledge build not found.' });
+    res.json(build);
+  } catch (error) { if (error instanceof OwnershipError) return res.status(error.status).json({ error: error.code, message: error.message }); next(error); }
+});
 
-    // SSE headers
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache, no-transform',
-      Connection: 'keep-alive',
-      'X-Accel-Buffering': 'no',
-    });
-
-    const send = (event: string, data: unknown) => {
-      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-    };
-
-    try {
-      const { url } = req.body as { url: string };
-      const { buildId, events } = await knowledgeService.startBuild(
-        req.auth!.organizationId,
-        req.params.id,
-        url,
-        req.auth!.userId,
-      );
-
-      send('build:start', { buildId });
-
-      for await (const event of events) {
-        if (event.detail?.error) {
-          send('build:error', { phase: event.phase, error: event.detail.error });
-        } else if (event.detail?.done) {
-          send('build:complete', event.detail);
-        } else {
-          send('build:phase', { phase: event.phase, ...event.detail });
-        }
-      }
-
-      send('build:done', { buildId });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Unknown error';
-      send('build:error', { error: message });
-    } finally {
-      res.end();
-    }
-  },
-);
-
-/** GET /api/websites/:id/knowledge/status */
 knowledgeRouter.get('/api/websites/:id/knowledge/status', async (req, res, next) => {
-  try {
-    await assertWebsiteOwnership(req.auth!.organizationId, req.params.id);
-    const status = await knowledgeService.getKnowledgeStatus(req.params.id);
-    res.json(status);
-  } catch (err) {
-    if (err instanceof OwnershipError) {
-      return res.status(err.status).json({ error: err.code, message: err.message });
-    }
-    next(err);
-  }
+  try { await assertWebsiteOwnership(req.auth!.organizationId, req.params.id); res.json(await knowledgeService.getKnowledgeStatus(req.params.id)); }
+  catch (error) { if (error instanceof OwnershipError) return res.status(error.status).json({ error: error.code, message: error.message }); next(error); }
 });
-
-/** GET /api/websites/:id/knowledge/builds */
 knowledgeRouter.get('/api/websites/:id/knowledge/builds', async (req, res, next) => {
-  try {
-    await assertWebsiteOwnership(req.auth!.organizationId, req.params.id);
-    const builds = await knowledgeService.listBuilds(req.params.id);
-    res.json(builds);
-  } catch (err) {
-    if (err instanceof OwnershipError) {
-      return res.status(err.status).json({ error: err.code, message: err.message });
-    }
-    next(err);
-  }
+  try { await assertWebsiteOwnership(req.auth!.organizationId, req.params.id); res.json(await knowledgeService.listBuilds(req.params.id)); }
+  catch (error) { if (error instanceof OwnershipError) return res.status(error.status).json({ error: error.code, message: error.message }); next(error); }
 });

@@ -15,11 +15,13 @@ import type { SemanticEvent, SensorAdapter, Surface } from './types.js';
 import { DesktopSensors } from './desktop.js';
 import { MobileSensors } from './mobile.js';
 import { EventEmitter } from './emitter.js';
-import { getSessionId, getVisitorId, resolveReturning } from './session.js';
+import { resolveReturning } from './session.js';
+import type { WidgetIdentity } from '../api/client.js';
 
 export interface SensorEngineOptions {
   siteId: string;
   backendUrl: string;
+  identity: WidgetIdentity;
   debug: boolean;
   getClientState: () => EventsClientState;
   onPopup: (popup: PopupArtifact) => void;
@@ -37,12 +39,17 @@ function detectSurface(): Surface {
 export class SensorEngine {
   private adapter: SensorAdapter | null = null;
   private emitter: EventEmitter | null = null;
-  private readonly sessionId = getSessionId();
-  private readonly visitorId = getVisitorId();
+  private readonly sessionId: string;
+  private readonly visitorId: string;
+  private readonly visitorToken: string;
   private readonly returning = resolveReturning();
   private readonly surface = detectSurface();
 
-  constructor(private readonly opts: SensorEngineOptions) {}
+  constructor(private readonly opts: SensorEngineOptions) {
+    this.sessionId = opts.identity.sessionId;
+    this.visitorId = opts.identity.visitorId;
+    this.visitorToken = opts.identity.visitorToken;
+  }
 
   start(): void {
     if (this.adapter) return;
@@ -82,6 +89,7 @@ export class SensorEngine {
 
     const body = JSON.stringify({
       siteId: this.opts.siteId,
+      visitorToken: this.visitorToken,
       sessionId: this.sessionId,
       visitorId: this.visitorId,
       returning: this.returning,
@@ -99,6 +107,7 @@ export class SensorEngine {
 
     void fetch(`${this.opts.backendUrl}/events`, {
       method: 'POST',
+      credentials: 'omit',
       headers: { 'Content-Type': 'application/json' },
       body,
       keepalive: true,

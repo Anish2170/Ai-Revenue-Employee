@@ -14,6 +14,7 @@ import { embedChunks } from '../embeddings/embedder.js';
 import { getBusinessInstructions } from '../context/instructions.js';
 import { getVectorStore, persistSnapshot } from '../vectorstore/index.js';
 import { getWebsiteStore, persistWebsiteSnapshot, invalidateWebsiteStore } from '../vectorstore/registry.js';
+import type { StoredArtifact } from '../vectorstore/snapshotStorage.js';
 import { llmAvailable } from '../llm/index.js';
 import { buildActionGraph } from '../business-actions/actionDiscovery.js';
 
@@ -22,8 +23,9 @@ export type IngestPhase = 'crawling' | 'action_discovery' | 'chunking' | 'embedd
 export interface IngestOptions {
   websiteId?: string;
   organizationId?: string;
+  snapshotId?: string;
   language?: string;
-  onPhase?: (phase: IngestPhase, detail?: Record<string, unknown>) => void;
+  onPhase?: (phase: IngestPhase, detail?: Record<string, unknown>) => void | Promise<void>;
 }
 
 export interface IngestResult {
@@ -32,7 +34,7 @@ export interface IngestResult {
   chunks: number;
   skipped: number;
   dimensions: number;
-  snapshotPath: string;
+  snapshotArtifact: StoredArtifact;
   durationMs: number;
 }
 
@@ -44,28 +46,28 @@ export async function ingest(url: string, opts: IngestOptions = {}): Promise<Ing
   const lang = language ?? getBusinessInstructions().language;
 
   // 1. Crawl
-  onPhase?.('crawling');
+  await onPhase?.('crawling');
   const { pages, skipped, actions } = await crawl(url);
   if (pages.length === 0) throw new Error(`Crawl found no readable pages at ${url}.`);
-  onPhase?.('crawling', { pages: pages.length, skipped: skipped.length, discoveredActions: actions.length });
-  onPhase?.('action_discovery');
+  await onPhase?.('crawling', { pages: pages.length, skipped: skipped.length, discoveredActions: actions.length });
+  await onPhase?.('action_discovery');
   const actionGraph = await buildActionGraph(actions);
-  onPhase?.('action_discovery', { actions: actionGraph.nodes.length });
+  await onPhase?.('action_discovery', { actions: actionGraph.nodes.length });
 
   // 2. Chunk
-  onPhase?.('chunking');
+  await onPhase?.('chunking');
   const chunks = chunkPages(pages, lang);
   if (chunks.length === 0) throw new Error('Crawl produced no chunks.');
-  onPhase?.('chunking', { chunks: chunks.length });
+  await onPhase?.('chunking', { chunks: chunks.length });
 
   // 3. Embed
-  onPhase?.('embedding');
+  await onPhase?.('embedding');
   const embedded = await embedChunks(chunks);
   if (embedded.length === 0) throw new Error('Embedding produced no vectors.');
-  onPhase?.('embedding', { embedded: embedded.length });
+  await onPhase?.('embedding', { embedded: embedded.length });
 
   // 4. Index
-  onPhase?.('indexing');
+  await onPhase?.('indexing');
   const siteLinks = deriveSiteLinks(pages);
   const chunkCountsByUrl = new Map<string, number>();
   for (const chunk of embedded) {
@@ -108,7 +110,7 @@ export async function ingest(url: string, opts: IngestOptions = {}): Promise<Ing
     },
   }));
 
-  let snapshotPath: string;
+  let snapshotArtifact: StoredArtifact;
   let dimensions: number;
 
   if (websiteId) {
@@ -117,15 +119,16 @@ export async function ingest(url: string, opts: IngestOptions = {}): Promise<Ing
     await store.indexDocuments(embedded);
     dimensions = store.dimensions();
 
-    onPhase?.('saving');
-    snapshotPath = await persistWebsiteSnapshot(websiteId, { sourceUrl: url, siteLinks, pages: pageMeta, debugPages, actionGraph });
+    await onPhase?.('saving');
+    snapshotArtifact = await persistWebsiteSnapshot(websiteId, opts.organizationId!, opts.snapshotId!, { sourceUrl: url, siteLinks, pages: pageMeta, debugPages, actionGraph });
   } else {
     const store = getVectorStore();
     await store.indexDocuments(embedded);
     dimensions = store.dimensions();
 
-    onPhase?.('saving');
-    snapshotPath = await persistSnapshot({ sourceUrl: url, siteLinks, pages: pageMeta, debugPages, actionGraph });
+    await onPhase?.('saving');
+    const snapshotPath = await persistSnapshot({ sourceUrl: url, siteLinks, pages: pageMeta, debugPages, actionGraph });
+    snapshotArtifact = { provider: 'LOCAL', storageKey: snapshotPath, contentSha256: '', contentBytes: 0, etag: null };
   }
 
   const result: IngestResult = {
@@ -134,13 +137,13 @@ export async function ingest(url: string, opts: IngestOptions = {}): Promise<Ing
     chunks: embedded.length,
     skipped: skipped.length,
     dimensions,
-    snapshotPath,
+    snapshotArtifact,
     durationMs: Date.now() - startedAt,
   };
 
   console.log(
     `[ingest] ${url} → ${result.pages} pages, ${result.chunks} chunks, ${result.dimensions}d ` +
-      `in ${result.durationMs}ms → ${snapshotPath}` +
+      `in ${result.durationMs}ms → ${result.snapshotArtifact.storageKey}` +
       (websiteId ? ` (website ${websiteId.slice(0, 8)})` : ''),
   );
   return result;

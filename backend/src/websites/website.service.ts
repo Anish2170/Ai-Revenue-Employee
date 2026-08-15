@@ -6,6 +6,7 @@
  */
 import * as repo from './website.repository.js';
 import { writeAuditLog } from '../audit/audit.service.js';
+import { resolvePublicUrl } from '../security/ssrf.js';
 
 export interface CreateWebsiteInput {
   name: string;
@@ -32,6 +33,7 @@ export async function getWebsite(organizationId: string, websiteId: string) {
 }
 
 export async function createWebsite(organizationId: string, userId: string, input: CreateWebsiteInput) {
+  await resolvePublicUrl(input.url);
   const website = await repo.createWebsite(organizationId, input);
   await writeAuditLog({
     action: 'website.created',
@@ -50,6 +52,7 @@ export async function updateWebsite(
   websiteId: string,
   input: UpdateWebsiteInput,
 ) {
+  if (input.url !== undefined) await resolvePublicUrl(input.url);
   const result = await repo.updateWebsite(organizationId, websiteId, input);
   if (result.count > 0) {
     await writeAuditLog({

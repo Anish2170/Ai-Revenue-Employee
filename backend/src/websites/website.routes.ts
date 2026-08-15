@@ -5,6 +5,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { requireAuth } from '../auth/auth.middleware.js';
 import { validateBody } from '../middleware/validate.js';
+import { authUserKey, minutes, rateLimit } from '../middleware/rateLimit.js';
 import * as websiteService from './website.service.js';
 
 export const websiteRouter = Router();
@@ -25,7 +26,11 @@ const updateSchema = z.object({
   description: z.string().max(500).optional(),
 });
 
-websiteRouter.use(requireAuth);
+const dashboardWebsiteLimiter = rateLimit([
+  { name: 'dashboard_websites_user', limit: 600, windowMs: minutes(1), key: authUserKey },
+]);
+
+websiteRouter.use(requireAuth, dashboardWebsiteLimiter);
 
 websiteRouter.get('/api/websites', async (req, res, next) => {
   try {

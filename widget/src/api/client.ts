@@ -11,17 +11,57 @@ import type {
   WidgetConfig,
   WidgetConversationResponse,
 } from '../types.js';
-import { getSessionId, getVisitorId } from '../sensors/session.js';
+export type WidgetIdentity = { visitorId: string; sessionId: string; visitorToken: string; expiresAt: number };
+const REQUEST_TIMEOUT_MS = 10_000;
+
+async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}, timeoutMs = REQUEST_TIMEOUT_MS): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  try { return await fetch(input, { ...init, signal: controller.signal }); }
+  finally { window.clearTimeout(timeout); }
+}
 
 export class ApiClient {
+  private identityPromise: Promise<WidgetIdentity | null> | null = null;
   constructor(private readonly cfg: WidgetConfig) {}
+
+  private identity(): Promise<WidgetIdentity | null> {
+    if (this.identityPromise) return this.identityPromise;
+    this.identityPromise = (async () => {
+      const key = `aire_widget_identity:${this.cfg.siteId}`;
+      try {
+        const saved = JSON.parse(localStorage.getItem(key) ?? 'null') as WidgetIdentity | null;
+        if (saved && saved.expiresAt > Date.now()) return saved;
+        const res = await fetchWithTimeout(`${this.cfg.backendUrl}/widget/session`, { method: 'POST', credentials: 'omit', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ siteId: this.cfg.siteId }) });
+        if (!res.ok) return null;
+        const identity = await res.json() as WidgetIdentity;
+        localStorage.setItem(key, JSON.stringify(identity));
+        return identity;
+      } catch { return null; }
+    })();
+    return this.identityPromise;
+  }
+
+  /** The one server-issued anonymous identity shared by all widget transports. */
+  getIdentity(): Promise<WidgetIdentity | null> {
+    return this.identity();
+  }
 
   async postEngage(behaviour: VisitorBehaviour, session: SessionState): Promise<EngageDecision> {
     try {
-      const res = await fetch(`${this.cfg.backendUrl}/engage`, {
+      const identity = await this.identity(); if (!identity) return { showPopup: false };
+      const res = await fetchWithTimeout(`${this.cfg.backendUrl}/engage`, {
         method: 'POST',
+        credentials: 'omit',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ siteId: this.cfg.siteId, behaviour, session }),
+        body: JSON.stringify({
+          siteId: this.cfg.siteId,
+          visitorId: identity.visitorId,
+          sessionId: identity.sessionId,
+          visitorToken: identity.visitorToken,
+          behaviour,
+          session,
+        }),
       });
       if (!res.ok) return { showPopup: false };
       return (await res.json()) as EngageDecision;
@@ -40,8 +80,9 @@ export class ApiClient {
 
   async getConversation(conversationId: string): Promise<WidgetConversationResponse | null> {
     try {
-      const params = new URLSearchParams({ siteId: this.cfg.siteId, visitorId: getVisitorId() });
-      const res = await fetch(`${this.cfg.backendUrl}/conversations/${conversationId}?${params.toString()}`);
+      const identity = await this.identity(); if (!identity) return null;
+      const params = new URLSearchParams({ siteId: this.cfg.siteId, visitorId: identity.visitorId, visitorToken: identity.visitorToken });
+      const res = await fetchWithTimeout(`${this.cfg.backendUrl}/conversations/${conversationId}?${params.toString()}`, { credentials: 'omit' });
       if (!res.ok) return null;
       return (await res.json()) as WidgetConversationResponse;
     } catch {
@@ -51,10 +92,12 @@ export class ApiClient {
 
   private async postConversationEndpoint(path: string, extra: Record<string, unknown>): Promise<WidgetConversationResponse | null> {
     try {
-      const res = await fetch(`${this.cfg.backendUrl}${path}`, {
+      const identity = await this.identity(); if (!identity) return null;
+      const res = await fetchWithTimeout(`${this.cfg.backendUrl}${path}`, {
         method: 'POST',
+        credentials: 'omit',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ siteId: this.cfg.siteId, visitorId: getVisitorId(), sessionId: getSessionId(), ...extra }),
+        body: JSON.stringify({ siteId: this.cfg.siteId, visitorId: identity.visitorId, sessionId: identity.sessionId, visitorToken: identity.visitorToken, ...extra }),
       });
       if (!res.ok) return null;
       return (await res.json()) as WidgetConversationResponse;
@@ -73,15 +116,18 @@ export class ApiClient {
 
     (async () => {
       try {
+        const identity = await this.identity(); if (!identity) { handlers.onError('Unable to start the assistant.'); handlers.onDone(); return; }
+        // Do not apply a short request timeout to streaming: token generation may legitimately take longer.
         const res = await fetch(`${this.cfg.backendUrl}/chat`, {
           method: 'POST',
+          credentials: 'omit',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ siteId: this.cfg.siteId, conversationId: conversationId || undefined, visitorId: getVisitorId(), sessionId: getSessionId(), messages, behaviour }),
+          body: JSON.stringify({ siteId: this.cfg.siteId, conversationId: conversationId || undefined, visitorId: identity.visitorId, sessionId: identity.sessionId, visitorToken: identity.visitorToken, messages, behaviour }),
           signal: controller.signal,
         });
 
         if (!res.ok || !res.body) {
-          handlers.onError('Unable to reach the assistant.');
+          handlers.onError(res.status === 429 ? 'You\'re doing that a little too quickly. Please try again in a moment.' : 'The AI is temporarily unavailable. Please try again.');
           handlers.onDone();
           return;
         }
@@ -106,7 +152,7 @@ export class ApiClient {
             }
             try {
               const obj = JSON.parse(payload) as { conversation?: ChatConversationMeta; token?: string; source?: ChatSource; error?: string };
-              if (obj.error) handlers.onError(obj.error);
+              if (obj.error) handlers.onError('The AI is temporarily unavailable. Please try again.');
               else if (obj.conversation) handlers.onConversation?.(obj.conversation);
               else if (obj.token) handlers.onToken(obj.token);
               else if (obj.source) handlers.onSource?.(obj.source);
@@ -117,7 +163,7 @@ export class ApiClient {
         }
         handlers.onDone();
       } catch (err) {
-        if ((err as Error)?.name !== 'AbortError') handlers.onError('The connection was interrupted.');
+        if ((err as Error)?.name !== 'AbortError') handlers.onError('The connection was interrupted. Please try again.');
         handlers.onDone();
       }
     })();

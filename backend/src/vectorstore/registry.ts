@@ -8,9 +8,11 @@
  * The old `vectorstore/index.ts` singleton is kept for the dev-fallback tenant
  * (no DB). Production paths use this registry exclusively.
  */
-import { config } from '../config/index.js';
+import { config, hasDatabase } from '../config/index.js';
 import { MemoryVectorStore } from './memoryStore.js';
-import { loadSnapshotFile, saveSnapshotFile, websiteSnapshotPath } from './persistence.js';
+import { loadSnapshotFile, websiteSnapshotPath } from './persistence.js';
+import { loadSnapshotArtifact, writeSnapshotArtifact, type StoredArtifact } from './snapshotStorage.js';
+import { prisma } from '../db/prisma.js';
 import type { VectorStore } from './types.js';
 import type { KnowledgeSnapshot, PageType } from '../context/types.js';
 import type { SiteLink } from '../types.js';
@@ -29,6 +31,7 @@ interface StoreEntry {
   store: VectorStore;
   meta: LoadedMeta | null;
   lastAccessed: number;
+  snapshotIdentity: string | null;
 }
 
 const MAX_CACHED_STORES = Number(process.env.MAX_CACHED_STORES ?? 20);
@@ -64,8 +67,10 @@ function incompatibleReason(snap: KnowledgeSnapshot): string | null {
 
 /** Get or lazily load the store for a website. */
 export async function getWebsiteStore(websiteId: string): Promise<{ store: VectorStore; meta: LoadedMeta | null }> {
+  const latest = hasDatabase ? await prisma.knowledgeSnapshot.findFirst({ where: { websiteId, status: 'READY' }, orderBy: { createdAt: 'desc' } }).catch(() => null) : null;
+  const identity = latest ? `${latest.id}:${latest.storageKey}` : null;
   const existing = stores.get(websiteId);
-  if (existing) {
+  if (existing && existing.snapshotIdentity === identity) {
     existing.lastAccessed = Date.now();
     return { store: existing.store, meta: existing.meta };
   }
@@ -75,7 +80,13 @@ export async function getWebsiteStore(websiteId: string): Promise<{ store: Vecto
   const store = new MemoryVectorStore();
   let meta: LoadedMeta | null = null;
 
-  const snap = await loadSnapshotFile(websiteSnapshotPath(websiteId));
+  let snap: KnowledgeSnapshot | null = null;
+  if (latest) {
+    try { snap = await loadSnapshotArtifact({ provider: latest.storageProvider, storageKey: latest.storageKey, contentSha256: latest.contentSha256 }); }
+    catch (err) { console.error(`[registry] operational error loading ready snapshot for website ${websiteId}:`, err instanceof Error ? err.message : 'unknown'); }
+  } else {
+    snap = await loadSnapshotFile(websiteSnapshotPath(websiteId));
+  }
   if (snap) {
     const reason = incompatibleReason(snap);
     if (reason) {
@@ -95,7 +106,7 @@ export async function getWebsiteStore(websiteId: string): Promise<{ store: Vecto
     }
   }
 
-  stores.set(websiteId, { store, meta, lastAccessed: Date.now() });
+  stores.set(websiteId, { store, meta, lastAccessed: Date.now(), snapshotIdentity: identity });
   return { store, meta };
 }
 
@@ -108,8 +119,10 @@ export async function knowledgeReadyForWebsite(websiteId: string): Promise<boole
 /** Persist the store for a website and update its cached metadata. */
 export async function persistWebsiteSnapshot(
   websiteId: string,
+  organizationId: string,
+  snapshotId: string,
   meta: Omit<LoadedMeta, 'createdAt' | 'embeddingModel'>,
-): Promise<string> {
+): Promise<StoredArtifact> {
   const { store } = await getWebsiteStore(websiteId);
   const documents = store.export();
   const snapshot: KnowledgeSnapshot = {
@@ -124,7 +137,7 @@ export async function persistWebsiteSnapshot(
     actionGraph: meta.actionGraph,
     documents,
   };
-  const path = await saveSnapshotFile(websiteSnapshotPath(websiteId), snapshot);
+  const artifact = await writeSnapshotArtifact({ organizationId, websiteId, snapshotId, snapshot, localKey: websiteSnapshotPath(websiteId) });
 
   const entry = stores.get(websiteId);
   if (entry) {
@@ -132,7 +145,7 @@ export async function persistWebsiteSnapshot(
     entry.lastAccessed = Date.now();
   }
 
-  return path;
+  return artifact;
 }
 
 /** Force-refresh a website's store (e.g. after ingest rebuilds it). */

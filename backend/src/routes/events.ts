@@ -11,6 +11,7 @@
  * debug traces remain development-only.
  */
 import { Router, type Request } from 'express';
+import { clientIp, hours, minutes, rateLimit, siteIdFromRequest, visitorKeyFromRequest } from '../middleware/rateLimit.js';
 import { eventsRequestSchema, type EventsRequest } from '../validation/eventSchemas.js';
 import { ingestEvents } from '../services/perceptionService.js';
 import { config, hasDatabase } from '../config/index.js';
@@ -19,6 +20,7 @@ import { generateSafePopup } from '../intelligence/popupPipeline.js';
 import { SALES_POLICY } from '../intelligence/config/salesPolicy.config.js';
 import { sessionStore } from '../intelligence/session/visitorSession.js';
 import { resolveTenant, TenantNotFoundError, TenantDisabledError } from '../tenant/tenant.resolver.js';
+import { verifyPublicWidgetIdentity } from '../widget/publicIdentity.js';
 import { enqueueAnalyticsEvent } from '../analytics/analytics.service.js';
 import { enqueueAiDecisionLog } from '../analytics/decision-log.service.js';
 import { findBusinessAction } from '../business-actions/action.service.js';
@@ -29,8 +31,28 @@ import type { GeneratedPopup } from '../intelligence/popupGeneration.js';
 import type { SalesDecision } from '../intelligence/types.js';
 import type { SafePopupPipelineResult } from '../intelligence/popupPipeline.js';
 import type { AnalyticsContext, AnalyticsTenant } from '../analytics/analytics.service.js';
+import { logger } from '../logging/logger.js';
+import { safeIdentifier } from '../logging/sanitize.js';
 
 export const eventsRouter = Router();
+
+const eventsLimiter = rateLimit(
+  [
+    { name: 'public_events_ip', limit: 300, windowMs: minutes(1), key: (req) => clientIp(req) },
+    { name: 'public_events_site', limit: 10000, windowMs: hours(1), key: siteIdFromRequest },
+    {
+      name: 'public_events_site_session',
+      limit: 120,
+      windowMs: minutes(1),
+      key: (req) => {
+        const siteId = siteIdFromRequest(req);
+        const visitor = visitorKeyFromRequest(req);
+        return siteId && visitor ? `${siteId}:${visitor}` : null;
+      },
+    },
+  ],
+  { onLimited: 'ignore', ignoredBody: { status: 'ignored', reason: 'rate_limited' } },
+);
 
 function ignoredResponse(dropped: string[] = []) {
   return config.debugTrace
@@ -45,8 +67,7 @@ function wantsDevSprint42Trace(req: Request): boolean {
 
 function devPopupLog(stage: string, detail?: unknown): void {
   if (config.isProduction || !config.debugTrace) return;
-  const suffix = detail === undefined ? '' : ` ${JSON.stringify(detail)}`;
-  console.log(`[popup] ${stage}${suffix}`);
+  logger.debug(`[popup] ${stage}`, detail);
 }
 
 function clientSuppressionReason(body: EventsRequest): { reason: string; cooldownRemainingMs?: number } | null {
@@ -141,9 +162,9 @@ function enqueuePopupDecisionLog(
     popupSuppressed: detail.popupSuppressed ?? false,
     suppressionReason: detail.suppressionReason ?? null,
     generatedPopupType: detail.popup?.popupType ?? rejectedPopup?.popupType ?? null,
-    generatedPopupTitle: detail.popup?.title ?? rejectedPopup?.title ?? null,
+    generatedPopupTitle: null,
     ctaType: detail.popup ? ctaIntent(detail.pipeline) : ctaIntent(detail.pipeline),
-    ctaText: detail.popup?.action?.label ?? null,
+    ctaText: null,
     ctaActionId: detail.popup?.primaryAction ?? rejectedPopup?.primaryAction ?? null,
     expectedAction: action?.expectedAction ?? false,
     primaryActionReturned: action?.primaryActionReturned ?? null,
@@ -170,7 +191,7 @@ function publicPopup(popup: GeneratedPopup, actions: BusinessActionConfig[]) {
   };
 }
 
-eventsRouter.post('/events', async (req, res) => {
+eventsRouter.post('/events', eventsLimiter, async (req, res) => {
   const parsed = eventsRequestSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.json(
@@ -180,6 +201,9 @@ eventsRouter.post('/events', async (req, res) => {
 
   try {
     const body = parsed.data as EventsRequest;
+    if (!body.siteId || !body.visitorId || !body.visitorToken) return res.json(ignoredResponse(['identity_required']));
+    const identity = verifyPublicWidgetIdentity(body.visitorToken, body.siteId);
+    if (!identity || identity.visitorId !== body.visitorId || identity.sessionId !== body.sessionId) return res.json(ignoredResponse(['identity_invalid']));
 
     let publicSiteId: string | null = null;
     let websiteId: string | undefined;
@@ -243,7 +267,7 @@ eventsRouter.post('/events', async (req, res) => {
         suppressionReason: clientSuppressed.reason,
         finalOutcome: 'Suppressed',
       });
-      devPopupLog('popup_suppressed', { reason: clientSuppressed.reason, sessionId: body.sessionId.slice(0, 8) });
+      devPopupLog('popup_suppressed', { reason: clientSuppressed.reason, session: safeIdentifier(body.sessionId) });
     } else if (result.shadowDecision && result.objective) {
       if (result.shadowDecision.action !== 'speak') {
         popupTrace(body.sessionId, '6_suppression_rules', {
@@ -268,7 +292,7 @@ eventsRouter.post('/events', async (req, res) => {
         devPopupLog('popup_suppressed', {
           reason: result.shadowDecision.suppressedBy ?? 'sales_brain_silent',
           action: result.shadowDecision.action,
-          sessionId: body.sessionId.slice(0, 8),
+          session: safeIdentifier(body.sessionId),
         });
       } else {
         const pipelineInstructions = instructions ?? getBusinessInstructions();
@@ -281,7 +305,7 @@ eventsRouter.post('/events', async (req, res) => {
           numericValue: result.shadowDecision.speakScore,
         });
         devPopupLog('popup_requested', {
-          sessionId: body.sessionId.slice(0, 8),
+          session: safeIdentifier(body.sessionId),
           websiteId: websiteId ?? null,
           score: result.shadowDecision.speakScore,
         });
@@ -324,7 +348,7 @@ eventsRouter.post('/events', async (req, res) => {
               popup: popupArtifact,
             });
             devPopupLog('popup_generated', {
-              sessionId: body.sessionId.slice(0, 8),
+              session: safeIdentifier(body.sessionId),
               popupType: popupArtifact.popupType,
               tone: popupArtifact.tone,
             });
@@ -355,11 +379,11 @@ eventsRouter.post('/events', async (req, res) => {
             devPopupLog('popup_suppressed', {
               reason: sprint42.reason,
               stoppedAt: sprint42.stoppedAt,
-              sessionId: body.sessionId.slice(0, 8),
+              session: safeIdentifier(body.sessionId),
             });
           }
         } catch (err) {
-          const detail = err instanceof Error ? err.message : 'Unknown Sprint 4.2 pipeline error';
+          const detail = 'popup_generation_failed';
           popupTrace(body.sessionId, '8_popup_generation', { passed: false, popupGenerated: false, stoppedAt: 'pipeline_error', reason: detail });
           popupTrace(body.sessionId, '9_popup_delivery_to_widget', { passed: false, delivered: false, reason: detail });
           enqueueAnalyticsEvent(analyticsTenant, analyticsContext, { category: 'POPUP', eventName: 'popup_suppressed', reason: detail, label: 'pipeline_error' });
@@ -371,7 +395,8 @@ eventsRouter.post('/events', async (req, res) => {
             suppressionReason: detail,
             finalOutcome: 'Suppressed',
           });
-          devPopupLog('popup_suppressed', { reason: detail, sessionId: body.sessionId.slice(0, 8) });
+          logger.warn('[popup] generation failed', { error: err });
+          devPopupLog('popup_suppressed', { reason: detail, session: safeIdentifier(body.sessionId) });
         }
       }
     }
@@ -390,8 +415,7 @@ eventsRouter.post('/events', async (req, res) => {
         : { status: result.status, ...(popupArtifact ? { popup: popupArtifact } : {}) },
     );
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Unknown /events error';
-    console.warn('[events] ignored ingest error:', message);
+    logger.warn('[events] ignored ingest error', { error: err });
     return res.json(ignoredResponse(['ingest_error']));
   }
 });

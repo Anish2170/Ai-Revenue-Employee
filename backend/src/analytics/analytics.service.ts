@@ -21,6 +21,7 @@ export interface AnalyticsContext {
 }
 
 export interface AnalyticsEventInput extends AnalyticsContext {
+  eventId?: string;
   category: AnalyticsEventCategory;
   eventName: string;
   occurredAt?: Date;
@@ -108,7 +109,28 @@ export function enqueueAnalyticsEvent(
   enqueueAnalyticsEvents(tenant, context, [event]);
 }
 
-async function persistEvent({ tenant, context, event }: QueueItem): Promise<void> {
+/** Persist public batches before acknowledging them, so clients can retry a
+ * temporary storage failure. Returns only newly inserted facts. */
+export async function persistAnalyticsEvents(
+  tenant: AnalyticsTenant,
+  context: AnalyticsContext,
+  events: AnalyticsEventInput[],
+): Promise<AnalyticsEventInput[]> {
+  const persisted: AnalyticsEventInput[] = [];
+  for (const event of events) {
+    if (await persistEvent({ tenant, context, event })) persisted.push(event);
+  }
+  return persisted;
+}
+
+async function persistEvent({ tenant, context, event }: QueueItem): Promise<boolean> {
+  return prisma.$transaction(async (tx) => {
+  const eventId = cleanText(event.eventId, 64) ?? crypto.randomUUID();
+  const existing = await tx.analyticsEvent.findUnique({
+    where: { websiteId_eventId: { websiteId: tenant.websiteId, eventId } },
+    select: { id: true },
+  });
+  if (existing) return false;
   const occurredAt = event.occurredAt ?? new Date();
   const merged: AnalyticsContext = { ...context, ...event };
   const visitorId = cleanText(merged.visitorId, 128);
@@ -118,7 +140,7 @@ async function persistEvent({ tenant, context, event }: QueueItem): Promise<void
   let analyticsSessionId: string | undefined;
 
   if (visitorId) {
-    const visitor = await prisma.analyticsVisitor.upsert({
+    const visitor = await tx.analyticsVisitor.upsert({
       where: { websiteId_visitorId: { websiteId: tenant.websiteId, visitorId } },
       create: {
         organizationId: tenant.organizationId,
@@ -138,7 +160,7 @@ async function persistEvent({ tenant, context, event }: QueueItem): Promise<void
   }
 
   if (visitorId && sessionId && analyticsVisitorId) {
-    const session = await prisma.analyticsSession.upsert({
+    const session = await tx.analyticsSession.upsert({
       where: { websiteId_sessionId: { websiteId: tenant.websiteId, sessionId } },
       create: {
         organizationId: tenant.organizationId,
@@ -167,10 +189,11 @@ async function persistEvent({ tenant, context, event }: QueueItem): Promise<void
     analyticsSessionId = session.id;
   }
 
-  await prisma.analyticsEvent.create({
+  await tx.analyticsEvent.create({
     data: {
       organizationId: tenant.organizationId,
       websiteId: tenant.websiteId,
+      eventId,
       analyticsVisitorId,
       analyticsSessionId,
       visitorId,
@@ -195,6 +218,8 @@ async function persistEvent({ tenant, context, event }: QueueItem): Promise<void
       label: cleanText(event.label, 240),
       actionId: cleanText(event.actionId, 80),
     },
+  });
+  return true;
   });
 }
 

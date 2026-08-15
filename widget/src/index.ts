@@ -31,7 +31,8 @@ function boot(): void {
     window.Aire = instance;
     if (cfg.debug) console.log('[AIRE] widget started successfully');
   } catch (err) {
-    console.error('[AIRE] failed to start', err);
+    // The widget is isolated from its host: initialization failures are contained.
+    if (cfg.debug) console.warn('[AIRE] failed to start; widget disabled');
   }
 }
 

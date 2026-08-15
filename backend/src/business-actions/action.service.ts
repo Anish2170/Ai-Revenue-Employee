@@ -3,7 +3,7 @@ import { assertWebsiteOwnership } from '../websites/website.service.js';
 import { writeAuditLog } from '../audit/audit.service.js';
 import { invalidateTenantCacheForWebsite } from '../tenant/tenant.resolver.js';
 import type { BusinessActionConfig, BusinessActionDestinationType, BusinessActionWithStats } from './action.types.js';
-import { loadSnapshotFile, websiteSnapshotPath } from '../vectorstore/persistence.js';
+import { loadLatestWebsiteSnapshot } from '../vectorstore/snapshotStorage.js';
 import { DISCOVERED_ACTION_INTENTS } from './discovered-action.types.js';
 import type { DiscoveredActionGraph, DiscoveredActionCandidate, DiscoveredActionIntent } from './discovered-action.types.js';
 
@@ -104,7 +104,7 @@ export function mergeBusinessActions(...actionGroups: BusinessActionConfig[][]):
 }
 
 export async function getDiscoveredActionGraph(websiteId: string): Promise<DiscoveredActionGraph | null> {
-  const snapshot = await loadSnapshotFile(websiteSnapshotPath(websiteId));
+  const { snapshot } = await loadLatestWebsiteSnapshot(websiteId);
   return snapshot?.actionGraph ?? null;
 }
 
@@ -424,7 +424,7 @@ function closestSemanticNode(graph: DiscoveredActionGraph, intent: string): Disc
 
 export async function getWebsiteActionsDashboard(organizationId: string, websiteId: string) {
   await assertWebsiteOwnership(organizationId, websiteId);
-  const snapshot = await loadSnapshotFile(websiteSnapshotPath(websiteId));
+  const { snapshot } = await loadLatestWebsiteSnapshot(websiteId);
   const graph = snapshot?.actionGraph ?? null;
   const latestBuild = await prisma.knowledgeBuild.findFirst({
     where: { organizationId, websiteId },

@@ -10,6 +10,7 @@ import { randomBytes } from 'node:crypto';
 import { prisma } from '../db/prisma.js';
 import { config } from '../config/index.js';
 import { assertWebsiteOwnership } from '../websites/website.service.js';
+import { UnsafeUrlError, safeFetch } from '../security/ssrf.js';
 
 function randomSiteId(): string {
   return `site_${randomBytes(6).toString('hex')}`; // e.g. site_9f3a1c7e2b04
@@ -62,18 +63,15 @@ export async function verifyWidgetInstallation(organizationId: string, websiteId
   }
 
   const widget = website.widget ?? (await getOrCreateWidget(organizationId, websiteId));
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 12000);
-
   try {
-    const response = await fetch(website.url, {
-      signal: controller.signal,
+    const response = await safeFetch(website.url, {
+      timeoutMs: 12000,
       headers: {
         'User-Agent': 'AI-Revenue-Employee-Install-Verifier/1.0',
         Accept: 'text/html,application/xhtml+xml',
       },
     });
-    const html = await response.text();
+    const html = response.body.toString('utf8');
     const installed =
       html.includes(`data-site-id="${widget.siteId}"`) ||
       html.includes(`data-site-id='${widget.siteId}'`) ||
@@ -88,7 +86,7 @@ export async function verifyWidgetInstallation(organizationId: string, websiteId
 
     return {
       installed,
-      checkedUrl: website.url,
+      checkedUrl: response.url,
       status: response.status,
       reason: installed ? 'Widget script found on website.' : 'Widget script was not found in the page HTML.',
     };
@@ -96,9 +94,7 @@ export async function verifyWidgetInstallation(organizationId: string, websiteId
     return {
       installed: false,
       checkedUrl: website.url,
-      reason: err instanceof Error ? err.message : 'Unable to fetch website.',
+      reason: err instanceof UnsafeUrlError ? 'This website URL cannot be reached from the service. Please use a public HTTP or HTTPS website.' : 'Unable to fetch website.',
     };
-  } finally {
-    clearTimeout(timeout);
   }
 }

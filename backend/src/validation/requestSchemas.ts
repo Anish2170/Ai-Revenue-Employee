@@ -26,7 +26,10 @@ export const sessionStateSchema = z.object({
 });
 
 export const engageRequestSchema = z.object({
-  siteId: z.string().max(100).optional(),
+  siteId: z.string().min(1).max(100),
+  visitorId: z.string().min(1).max(100),
+  sessionId: z.string().min(1).max(100),
+  visitorToken: z.string().min(1).max(1000),
   behaviour: visitorBehaviourSchema,
   session: sessionStateSchema.default({
     popupShown: false,
@@ -48,10 +51,11 @@ export const chatMessageSchema = z.object({
 });
 
 export const chatRequestSchema = z.object({
-  siteId: z.string().max(100).optional(),
+  siteId: z.string().min(1).max(100),
+  visitorToken: z.string().min(1).max(1000),
   conversationId: z.string().uuid().optional(),
-  visitorId: z.string().max(100).optional(),
-  sessionId: z.string().max(100).optional(),
+  visitorId: z.string().min(1).max(100),
+  sessionId: z.string().min(1).max(100),
   messages: z.array(chatMessageSchema).min(1).max(50),
   behaviour: visitorBehaviourSchema.optional(),
 });

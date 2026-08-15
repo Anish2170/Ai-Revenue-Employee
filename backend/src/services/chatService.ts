@@ -12,6 +12,7 @@ import { config } from '../config/index.js';
 import type { ChatMessage, VisitorBehaviour } from '../types.js';
 import type { BusinessInstructions, ResolvedContext } from '../context/types.js';
 import type { PromptConversationContext } from '../conversations/conversation.service.js';
+import { logger } from '../logging/logger.js';
 
 export interface ChatStreamInput {
   messages: ChatMessage[];
@@ -33,8 +34,7 @@ export type ChatStreamEvent =
 function chatTrace(input: ChatStreamInput, stage: string, detail?: unknown): void {
   if (!config.debugTrace) return;
   const id = input.debug?.requestId ?? 'no-request-id';
-  const suffix = detail === undefined ? '' : ` ${JSON.stringify(detail)}`;
-  console.log(`[chat:${id}] ${stage}${suffix}`);
+  logger.debug(`[chat:${id}] ${stage}`, detail);
 }
 
 function serializeError(err: unknown): Record<string, unknown> {
@@ -46,17 +46,10 @@ function retrievedChunkIds(context: ResolvedContext): string[] {
   return context.chunks.map((chunk) => chunk.id);
 }
 
-function retrievedChunkMetadata(context: ResolvedContext): Array<{
-  id: string;
-  pageTitle: string;
-  sourceUrl: string;
-  first100: string;
-}> {
+function retrievedChunkMetadata(context: ResolvedContext): Array<{ id: string; score: number }> {
   return context.chunks.map((chunk) => ({
     id: chunk.id,
-    pageTitle: chunk.title,
-    sourceUrl: chunk.url,
-    first100: chunk.content.replace(/\s+/g, ' ').slice(0, 100),
+    score: chunk.score,
   }));
 }
 
@@ -112,26 +105,6 @@ async function* singleToken(text: string): AsyncIterable<ChatStreamEvent> {
   yield { type: 'token', text };
 }
 
-function buildGroundedProviderFallback(context: ResolvedContext, query: string): string | null {
-  const topChunk = context.chunks[0];
-  if (!topChunk) return null;
-
-  const code = topChunk.content.match(/\b[A-Z0-9]{6,}\b/)?.[0];
-  if (code && /gift\s*code/i.test(query)) {
-    return `Here is today's gift code from ${context.business.name}: **${code}**.`;
-  }
-
-  const lines = topChunk.content
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .filter((line) => !/^leave a comment/i.test(line))
-    .slice(0, 4);
-
-  if (lines.length === 0) return null;
-  return `Here is what I found from ${context.business.name}: ${lines.join(' ')}`;
-}
-
 async function* withGroundedProviderFallback(
   input: ChatStreamInput,
   source: AsyncIterable<string>,
@@ -166,30 +139,13 @@ async function* withGroundedProviderFallback(
       throw err;
     }
 
-    const fallback = buildGroundedProviderFallback(context, query);
-    if (!fallback) {
-      chatTrace(input, 'llm_debug', {
-        llm_used: false,
-        fallback_used: false,
-        gemini_status: geminiStatus,
-        retrieved_chunk_ids: retrievedChunkIds(context),
-        note: 'Gemini failed before producing tokens and no grounded fallback could be built.',
-      });
-      throw err;
-    }
-
-    chatTrace(input, 'fallback:grounded_knowledge_reply', {
-      reason: 'llm_provider_failed_before_first_token',
-      source: context.source,
-      chunkId: context.chunks[0]?.id ?? null,
-    });
     chatTrace(input, 'llm_debug', {
       llm_used: false,
-      fallback_used: true,
+      fallback_used: false,
       gemini_status: geminiStatus,
       retrieved_chunk_ids: retrievedChunkIds(context),
     });
-    yield { type: 'token', text: fallback };
+    throw err;
   }
 }
 
@@ -222,8 +178,6 @@ export async function streamChatReply(input: ChatStreamInput): Promise<AsyncIter
   const sourceRequest = lastUser ? isSourceAttributionRequest(lastUser) : false;
   const retrievalQuery = sourceRequest && previousUser ? previousUser : query;
   chatTrace(input, 'retrieval:start', {
-    query: retrievalQuery,
-    displayQuery: query,
     sourceRequest,
     previousUserUsed: sourceRequest && Boolean(previousUser),
     tenantWebsiteId: input.tenant?.websiteId ?? null,
@@ -231,25 +185,12 @@ export async function streamChatReply(input: ChatStreamInput): Promise<AsyncIter
   const context = await getBusinessContext({ query: retrievalQuery, behaviour: input.behaviour, tenant: input.tenant });
   chatTrace(input, 'retrieval:result', {
     source: context.source,
-    business: context.business,
-    businessInstructions: context.instructions,
     chunks: context.chunks.length,
     scores: context.scores,
     noKnowledge: context.chunks.length === 0,
   });
   chatTrace(input, 'retrieved_chunk_ids', retrievedChunkIds(context));
   chatTrace(input, 'retrieved_chunk_metadata', retrievedChunkMetadata(context));
-  chatTrace(input, 'retrieved chunks', context.chunks.map((chunk, index) => ({
-    index: index + 1,
-    id: chunk.id,
-    url: chunk.url,
-    page: chunk.page,
-    pageType: chunk.pageType,
-    heading: chunk.heading,
-    title: chunk.title,
-    score: chunk.score,
-    content: chunk.content,
-  })));
   if (context.chunks.length === 0) console.warn(`[chat:${input.debug?.requestId ?? 'no-request-id'}] RAG returned no knowledge.`);
   if (context.source === 'fallback') console.warn(`[chat:${input.debug?.requestId ?? 'no-request-id'}] using static fallback context (dev request without tenant only).`);
 
@@ -259,9 +200,6 @@ export async function streamChatReply(input: ChatStreamInput): Promise<AsyncIter
       llm_used: false,
       fallback_used: false,
       source_chunk_id: sourceReply.chunkId,
-      pageTitle: sourceReply.source.title,
-      sourceUrl: sourceReply.source.url,
-      first100: sourceReply.first100,
       retrieved_chunk_ids: retrievedChunkIds(context),
     });
     return (async function* sourceAttributionStream(): AsyncIterable<ChatStreamEvent> {
@@ -285,13 +223,12 @@ export async function streamChatReply(input: ChatStreamInput): Promise<AsyncIter
     promptTruncatedBeforeSend: false,
     truncationNote: 'No application-level truncation is applied after prompt construction in this route.',
   });
-  chatTrace(input, 'system prompt', prompt.system);
-  chatTrace(input, 'final prompt sent to Gemini', {
-    provider: `gemini:${config.gemini.model}`,
-    system: prompt.system,
-    messages: prompt.messages,
+  chatTrace(input, 'final prompt sent to LLM', {
+    provider: `${config.llm.primary.provider}:${config.llm.primary.model}`,
+    messageCount: prompt.messages.length,
+    totalChars: prompt.system.length + prompt.messages.reduce((sum, message) => sum + message.content.length, 0),
   });
-  chatTrace(input, 'LLM request handoff', { provider: `gemini:${config.gemini.model}` });
+  chatTrace(input, 'LLM request handoff', { provider: `${config.llm.primary.provider}:${config.llm.primary.model}` });
 
   const stream = streamChat({
     system: prompt.system,

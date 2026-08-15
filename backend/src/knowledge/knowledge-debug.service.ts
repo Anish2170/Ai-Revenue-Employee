@@ -1,4 +1,4 @@
-import { loadSnapshotFile, websiteSnapshotPath } from '../vectorstore/persistence.js';
+import { loadLatestWebsiteSnapshot } from '../vectorstore/snapshotStorage.js';
 import { retrievalConfig } from '../config/retrieval.js';
 import { config } from '../config/index.js';
 import { embedQuery } from '../embeddings/embedder.js';
@@ -39,7 +39,7 @@ function preview(text: string): string {
 }
 
 async function loadWebsiteSnapshot(websiteId: string): Promise<KnowledgeSnapshot | null> {
-  return loadSnapshotFile(websiteSnapshotPath(websiteId));
+  return (await loadLatestWebsiteSnapshot(websiteId)).snapshot;
 }
 
 function chunksForPage(snapshot: KnowledgeSnapshot, url: string): EmbeddedChunk[] {
