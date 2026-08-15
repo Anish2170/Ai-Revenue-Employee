@@ -5,9 +5,10 @@
     "scripts":  {
                     "dev":  "next dev --webpack",
                     "build":  "next build",
-                    "start":  "next start",
-                    "lint":  "eslint",
-                    "typecheck":  "tsc -p tsconfig.json --noEmit"
+    "start":  "next start",
+    "lint":  "eslint",
+    "test": "node --experimental-strip-types --test src/lib/api.test.ts",
+    "typecheck":  "tsc -p tsconfig.json --noEmit"
                 },
     "dependencies":  {
                          "next":  "16.2.10",

@@ -10,7 +10,7 @@ publicIdentityRouter.post('/widget/session', async (req, res, next) => {
   try {
     await resolveTenant(parsed.data.siteId);
     const { identity, token } = issuePublicWidgetIdentity(parsed.data.siteId);
-    res.status(201).json({ visitorId: identity.visitorId, sessionId: identity.sessionId, visitorToken: token, expiresAt: identity.exp });
+    res.status(201).json({ siteId: identity.siteId, visitorId: identity.visitorId, sessionId: identity.sessionId, visitorToken: token, expiresAt: identity.exp });
   } catch (err) {
     if (err instanceof TenantNotFoundError || err instanceof TenantDisabledError) return res.status(404).json({ error: 'TENANT_NOT_FOUND' });
     next(err);

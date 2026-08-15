@@ -129,7 +129,17 @@ export interface KnowledgeBuildHandle {
   abort: () => void;
 }
 
-class ApiClient {
+export interface WidgetSessionIdentity {
+  siteId: string;
+  visitorId: string;
+  sessionId: string;
+  visitorToken: string;
+  expiresAt: number;
+}
+
+export class ApiClient {
+  private readonly testChatIdentities = new Map<string, WidgetSessionIdentity>();
+
   async signup(email: string, password: string, name: string, organizationName?: string) {
     const result = await request<{ csrfToken?: string }>('/auth/signup', {
       method: 'POST',
@@ -289,28 +299,14 @@ class ApiClient {
   }
 
   async sendTestChat(siteId: string, messages: Array<{ role: 'user' | 'assistant'; content: string }>) {
-    const identityResponse = await fetch(`${getBaseUrl()}/widget/session`, {
-      method: 'POST',
-      credentials: 'omit',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ siteId }),
-    });
-    if (!identityResponse.ok) throw await responseError(identityResponse);
-    const identity = await identityResponse.json() as {
-      visitorId?: string;
-      sessionId?: string;
-      visitorToken?: string;
-    };
-    if (!identity.visitorId || !identity.sessionId || !identity.visitorToken) {
-      throw new ApiError(502, 'Unable to establish a widget test session.');
-    }
+    const identity = await this.getTestChatIdentity(siteId);
 
     const res = await fetch(`${getBaseUrl()}/chat`, {
       method: 'POST',
       credentials: 'omit',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        siteId,
+        siteId: identity.siteId,
         visitorId: identity.visitorId,
         sessionId: identity.sessionId,
         visitorToken: identity.visitorToken,
@@ -364,6 +360,40 @@ class ApiClient {
 
     if (error) throw new Error(error);
     return { reply };
+  }
+
+  private async getTestChatIdentity(siteId: string): Promise<WidgetSessionIdentity> {
+    const cachedIdentity = this.testChatIdentities.get(siteId);
+    if (cachedIdentity) return cachedIdentity;
+
+    const identityResponse = await fetch(`${getBaseUrl()}/widget/session`, {
+      method: 'POST',
+      credentials: 'omit',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ siteId }),
+    });
+    if (!identityResponse.ok) throw await responseError(identityResponse);
+
+    const identity = await identityResponse.json() as Partial<WidgetSessionIdentity>;
+    if (
+      identity.siteId !== siteId
+      || !identity.visitorId
+      || !identity.sessionId
+      || !identity.visitorToken
+      || typeof identity.expiresAt !== 'number'
+    ) {
+      throw new ApiError(502, 'Unable to establish a widget test session.');
+    }
+
+    const completeIdentity: WidgetSessionIdentity = {
+      siteId: identity.siteId,
+      visitorId: identity.visitorId,
+      sessionId: identity.sessionId,
+      visitorToken: identity.visitorToken,
+      expiresAt: identity.expiresAt,
+    };
+    this.testChatIdentities.set(siteId, completeIdentity);
+    return completeIdentity;
   }
 
   getKnowledgeDebugOverview(websiteId: string) {
