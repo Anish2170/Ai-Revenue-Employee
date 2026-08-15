@@ -158,8 +158,12 @@ export function validateProductionConfig(): void {
     ['CORS_ORIGIN', configuredCorsOrigin],
   ].filter(([, value]) => !value);
 
-  if (config.llm.primary.provider === 'openai') missing.push(['OPENAI_API_KEY', config.llm.primary.apiKey]);
-  if (config.llm.fallback.provider === 'gemini' || config.gemini.embeddingModel) missing.push(['GEMINI_API_KEY', config.gemini.apiKey]);
+  if (config.llm.primary.provider === 'openai' && config.llm.primary.apiKey.trim().length === 0) {
+    missing.push(['OPENAI_API_KEY', config.llm.primary.apiKey]);
+  }
+  if ((config.llm.fallback.provider === 'gemini' || config.gemini.embeddingModel) && config.gemini.apiKey.trim().length === 0) {
+    missing.push(['GEMINI_API_KEY', config.gemini.apiKey]);
+  }
 
   if (missing.length > 0) {
     throw new Error(`Missing required production environment variables: ${missing.map(([key]) => key).join(', ')}`);
