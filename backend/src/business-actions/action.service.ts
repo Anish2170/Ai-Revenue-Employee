@@ -222,7 +222,7 @@ export async function setDiscoveredActionUrlOverride(
     throw err;
   }
   invalidateTenantCacheForWebsite(websiteId);
-  await writeAuditLog({ action: 'action_url_override.updated', organizationId, userId, targetType: 'website_action', targetId: intent, metadata: { url: candidate.url } }).catch((err) => {
+  await writeAuditLog({ action: 'action_url_override.updated', organizationId, userId, targetType: 'website_action', targetId: intent, metadata: { websiteId, url: candidate.url } }).catch((err) => {
     console.warn('[website-actions] failed to write preferred URL override audit log.', err);
   });
   return { intent, url: candidate.url };
@@ -240,7 +240,7 @@ export async function clearDiscoveredActionUrlOverride(organizationId: string, u
     throw err;
   }
   invalidateTenantCacheForWebsite(websiteId);
-  await writeAuditLog({ action: 'action_url_override.deleted', organizationId, userId, targetType: 'website_action', targetId: intent }).catch((err) => {
+  await writeAuditLog({ action: 'action_url_override.deleted', organizationId, userId, targetType: 'website_action', targetId: intent, metadata: { websiteId } }).catch((err) => {
     console.warn('[website-actions] failed to write preferred URL override audit log.', err);
   });
 }
@@ -345,7 +345,7 @@ function safeHost(value: string): string {
 
 async function afterActionChanged(organizationId: string, userId: string, websiteId: string, auditAction: string, actionId: string): Promise<void> {
   invalidateTenantCacheForWebsite(websiteId);
-  await writeAuditLog({ action: auditAction, organizationId, userId, targetType: 'business_action', targetId: actionId });
+  await writeAuditLog({ action: auditAction, organizationId, userId, targetType: 'business_action', targetId: actionId, metadata: { websiteId } });
 }
 
 async function mustFindAction(organizationId: string, websiteId: string, actionId: string): Promise<BusinessActionWithStats> {

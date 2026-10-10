@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { api } from '@/lib/api';
+import Link from 'next/link';
+import { api, ApiError, errorMessage } from '@/lib/api';
 import { Button, Card, Spinner, EmptyState } from '@/components/ui';
 
 interface Website {
@@ -20,11 +21,37 @@ export default function WebsitesPage() {
   const [showCreate, setShowCreate] = useState(false);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState('');
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState('');
+  const [notice, setNotice] = useState('');
   const [form, setForm] = useState({ name: '', url: '', industry: '', description: '' });
 
   useEffect(() => {
-    api.listWebsites().then((data) => setWebsites(data as Website[])).catch(() => {}).finally(() => setLoading(false));
+    api.listWebsites().then((data) => setWebsites(data as Website[])).catch((err) => setDeleteError(errorMessage(err, 'Unable to load websites.'))).finally(() => setLoading(false));
   }, []);
+
+  const handleDelete = async (site: Website) => {
+    if (deletingId || !window.confirm(`Permanently delete "${site.name}" (${site.url})?\n\nThis removes its AI assistant, knowledge, conversations, leads, analytics, and settings. This cannot be undone.`)) return;
+    setDeletingId(site.id);
+    setDeleteError('');
+    setNotice('');
+    try {
+      try { await api.deleteWebsite(site.id); } catch (err) {
+        // A previous timed-out request or another tab may already have deleted it.
+        if (!(err instanceof ApiError && err.status === 404)) throw err;
+      }
+      setWebsites((current) => current.filter((website) => website.id !== site.id));
+      try {
+        if (window.localStorage.getItem('dashboard:selectedWebsiteId') === site.id) window.localStorage.removeItem('dashboard:selectedWebsiteId');
+      } catch { /* Storage may be unavailable; the site selector also updates in memory. */ }
+      window.dispatchEvent(new CustomEvent('aire:website-deleted', { detail: { websiteId: site.id } }));
+      setNotice(`"${site.name}" was permanently deleted.`);
+    } catch (err) {
+      setDeleteError(errorMessage(err, 'Unable to delete website. Please try again.'));
+    } finally {
+      setDeletingId(null);
+    }
+  };
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -64,6 +91,9 @@ export default function WebsitesPage() {
           + Add Website
         </Button>
       </div>
+
+      {deleteError && <p role="alert" className="text-[var(--danger)] text-sm mb-4">{deleteError}</p>}
+      {notice && <p role="status" className="text-sm mb-4">{notice}</p>}
 
       {showCreate && (
         <Card className="mb-8">
@@ -129,12 +159,11 @@ export default function WebsitesPage() {
           {websites.map((site) => (
             <Card
               key={site.id}
-              className="cursor-pointer hover:border-[var(--accent)] transition-colors"
-              onClick={() => router.push(`/websites/${site.id}`)}
+              className="hover:border-[var(--accent)] transition-colors"
             >
               <div className="flex items-center justify-between">
                 <div>
-                  <h3 className="font-semibold text-lg">{site.name}</h3>
+                  <h3 className="font-semibold text-lg"><Link href={`/websites/${site.id}`} className="hover:underline">{site.name}</Link></h3>
                   <p className="text-[var(--text-muted)] text-sm mt-1">{site.url}</p>
                 </div>
                 <div className="text-right">
@@ -146,6 +175,12 @@ export default function WebsitesPage() {
                   <p className="text-[var(--text-muted)] text-xs mt-2">
                     Added {new Date(site.createdAt).toLocaleDateString()}
                   </p>
+                  <div className="flex gap-2 mt-3">
+                    <Link href={`/websites/${site.id}`} className="text-sm px-3 py-2 hover:underline">Manage</Link>
+                    <Button variant="danger" size="sm" aria-label={`Delete ${site.name}`} disabled={deletingId !== null} loading={deletingId === site.id} onClick={() => void handleDelete(site)}>
+                      {deletingId === site.id ? 'Deleting…' : 'Delete'}
+                    </Button>
+                  </div>
                 </div>
               </div>
             </Card>

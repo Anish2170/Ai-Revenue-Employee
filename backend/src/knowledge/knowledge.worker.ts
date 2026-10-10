@@ -101,7 +101,7 @@ async function run(job: NonNullable<Awaited<ReturnType<typeof claimOne>>>) {
   } catch (error) {
     const message = safeMessage(error); const code = errorCode(error); const retry = code === 'TRANSIENT_BUILD_ERROR' && job.attempt < job.maxAttempts;
     if (job.snapshotId) await prisma.knowledgeSnapshot.update({ where: { id: job.snapshotId }, data: { status: 'FAILED', error: message } }).catch(() => undefined);
-    await prisma.knowledgeBuild.update({ where: { id: job.id }, data: retry ? { status: 'RETRY_WAIT', currentPhase: 'retry_wait', error: message, lastErrorCode: code, nextRunAt: new Date(Date.now() + knowledgeBuildRetryDelay(job.attempt)), lockedBy: null, leaseExpiresAt: null } : { status: 'FAILED', currentPhase: 'failed', error: message, lastErrorCode: code, finishedAt: new Date(), lockedBy: null, leaseExpiresAt: null } });
+    await prisma.knowledgeBuild.updateMany({ where: { id: job.id }, data: retry ? { status: 'RETRY_WAIT', currentPhase: 'retry_wait', error: message, lastErrorCode: code, nextRunAt: new Date(Date.now() + knowledgeBuildRetryDelay(job.attempt)), lockedBy: null, leaseExpiresAt: null } : { status: 'FAILED', currentPhase: 'failed', error: message, lastErrorCode: code, finishedAt: new Date(), lockedBy: null, leaseExpiresAt: null } });
   } finally { clearInterval(leaseTimer); }
 }
 

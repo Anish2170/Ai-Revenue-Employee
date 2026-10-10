@@ -1,6 +1,6 @@
-import { GetObjectCommand, HeadObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config, hasDatabase } from '../config/index.js';
@@ -25,11 +25,17 @@ export interface SnapshotStorage {
   readonly provider: StorageProviderName;
   write(key: string, bytes: Buffer): Promise<StoredArtifact>;
   read(key: string): Promise<{ bytes: Buffer; etag: string | null } | null>;
+  delete(key: string): Promise<void>;
 }
 
 class LocalSnapshotStorage implements SnapshotStorage {
   readonly provider = 'LOCAL' as const;
   private pathFor(key: string) { return isAbsolute(key) ? key : resolve(backendRoot, key); }
+  async delete(key: string): Promise<void> {
+    try { await unlink(this.pathFor(key)); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+  }
   async write(key: string, bytes: Buffer): Promise<StoredArtifact> {
     const path = this.pathFor(key);
     await mkdir(dirname(path), { recursive: true });
@@ -45,6 +51,9 @@ type S3Like = { send(command: unknown): Promise<unknown> };
 class R2SnapshotStorage implements SnapshotStorage {
   readonly provider = 'R2' as const;
   constructor(private readonly client: S3Like, private readonly bucket: string) {}
+  async delete(key: string): Promise<void> {
+    await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key }));
+  }
   async write(key: string, bytes: Buffer): Promise<StoredArtifact> {
     const exists = await this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: key })).then(() => true).catch(() => false);
     if (exists) throw new SnapshotStorageError('Refusing to overwrite immutable knowledge snapshot object.');
@@ -81,7 +90,13 @@ export function getSnapshotStorage(provider?: StorageProviderName): SnapshotStor
 export async function writeSnapshotArtifact(input: { organizationId: string; websiteId: string; snapshotId: string; snapshot: KnowledgeSnapshot; localKey?: string }): Promise<StoredArtifact> {
   const storage = getSnapshotStorage();
   const key = storage.provider === 'R2' ? r2SnapshotKey(input.organizationId, input.websiteId, input.snapshotId) : (input.localKey ?? `${config.knowledgeDir}/${input.websiteId}.json`);
-  return storage.write(key, serializeSnapshot(input.snapshot));
+  if (!hasDatabase) return storage.write(key, serializeSnapshot(input.snapshot));
+  // Serialize uploads with deletion, including uploads from another worker instance.
+  return prisma.$transaction(async (tx) => {
+    const websites = await tx.$queryRaw<Array<{ id: string }>>`SELECT "id" FROM "Website" WHERE "id" = ${input.websiteId}::uuid AND "organizationId" = ${input.organizationId}::uuid AND "deletedAt" IS NULL FOR UPDATE`;
+    if (!websites.length) throw new SnapshotStorageError('Website has been deleted.');
+    return storage.write(key, serializeSnapshot(input.snapshot));
+  }, { timeout: 60_000 });
 }
 
 export async function loadSnapshotArtifact(input: { provider: StorageProviderName; storageKey: string; contentSha256?: string | null }): Promise<KnowledgeSnapshot | null> {

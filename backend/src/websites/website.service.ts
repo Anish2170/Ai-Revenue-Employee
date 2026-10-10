@@ -7,6 +7,10 @@
 import * as repo from './website.repository.js';
 import { writeAuditLog } from '../audit/audit.service.js';
 import { resolvePublicUrl } from '../security/ssrf.js';
+import { invalidateWebsiteStore } from '../vectorstore/registry.js';
+import { invalidateTenantCacheForWebsite } from '../tenant/tenant.resolver.js';
+import { sessionStore } from '../intelligence/session/visitorSession.js';
+import { invalidateWebsiteOriginCache } from '../middleware/cors.js';
 
 export interface CreateWebsiteInput {
   name: string;
@@ -66,17 +70,12 @@ export async function updateWebsite(
   return result;
 }
 
-export async function deleteWebsite(organizationId: string, userId: string, websiteId: string) {
-  const result = await repo.softDeleteWebsite(organizationId, websiteId);
-  if (result.count > 0) {
-    await writeAuditLog({
-      action: 'website.deleted',
-      organizationId,
-      userId,
-      targetType: 'website',
-      targetId: websiteId,
-    });
-  }
+export async function deleteWebsite(organizationId: string, _userId: string, websiteId: string) {
+  const result = await repo.deleteWebsite(organizationId, websiteId);
+  invalidateWebsiteStore(websiteId);
+  invalidateTenantCacheForWebsite(websiteId);
+  invalidateWebsiteOriginCache();
+  if (result.siteId) sessionStore.deleteSite(result.siteId);
   return result;
 }
 

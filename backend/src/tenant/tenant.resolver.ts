@@ -55,6 +55,9 @@ export async function resolveTenant(siteId: string): Promise<TenantContext> {
 
   const cached = cache.get(siteId);
   if (cached && cached.expiresAt > Date.now()) {
+    // A deletion on another server must revoke cached widget access as well.
+    const exists = await prisma.website.findFirst({ where: { id: cached.tenant.websiteId, deletedAt: null }, select: { id: true } });
+    if (!exists) { cache.delete(siteId); throw new TenantNotFoundError(siteId); }
     return cached.tenant;
   }
 

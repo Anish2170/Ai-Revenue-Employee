@@ -61,10 +61,17 @@ export interface SessionStore {
   markBot(id: string): void;
   /** Current session count (for diagnostics/metrics). */
   size(): number;
+  deleteSite(siteId: string): void;
 }
 
 class InMemorySessionStore implements SessionStore {
   private sessions = new Map<string, VisitorSession>();
+
+  deleteSite(siteId: string): void {
+    for (const [id, session] of this.sessions) {
+      if (session.siteId === siteId) this.sessions.delete(id);
+    }
+  }
 
   get(id: string): VisitorSession | undefined {
     const s = this.sessions.get(id);

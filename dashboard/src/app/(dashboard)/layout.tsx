@@ -25,7 +25,17 @@ function NavGroup({ label, children }: { label: string; children: React.ReactNod
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const { user, role, loading: authLoading, logout } = useAuth(); const pathname = usePathname(); const router = useRouter(); const [sites, setSites] = useState<Site[]>([]); const [siteId, setSiteId] = useState(''); const [loadingSites, setLoadingSites] = useState(true); const [error, setError] = useState(''); const [mobileOpen, setMobileOpen] = useState(false);
   useEffect(() => { if (!authLoading && !user) router.replace('/login'); }, [authLoading, router, user]);
-  useEffect(() => { let alive = true; api.listWebsites().then((data) => { if (!alive) return; const list = data as Site[]; setSites(list); setSiteId(window.localStorage.getItem(SITE_KEY) || list[0]?.id || ''); }).catch((cause) => alive && setError(workspaceError(cause))).finally(() => alive && setLoadingSites(false)); return () => { alive = false; }; }, []);
+  useEffect(() => { let alive = true; api.listWebsites().then((data) => { if (!alive) return; const list = data as Site[]; setSites(list); setSiteId(list.find((site) => site.id === window.localStorage.getItem(SITE_KEY))?.id || list[0]?.id || ''); }).catch((cause) => alive && setError(workspaceError(cause))).finally(() => alive && setLoadingSites(false)); return () => { alive = false; }; }, []);
+  useEffect(() => {
+    const onDeleted = (event: Event) => {
+      const { websiteId } = (event as CustomEvent<{ websiteId: string }>).detail;
+      const remaining = sites.filter((site) => site.id !== websiteId);
+      setSites(remaining);
+      setSiteId((current) => current === websiteId ? remaining[0]?.id || '' : current);
+    };
+    window.addEventListener('aire:website-deleted', onDeleted);
+    return () => window.removeEventListener('aire:website-deleted', onDeleted);
+  }, [sites]);
   useEffect(() => { setMobileOpen(false); }, [pathname]);
   useEffect(() => { if (!loadingSites && sites.length === 0 && pathname !== '/onboarding' && pathname !== '/settings' && !error) router.replace('/onboarding'); }, [error, loadingSites, pathname, router, sites.length]);
   const selectSite = (value: string) => { setSiteId(value); if (value) window.localStorage.setItem(SITE_KEY, value); };

@@ -17,6 +17,9 @@ test('local storage writes and reads exact bytes', async () => {
     const artifact = await storage.write(join(dir, 'snapshot.json'), bytes);
     assert.equal(artifact.contentBytes, bytes.byteLength);
     assert.deepEqual((await storage.read(artifact.storageKey))?.bytes, bytes);
+    await storage.delete(artifact.storageKey);
+    assert.equal(await storage.read(artifact.storageKey), null);
+    await storage.delete(artifact.storageKey); // Retrying deletion is safe.
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
@@ -25,6 +28,7 @@ test('rejects checksum mismatch and reports missing artifacts', async () => {
     provider: 'R2',
     write: async () => { throw new Error('not used'); },
     read: async (key) => key === 'missing' ? null : { bytes: Buffer.from('{"version":1}'), etag: null },
+    delete: async () => {},
   };
   setSnapshotStorageForTests(fake);
   try {
@@ -40,6 +44,7 @@ test('R2 storage writes and verifies exact bytes', async () => {
     if (name === 'HeadObjectCommand') { if (!objects.has(Key)) { const err = new Error('missing'); err.name = 'NotFound'; throw err; } return { ContentLength: objects.get(Key)!.byteLength, ETag: 'etag' }; }
     if (name === 'PutObjectCommand') { objects.set(Key, command.input.Body!); return { ETag: 'etag' }; }
     if (name === 'GetObjectCommand') return { Body: { transformToByteArray: async () => objects.get(Key)! }, ETag: 'etag' };
+    if (name === 'DeleteObjectCommand') { objects.delete(Key); return {}; }
     throw new Error('unexpected command');
   } };
   const storage = new R2SnapshotStorage(client, 'bucket');
@@ -48,4 +53,7 @@ test('R2 storage writes and verifies exact bytes', async () => {
   assert.equal(written.contentSha256, snapshotSha256(bytes));
   assert.deepEqual((await storage.read('immutable.json'))?.bytes, bytes);
   await assert.rejects(() => storage.write('immutable.json', bytes), /Refusing to overwrite/);
+  await storage.delete('immutable.json');
+  assert.equal(objects.has('immutable.json'), false);
+  await storage.delete('immutable.json');
 });

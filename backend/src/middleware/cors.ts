@@ -16,6 +16,11 @@ const WEBSITE_ORIGIN_CACHE_TTL_MS = 60_000;
 let cachedWebsiteOrigins = new Set<string>();
 let cacheExpiresAt = 0;
 
+export function invalidateWebsiteOriginCache(): void {
+  cachedWebsiteOrigins.clear();
+  cacheExpiresAt = 0;
+}
+
 function normalizeOrigin(value: string): string | null {
   try {
     const url = new URL(value);
