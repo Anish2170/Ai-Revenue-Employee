@@ -145,10 +145,10 @@ The backend environment is documented in [backend/.env.example](backend/.env.exa
 | `PORT` | API server port. Render usually provides this automatically. |
 | `DATABASE_URL` | PostgreSQL connection string. |
 | `PRIMARY_LLM_PROVIDER` | Production primary provider: `openai`. |
-| `PRIMARY_LLM_MODEL` | Production primary model: `gpt-5-mini`. |
+| `PRIMARY_LLM_MODEL` | Production primary model: `gpt-6-luna` (reasoning effort `none`). |
 | `OPENAI_API_KEY` | Server-only OpenAI API key. |
 | `FALLBACK_LLM_PROVIDER` | Production fallback provider: `gemini`. |
-| `FALLBACK_LLM_MODEL` | Production fallback model: `gemini-2.5-flash`. |
+| `FALLBACK_LLM_MODEL` | Production fallback model: `gemini-3.5-flash-lite` (default minimal thinking; no temperature parameter). |
 | `GEMINI_API_KEY` | Server-only Gemini key for fallback generation and embeddings. |
 | `GEMINI_MODEL` | Gemini model used for embeddings client configuration. |
 | `EMBEDDING_MODEL` | Embedding model for knowledge retrieval. |

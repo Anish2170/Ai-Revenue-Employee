@@ -65,12 +65,12 @@ export const config = {
   llm: {
     primary: {
       provider: process.env.PRIMARY_LLM_PROVIDER ?? 'openai',
-      model: process.env.PRIMARY_LLM_MODEL ?? 'gpt-5-mini',
+      model: process.env.PRIMARY_LLM_MODEL ?? 'gpt-6-luna',
       apiKey: process.env.OPENAI_API_KEY ?? '',
     },
     fallback: {
       provider: process.env.FALLBACK_LLM_PROVIDER ?? 'gemini',
-      model: process.env.FALLBACK_LLM_MODEL ?? 'gemini-2.5-flash',
+      model: process.env.FALLBACK_LLM_MODEL ?? 'gemini-3.5-flash-lite',
     },
     connectionTimeoutMs: Math.max(1_000, Number(process.env.LLM_CONNECTION_TIMEOUT_MS ?? 10_000)),
     responseTimeoutMs: Math.max(5_000, Number(process.env.LLM_RESPONSE_TIMEOUT_MS ?? 45_000)),

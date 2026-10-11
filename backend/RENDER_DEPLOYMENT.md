@@ -46,10 +46,10 @@ Set these in Render > Environment:
 - `NODE_ENV=production`
 - `DATABASE_URL`
 - `PRIMARY_LLM_PROVIDER=openai`
-- `PRIMARY_LLM_MODEL=gpt-5-mini`
+- `PRIMARY_LLM_MODEL=gpt-6-luna` (the OpenAI adapter explicitly uses reasoning effort `none` for Luna)
 - `OPENAI_API_KEY`
 - `FALLBACK_LLM_PROVIDER=gemini`
-- `FALLBACK_LLM_MODEL=gemini-2.5-flash`
+- `FALLBACK_LLM_MODEL=gemini-3.5-flash-lite`
 - `GEMINI_API_KEY`
 - `SESSION_SECRET`
 - `FRONTEND_URL`
@@ -66,7 +66,7 @@ Set these in Render > Environment:
 
 Recommended/optional:
 
-- `GEMINI_MODEL=gemini-2.5-flash`
+- `GEMINI_MODEL=gemini-2.5-flash` (legacy embeddings-client configuration, not the generation fallback)
 - `EMBEDDING_MODEL=gemini-embedding-001`
 - `LANDING_PAGE_URL`
 - `SESSION_TTL_DAYS=30`

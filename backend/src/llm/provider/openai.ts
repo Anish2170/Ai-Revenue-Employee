@@ -33,17 +33,22 @@ async function request(body: Record<string, unknown>): Promise<Response> {
 
 export function createOpenAIProvider(): LLMProvider {
   const model = config.llm.primary.model;
+  // Luna defaults to medium reasoning, which is incompatible with temperature.
+  // Keep routine chat/JSON generation fast while preserving other model overrides.
+  const reasoningOptions = model === 'gpt-6-luna' || model.startsWith('gpt-6-luna-')
+    ? { reasoning_effort: 'none' as const }
+    : {};
   return {
     id: `openai:${model}`,
     async generateStructured(req) {
-      const response = await request({ model, messages: messages(req), temperature: 0.4, response_format: { type: 'json_schema', json_schema: { name: 'result', strict: true, schema: req.schema } } });
+      const response = await request({ model, ...reasoningOptions, messages: messages(req), temperature: 0.4, response_format: { type: 'json_schema', json_schema: { name: 'result', strict: true, schema: req.schema } } });
       const body = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
       const text = body.choices?.[0]?.message?.content;
       if (!text) throw new Error('OpenAI returned an empty structured response');
       return JSON.parse(text);
     },
     async *streamText(req) {
-      const response = await request({ model, messages: messages(req), temperature: 0.6, stream: true });
+      const response = await request({ model, ...reasoningOptions, messages: messages(req), temperature: 0.6, stream: true });
       const reader = response.body?.getReader();
       if (!reader) throw new Error('OpenAI returned no stream body');
       const decoder = new TextDecoder(); let buffer = '';

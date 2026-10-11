@@ -97,6 +97,9 @@ function chatTrace(req: StreamRequest, stage: string, detail?: unknown): void {
 export function createGeminiProvider(modelOverride = config.llm.fallback.model): LLMProvider {
   const ai = new GoogleGenAI({ apiKey: config.gemini.apiKey });
   const model = modelOverride;
+  // Flash-Lite 3.5 ignores sampling parameters and disallows model prefills.
+  // Keep older model overrides unchanged; rely on 3.5's default minimal thinking.
+  const isFlashLite35 = /^gemini-3\.5-flash-lite(?:-|$)/.test(model.replace(/^models\//, ''));
 
   return {
     id: `gemini:${model}`,
@@ -109,7 +112,7 @@ export function createGeminiProvider(modelOverride = config.llm.fallback.model):
           systemInstruction: req.system,
           responseMimeType: 'application/json',
           responseSchema: toGeminiSchema(req.schema),
-          temperature: 0.4,
+          ...(isFlashLite35 ? {} : { temperature: 0.4 }),
         },
       });
 
@@ -121,6 +124,13 @@ export function createGeminiProvider(modelOverride = config.llm.fallback.model):
     async *streamText(req: StreamRequest): AsyncIterable<string> {
       let raw = '';
       try {
+        if (isFlashLite35) {
+          const lastNonEmpty = [...req.messages].reverse().find((message) => message.content.trim());
+          if (!lastNonEmpty || lastNonEmpty.role !== 'user') {
+            // Do not silently discard assistant history or invent a user turn.
+            throw new Error('Gemini 3.5 Flash-Lite streaming requires the last non-empty message to be a user turn.');
+          }
+        }
         chatTrace(req, 'LLM request', {
           provider: `gemini:${model}`,
           messages: req.messages.length,
@@ -132,7 +142,7 @@ export function createGeminiProvider(modelOverride = config.llm.fallback.model):
           contents: toGeminiContents(req.messages),
           config: {
             systemInstruction: req.system,
-            temperature: 0.6,
+            ...(isFlashLite35 ? {} : { temperature: 0.6 }),
           },
         });
 
