@@ -1,5 +1,5 @@
 import * as cheerio from 'cheerio';
-import { generateDecision, llmAvailable } from '../llm/index.js';
+import { generateDecision, llmAvailable, type StructuredRequest } from '../llm/index.js';
 import type { CrawledPage } from '../context/types.js';
 import type { DiscoveredActionCandidate, DiscoveredActionGraph, DiscoveredActionIntent } from './discovered-action.types.js';
 import { DISCOVERED_ACTION_INTENTS } from './discovered-action.types.js';
@@ -28,6 +28,7 @@ const SOCIAL_HOST_PATTERN = /(^|\.)(facebook|twitter|x|linkedin|instagram|youtub
 const BUSINESS_PATH_PATTERN = /\b(demo|sales|pricing|plans?|contact|support|help|trial|signup|sign-up|login|sign-in|docs?|documentation|api|enterprise|careers?|jobs|partners?|integrations?|case-stud(?:y|ies)|customers?)\b/i;
 
 const INTENT_RULES: Array<{ intent: DiscoveredActionIntent; rule: string; patterns: RegExp[]; base: number }> = [
+  { intent: 'book_demo', rule: 'appointment_booking', base: 0.92, patterns: [/\b(book|schedule|request)\s+(an?\s+)?(appointment|visit)\b/i] },
   { intent: 'book_demo', rule: 'demo_or_sales_consultation', base: 0.9, patterns: [/\b(book|schedule|request)\s+(a\s+)?(demo|call|consultation)\b/i, /\b(talk|speak)\s+(to|with)\s+(sales|an advisor|advisor|an expert|expert|specialist)\b/i, /\bcontact\s+sales\b/i, /\bmeet\s+(an\s+)?expert\b/i] },
   { intent: 'pricing', rule: 'pricing_or_plans', base: 0.9, patterns: [/\b(pricing|plans?|compare plans?|view plans?|see pricing)\b/i] },
   { intent: 'contact', rule: 'contact_team', base: 0.86, patterns: [/\b(contact|contact sales|get in touch|talk to us|reach us)\b/i] },
@@ -88,17 +89,52 @@ export function extractActionsFromHtml(html: string, page: CrawledPage): RawDisc
   return dedupeRaw(actions);
 }
 
-export async function buildActionGraph(rawActions: RawDiscoveredAction[]): Promise<DiscoveredActionGraph> {
+export interface ActionDiscoveryOptions {
+  onProgress?: (completed: number, total: number) => void | Promise<void>;
+  /** Injectable classifier for offline verification. */
+  generate?: (req: StructuredRequest) => Promise<unknown>;
+}
+
+export async function buildActionGraph(rawActions: RawDiscoveredAction[], options: ActionDiscoveryOptions = {}): Promise<DiscoveredActionGraph> {
   const frequency = new Map<string, number>();
   for (const action of rawActions) frequency.set(action.url, (frequency.get(action.url) ?? 0) + 1);
 
-  const candidates: DiscoveredActionCandidate[] = [];
-  for (const raw of rawActions) {
-    raw.rankSignals.internalLinkFrequency = frequency.get(raw.url) ?? 1;
-    const classified = await classifyAction(raw);
-    if (!classified || classified.confidence < MIN_GRAPH_CONFIDENCE) continue;
-    candidates.push({ ...raw, ...classified, why: whySelected(raw, classified.confidence) });
+  // Reuse only identical classification inputs; URLs (including query strings)
+  // and different contexts stay distinct. Keep every occurrence for ranking/debug.
+  const classifications = new Map<string, Promise<unknown>>();
+  const generate = (req: StructuredRequest, destination: string) => {
+    const key = JSON.stringify([destination, req]);
+    let pending = classifications.get(key);
+    if (!pending) {
+      pending = (options.generate ?? generateDecision)(req).then(value => {
+        if (!isLlmIntent(value)) classifications.delete(key);
+        return value;
+      });
+      classifications.set(key, pending);
+      // A failed request must not poison all subsequent matching candidates.
+      void pending.catch(() => { classifications.delete(key); });
+    }
+    return pending;
+  };
+  const results: Array<DiscoveredActionCandidate | null> = new Array(rawActions.length).fill(null);
+  let cursor = 0;
+  let completed = 0;
+  await options.onProgress?.(0, rawActions.length);
+  // Two at a time limits API pressure; waves also serialize durable progress writes.
+  while (cursor < rawActions.length) {
+    const start = cursor;
+    cursor = Math.min(cursor + 2, rawActions.length);
+    await Promise.all(rawActions.slice(start, cursor).map(async (source, offset) => {
+      const raw = { ...source, rankSignals: { ...source.rankSignals, internalLinkFrequency: frequency.get(source.url) ?? 1 } };
+      const classified = await classifyAction(raw, req => generate(req, raw.url), !!options.generate);
+      if (classified && classified.confidence >= MIN_GRAPH_CONFIDENCE) {
+        results[start + offset] = { ...raw, ...classified, why: whySelected(raw, classified.confidence) };
+      }
+    }));
+    completed = cursor;
+    await options.onProgress?.(completed, rawActions.length);
   }
+  const candidates = results.filter((candidate): candidate is DiscoveredActionCandidate => candidate !== null);
 
   const rawByIntent = new Map<DiscoveredActionIntent, DiscoveredActionCandidate[]>();
   for (const candidate of candidates) {
@@ -170,19 +206,20 @@ function normalizeUrlForGrouping(url: string): string {
   parsed.search = '';
   return parsed.toString().replace(/\/$/, '');
 }
-async function classifyAction(raw: RawDiscoveredAction): Promise<Pick<DiscoveredActionCandidate, 'intent' | 'confidence' | 'detectionMethod' | 'rule'> | null> {
+async function classifyAction(raw: RawDiscoveredAction, generate: (req: StructuredRequest) => Promise<unknown>, forceLlm = false): Promise<Pick<DiscoveredActionCandidate, 'intent' | 'confidence' | 'detectionMethod' | 'rule'> | null> {
   const text = `${raw.label} ${raw.url} ${raw.surroundingHeading} ${raw.pageTitle} ${raw.pageDescription}`;
   let best: Pick<DiscoveredActionCandidate, 'intent' | 'confidence' | 'detectionMethod' | 'rule'> | null = null;
   for (const rule of INTENT_RULES) {
-    if (!rule.patterns.some((pattern) => pattern.test(text))) continue;
+    const ruleText = rule.rule === 'appointment_booking' ? raw.label : text;
+    if (!rule.patterns.some((pattern) => pattern.test(ruleText))) continue;
     const confidence = Math.min(0.99, rule.base + signalBoost(raw));
     if (!best || confidence > best.confidence) best = { intent: rule.intent, confidence, detectionMethod: 'rule', rule: rule.rule };
   }
   if (best && best.confidence >= MIN_RULE_CONFIDENCE_FOR_LLM) return best;
-  if (!llmAvailable()) return best;
+  if (!forceLlm && !llmAvailable()) return best;
 
   try {
-    const llm = await generateDecision({
+    const llm = await generate({
       system: 'Classify the business intent of a discovered website action. Return only one existing intent and confidence. Never create or change URLs.',
       user: `Label: ${raw.label}\nContext: ${raw.context || raw.pageTitle}\nDestination: ${new URL(raw.url).pathname}\nAllowed intents: ${DISCOVERED_ACTION_INTENTS.join(', ')}`,
       schema: {

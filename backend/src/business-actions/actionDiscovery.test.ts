@@ -3,6 +3,50 @@ import test from 'node:test';
 import { buildActionGraph, extractActionsFromHtml } from './actionDiscovery.js';
 import type { CrawledPage } from '../context/types.js';
 
+test('repeated AI inputs reuse classification while preserving contexts, query destinations and raw occurrences', async () => {
+  const [base] = extractActionsFromHtml('<a href="/visit">Explore options</a>', page('/'));
+  const raw = [base, { ...base, pageUrl: 'https://example.test/another', domLocation: 'footer > a' },
+    { ...base, context: 'A different service' }, { ...base, url: `${base.url}?service=other` }];
+  let calls = 0;
+  let active = 0;
+  let peak = 0;
+  const progress: number[] = [];
+  const graph = await buildActionGraph(raw, {
+    generate: async () => {
+      calls++; active++; peak = Math.max(peak, active);
+      await new Promise(resolve => setTimeout(resolve, 5));
+      active--;
+      return { intent: 'contact', confidence: 0.9 };
+    },
+    onProgress: (done) => { progress.push(done); },
+  });
+  assert.equal(calls, 3);
+  assert.ok(peak <= 2);
+  assert.equal(graph.nodes[0].rawCandidates?.length, 4);
+  assert.deepEqual(progress, [0, 2, 4]);
+  assert.equal(base.rankSignals.internalLinkFrequency, 1, 'input metadata is not mutated');
+});
+
+test('appointment labels use rules without classifying every link on an appointment page as booking', async () => {
+  let calls = 0;
+  const graph = await buildActionGraph(extractActionsFromHtml('<a href="/booking">Book an appointment</a><a href="/treatments">Explore options</a>', { ...page('/'), title: 'Book an appointment' }), {
+    generate: async () => { calls++; return { intent: 'contact', confidence: 0.8 }; },
+  });
+  assert.equal(calls, 1);
+  assert.equal(graph.nodes.find(n => n.intent === 'book_demo')?.preferred.url, 'https://example.test/booking');
+});
+
+test('failed classifications are not cached and later occurrences can recover', async () => {
+  const [base] = extractActionsFromHtml('<a href="/visit">Explore options</a>', page('/'));
+  let calls = 0;
+  const graph = await buildActionGraph([base, base, base], { generate: async () => {
+    if (++calls === 1) throw new Error('temporary failure');
+    return { intent: 'contact', confidence: 0.9 };
+  } });
+  assert.equal(calls, 2);
+  assert.equal(graph.nodes[0].rawCandidates?.length, 1);
+});
+
 function page(path = '/'): CrawledPage {
   return {
     url: `https://example.test${path}`,

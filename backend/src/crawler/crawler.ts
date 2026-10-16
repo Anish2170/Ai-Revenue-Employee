@@ -22,6 +22,7 @@ export interface CrawlOptions {
   maxPages?: number;
   concurrency?: number;
   timeoutMs?: number;
+  onProgress?: (pages: number, skipped: number, limit: number) => void | Promise<void>;
 }
 
 export interface CrawlResult {
@@ -114,6 +115,7 @@ export async function crawl(startUrl: string, opts: CrawlOptions = {}): Promise<
       }
     }
     frontier = nextFrontier;
+    await opts.onProgress?.(pages.length, skipped.length, maxPages);
   }
 
   return { pages: pages.slice(0, maxPages), skipped, actions };

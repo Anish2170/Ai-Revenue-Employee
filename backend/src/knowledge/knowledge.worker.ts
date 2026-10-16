@@ -42,7 +42,7 @@ async function claimOne() {
   const candidate = await prisma.knowledgeBuild.findFirst({ where: { status: 'QUEUED', nextRunAt: { lte: new Date() } }, orderBy: { nextRunAt: 'asc' } });
   if (!candidate) return null;
   const now = new Date();
-  const claimed = await prisma.knowledgeBuild.updateMany({ where: { id: candidate.id, status: 'QUEUED', nextRunAt: { lte: now } }, data: { status: 'RUNNING', currentPhase: 'starting', lockedBy: workerId, heartbeatAt: now, leaseExpiresAt: new Date(now.getTime() + config.knowledgeWorker.leaseMs), startedAt: now, attempt: { increment: 1 }, error: null, lastErrorCode: null } });
+  const claimed = await prisma.knowledgeBuild.updateMany({ where: { id: candidate.id, status: 'QUEUED', nextRunAt: { lte: now } }, data: { status: 'RUNNING', currentPhase: 'starting', lockedBy: workerId, heartbeatAt: now, leaseExpiresAt: new Date(now.getTime() + config.knowledgeWorker.leaseMs), startedAt: now, attempt: { increment: 1 }, pages: null, pagesSkipped: null, chunks: null, embeddingsCompleted: null, actionsDiscovered: null, actionsTotal: null, actionsCompleted: null, crawlLimit: null, error: null, lastErrorCode: null } });
   if (claimed.count !== 1) return null;
   return prisma.knowledgeBuild.findUniqueOrThrow({ where: { id: candidate.id } });
 }
@@ -107,7 +107,7 @@ async function run(job: NonNullable<Awaited<ReturnType<typeof claimOne>>>) {
 
 function phaseProgress(phase: IngestPhase, detail?: Record<string, unknown>) {
   const n = (key: string) => typeof detail?.[key] === 'number' ? detail[key] as number : undefined;
-  return { ...(n('pages') !== undefined ? { pages: n('pages') } : {}), ...(n('skipped') !== undefined ? { pagesSkipped: n('skipped') } : {}), ...(n('discoveredActions') !== undefined ? { actionsDiscovered: n('discoveredActions') } : {}), ...(n('actions') !== undefined ? { actionsDiscovered: n('actions') } : {}), ...(n('chunks') !== undefined ? { chunks: n('chunks') } : {}), ...(n('embedded') !== undefined ? { embeddingsCompleted: n('embedded') } : {}) };
+  return { ...Object.fromEntries(['crawlLimit', 'actionsTotal', 'actionsCompleted'].filter(key => n(key) !== undefined).map(key => [key, n(key)])), ...(n('pages') !== undefined ? { pages: n('pages') } : {}), ...(n('skipped') !== undefined ? { pagesSkipped: n('skipped') } : {}), ...(n('discoveredActions') !== undefined ? { actionsDiscovered: n('discoveredActions') } : {}), ...(n('actions') !== undefined ? { actionsDiscovered: n('actions') } : {}), ...(n('chunks') !== undefined ? { chunks: n('chunks') } : {}), ...(n('embedded') !== undefined ? { embeddingsCompleted: n('embedded') } : {}) };
 }
 
 async function tick() { if (stopping) return; await reclaimStale(); while (!stopping && active < config.knowledgeWorker.concurrency) { const job = await claimOne(); if (!job) break; active++; void run(job).finally(() => { active--; }); } }

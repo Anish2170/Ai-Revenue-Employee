@@ -652,6 +652,9 @@ model KnowledgeBuild {
   pagesSkipped   Int?
   actionsDiscovered Int?
   embeddingsCompleted Int?
+  crawlLimit     Int?
+  actionsTotal   Int?
+  actionsCompleted Int?
   startedAt      DateTime    @default(now())
   finishedAt     DateTime?
   createdAt      DateTime    @default(now())

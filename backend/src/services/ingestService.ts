@@ -47,11 +47,19 @@ export async function ingest(url: string, opts: IngestOptions = {}): Promise<Ing
 
   // 1. Crawl
   await onPhase?.('crawling');
-  const { pages, skipped, actions } = await crawl(url);
+  const { pages, skipped, actions } = await crawl(url, { onProgress: async (pages, skipped, crawlLimit) => {
+    await onPhase?.('crawling', { pages, skipped, crawlLimit });
+  } });
   if (pages.length === 0) throw new Error(`Crawl found no readable pages at ${url}.`);
   await onPhase?.('crawling', { pages: pages.length, skipped: skipped.length, discoveredActions: actions.length });
   await onPhase?.('action_discovery');
-  const actionGraph = await buildActionGraph(actions);
+  let lastProgressAt = 0;
+  const actionGraph = await buildActionGraph(actions, { onProgress: async (actionsCompleted, actionsTotal) => {
+    // Persist at most once per second, plus the first and final updates.
+    if (actionsCompleted !== 0 && actionsCompleted !== actionsTotal && Date.now() - lastProgressAt < 1000) return;
+    lastProgressAt = Date.now();
+    await onPhase?.('action_discovery', { actionsCompleted, actionsTotal });
+  } });
   await onPhase?.('action_discovery', { actions: actionGraph.nodes.length });
 
   // 2. Chunk

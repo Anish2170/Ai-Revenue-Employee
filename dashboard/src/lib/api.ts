@@ -487,11 +487,12 @@ export class ApiClient {
 
         if (!res.ok) throw await responseError(res);
         const queued = await res.json() as { buildId: string };
-        let lastPhase = '';
+        let lastProgress = '';
         let transientFailures = 0;
         const poll = async (): Promise<void> => {
           if (controller.signal.aborted) return;
           let build: { status?: string; phase?: string; error?: string; progress?: unknown };
+          const recovering = transientFailures > 0;
           try {
             build = await request(`/api/websites/${websiteId}/knowledge/build/${queued.buildId}`) as typeof build;
             transientFailures = 0;
@@ -499,12 +500,14 @@ export class ApiClient {
             if (error instanceof ApiError && (error.status === 0 || error.status === 502 || error.status === 503) && transientFailures < 3) {
               transientFailures += 1;
               phaseCb?.('connection_lost', { attempt: transientFailures });
-              window.setTimeout(() => { void poll(); }, 1500 * transientFailures);
+              window.setTimeout(() => { void poll().catch((err) => errorCb?.(err instanceof Error ? err : new Error(String(err)))); }, 1500 * transientFailures);
               return;
             }
             throw error;
           }
-          if (build.phase && build.phase !== lastPhase) { lastPhase = build.phase; phaseCb?.(build.phase, build.progress); }
+          const signature = JSON.stringify([build.phase, build.progress]);
+          if (controller.signal.aborted) return;
+          if (build.phase && (signature !== lastProgress || recovering)) { lastProgress = signature; phaseCb?.(build.phase, build.progress); }
           if (build.status === 'SUCCESS') { completeCb?.(build); return; }
           if (build.status === 'FAILED' || build.status === 'CANCELLED') { errorCb?.(new Error('Knowledge build failed. Please try again.')); return; }
           window.setTimeout(() => { void poll().catch((err) => errorCb?.(err instanceof Error ? err : new Error(String(err)))); }, 1500);

@@ -10,6 +10,42 @@ const identity = {
   expiresAt: 1_800_000_000,
 };
 
+test('knowledge polling delivers changed counters in the same phase and stops after completion', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalWindow = globalThis.window;
+  const scheduled: Array<() => void> = [];
+  // Run poll timers deterministically; request deadlines are cleared before firing.
+  globalThis.window = { location: { protocol: 'http:', hostname: 'localhost' },
+    setTimeout: (fn: () => void, ms: number) => { if (ms < 15000) scheduled.push(fn); return 1; },
+    clearTimeout: () => {},
+  } as unknown as Window & typeof globalThis;
+  let polls = 0;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.endsWith('/auth/csrf')) return Response.json({ csrfToken: 'test' });
+    if (url.endsWith('/knowledge/build')) return Response.json({ buildId: 'build-test' });
+    polls++;
+    return Response.json({ status: polls === 3 ? 'SUCCESS' : 'RUNNING', phase: polls === 3 ? 'complete' : 'action_discovery', progress: { actionsCompleted: polls * 2, actionsTotal: 6 } });
+  };
+  try {
+    const updates: number[] = [];
+    let complete = false;
+    const finished = new Promise<void>((resolve, reject) => {
+      new ApiClient().buildKnowledge('site', 'https://example.test')
+        .onPhase((_phase, data) => { updates.push((data as { actionsCompleted: number }).actionsCompleted); })
+        .onComplete(() => { complete = true; resolve(); }).onError(reject).start();
+    });
+    for (let i = 0; i < 30 && !complete; i++) {
+      await new Promise(resolve => setImmediate(resolve));
+      scheduled.shift()?.();
+    }
+    await finished;
+    assert.deepEqual(updates, [2, 4, 6]);
+    assert.equal(polls, 3);
+    assert.equal(scheduled.length, 0);
+  } finally { globalThis.fetch = originalFetch; globalThis.window = originalWindow; }
+});
+
 function sseResponse(): Response {
   return new Response('data: {"token":"Hello"}\n\ndata: [DONE]\n\n', { status: 200 });
 }

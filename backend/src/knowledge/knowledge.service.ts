@@ -45,7 +45,7 @@ export async function enqueueBuild(
 function publicBuild(build: Awaited<ReturnType<typeof prisma.knowledgeBuild.findUniqueOrThrow>>) {
   return {
     id: build.id, status: build.status, phase: build.currentPhase,
-    progress: { pages: build.pages, pagesSkipped: build.pagesSkipped, actionsDiscovered: build.actionsDiscovered, chunks: build.chunks, embeddingsCompleted: build.embeddingsCompleted },
+    progress: { pages: build.pages, pagesSkipped: build.pagesSkipped, actionsDiscovered: build.actionsDiscovered, chunks: build.chunks, embeddingsCompleted: build.embeddingsCompleted, crawlLimit: build.crawlLimit, actionsTotal: build.actionsTotal, actionsCompleted: build.actionsCompleted },
     attempt: build.attempt, maxAttempts: build.maxAttempts, error: build.error,
     startedAt: build.startedAt, finishedAt: build.finishedAt, createdAt: build.createdAt,
   };

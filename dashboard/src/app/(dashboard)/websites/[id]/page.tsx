@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { api, type KnowledgeBuildHandle } from '@/lib/api';
 import { Button, Card, Badge, Spinner } from '@/components/ui';
+import { KnowledgeBuildProgress } from '@/components/knowledge-build-progress';
 import { AnalyticsView } from '@/components/analytics-view';
 
 type Tab = 'analytics' | 'instructions' | 'widget' | 'knowledge';
@@ -284,14 +285,15 @@ function KnowledgeTab({ websiteId, websiteUrl }: { websiteId: string; websiteUrl
   const [loading, setLoading] = useState(true);
   const [building, setBuilding] = useState(false);
   const [buildUrl, setBuildUrl] = useState(websiteUrl);
-  const [phases, setPhases] = useState<{ phase: string; detail?: AnyRecord }[]>([]);
+  const [liveBuild, setLiveBuild] = useState<AnyRecord | null>(null);
+  const [connectionLost, setConnectionLost] = useState(false);
   const [error, setError] = useState('');
   const handleRef = useRef<KnowledgeBuildHandle | null>(null);
 
   const fetchStatus = useCallback(() => {
     api.getKnowledgeStatus(websiteId)
-      .then((data) => setStatus(data as AnyRecord))
-      .catch(() => {})
+      .then((data) => { setStatus(data as AnyRecord); setConnectionLost(false); })
+      .catch(() => setConnectionLost(true))
       .finally(() => setLoading(false));
   }, [websiteId]);
 
@@ -309,26 +311,37 @@ function KnowledgeTab({ websiteId, websiteUrl }: { websiteId: string; websiteUrl
   const startBuild = () => {
     if (!buildUrl) return;
     setBuilding(true);
-    setPhases([]);
+    setLiveBuild({ status: 'QUEUED', phase: 'queued', progress: {}, createdAt: new Date().toISOString() });
+    setConnectionLost(false);
     setError('');
 
     const handle = api.buildKnowledge(websiteId, buildUrl)
       .onPhase((phase, data) => {
-        setPhases((prev) => [...prev, { phase, detail: data as AnyRecord }]);
+        if (phase === 'connection_lost') { setConnectionLost(true); return; }
+        setConnectionLost(false);
+        setLiveBuild((previous) => ({ ...previous, status: phase === 'retry_wait' ? 'RETRY_WAIT' : 'RUNNING', phase, progress: data as AnyRecord }));
       })
       .onComplete((data) => {
-        setPhases((prev) => [...prev, { phase: 'complete', detail: data as AnyRecord }]);
+        setLiveBuild(data as AnyRecord);
         setBuilding(false);
         fetchStatus();
       })
       .onError((err) => {
         setError(err.message);
+        setConnectionLost(true);
         setBuilding(false);
+        setLiveBuild(null);
+        fetchStatus();
       });
 
     handleRef.current = handle;
     handle.start();
   };
+
+  useEffect(() => () => handleRef.current?.abort(), []);
+
+  const currentBuild = liveBuild ?? status?.lastBuild;
+  const isActive = building || ['QUEUED', 'RUNNING', 'RETRY_WAIT'].includes(String(currentBuild?.status));
 
   if (loading) return <div className="flex justify-center py-12"><Spinner /></div>;
 
@@ -374,40 +387,18 @@ function KnowledgeTab({ websiteId, websiteUrl }: { websiteId: string; websiteUrl
               value={buildUrl}
               onChange={(e) => setBuildUrl(e.target.value)}
               placeholder="https://example.com"
-              disabled={building}
+              disabled={isActive}
             />
           </div>
-          <Button variant="primary" onClick={startBuild} loading={building} disabled={building || !buildUrl}>
-            {building ? 'Building…' : status?.hasKnowledge ? 'Rebuild' : 'Start Build'}
+          <Button variant="primary" onClick={startBuild} loading={isActive} disabled={isActive || !buildUrl}>
+            {isActive ? 'Building…' : status?.hasKnowledge ? 'Rebuild' : 'Start Build'}
           </Button>
         </div>
 
         {error && <p className="text-[var(--danger)] text-sm mt-3">{error}</p>}
 
-        {phases.length > 0 && (
-          <div className="mt-4 space-y-2">
-            <p className="text-sm font-medium">Build Progress</p>
-            <div className="bg-[var(--bg)] border border-[var(--border)] rounded-lg p-3 max-h-64 overflow-y-auto text-sm font-mono space-y-1">
-              {phases.map((p, i) => (
-                <div key={i} className="flex gap-2 text-[var(--text-muted)]">
-                  <span className="text-[var(--accent)]">▸</span>
-                  <span>{p.phase}</span>
-                  {p.detail && Object.keys(p.detail).length > 0 && (
-                    <span className="text-[var(--text-muted)]">
-                      — {Object.entries(p.detail).map(([k, v]) => `${k}: ${v}`).join(', ')}
-                    </span>
-                  )}
-                </div>
-              ))}
-              {building && (
-                <div className="flex items-center gap-2 text-[var(--text-muted)]">
-                  <Spinner className="h-3 w-3" />
-                  <span>Working…</span>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
+        {currentBuild && <KnowledgeBuildProgress build={currentBuild} connectionLost={connectionLost} />}
+
       </Card>
     </div>
   );
