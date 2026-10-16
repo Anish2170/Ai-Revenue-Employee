@@ -179,6 +179,8 @@ Deploy `dashboard/` as the frontend application. Set only `NEXT_PUBLIC_API_URL` 
 
 ### Render
 
+R2 knowledge builds keep the latest three successful R2 snapshots per website. After a successful build, the worker verifies the newest saved snapshot before removing older copies. Cleanup failures leave the build successful and retry after the next successful build. This retention controls saved versions; it is not a hard spending cap and does not remove abandoned uploads from failed builds.
+
 Deploy `backend/` as the API service. Use the documented Render build/start commands and `npm run prisma:migrate:deploy`—never `prisma migrate dev`—for production migrations. Add all required server-only configuration from `backend/.env.example`, including OpenAI primary, Gemini fallback/embeddings, origins, and R2 when enabled.
 
 ### Neon

@@ -7,6 +7,7 @@ import { reconcileActionUrlOverridesAfterBuild } from '../business-actions/actio
 import { writeAuditLog } from '../audit/audit.service.js';
 import { enqueueAnalyticsEvent } from '../analytics/analytics.service.js';
 import { getSnapshotStorage, loadSnapshotArtifact, r2SnapshotKey, snapshotSha256 } from '../vectorstore/snapshotStorage.js';
+import { cleanupKnowledgeSnapshots } from './snapshot-retention.js';
 
 const workerId = `knowledge-${process.pid}-${randomUUID().slice(0, 8)}`;
 let stopping = false;
@@ -86,6 +87,7 @@ async function run(job: NonNullable<Awaited<ReturnType<typeof claimOne>>>) {
     if (prepared.recovered) {
       await reconcileActionUrlOverridesAfterBuild(job.organizationId, job.websiteId);
       await prisma.knowledgeBuild.update({ where: { id: job.id }, data: { status: 'SUCCESS', currentPhase: 'complete', finishedAt: new Date(), lockedBy: null, leaseExpiresAt: null } });
+      await cleanupKnowledgeSnapshots(job.organizationId, job.websiteId);
       return;
     }
     const result = await ingest(job.sourceUrl ?? '', { websiteId: job.websiteId, organizationId: job.organizationId, snapshotId: prepared.snapshot.id, language: job.language ?? undefined, onPhase: async (phase, detail) => {
@@ -96,6 +98,7 @@ async function run(job: NonNullable<Awaited<ReturnType<typeof claimOne>>>) {
     await prisma.knowledgeSnapshot.update({ where: { id: prepared.snapshot.id }, data: { embeddingModel: config.gemini.embeddingModel, dimensions: result.dimensions, pagesCrawled: result.pages, chunkCount: result.chunks, sourceUrl: job.sourceUrl ?? '', status: 'READY', storageProvider: result.snapshotArtifact.provider, storageKey: result.snapshotArtifact.storageKey, contentSha256: result.snapshotArtifact.contentSha256 || null, contentBytes: result.snapshotArtifact.contentBytes || null, etag: result.snapshotArtifact.etag } });
     await reconcileActionUrlOverridesAfterBuild(job.organizationId, job.websiteId);
     await prisma.knowledgeBuild.update({ where: { id: job.id }, data: { status: 'SUCCESS', currentPhase: 'complete', pages: result.pages, chunks: result.chunks, embeddingsCompleted: result.chunks, finishedAt: new Date(), lockedBy: null, leaseExpiresAt: null } });
+    await cleanupKnowledgeSnapshots(job.organizationId, job.websiteId);
     enqueueAnalyticsEvent({ organizationId: job.organizationId, websiteId: job.websiteId }, {}, { category: 'KNOWLEDGE', eventName: 'knowledge_build_completed', knowledgeBuildId: job.id, sourceUrl: job.sourceUrl ?? '', numericValue: result.chunks, durationMs: result.durationMs });
     if (job.requestedByUserId) await writeAuditLog({ action: 'knowledge.built', organizationId: job.organizationId, userId: job.requestedByUserId, targetType: 'website', targetId: job.websiteId, metadata: { pages: result.pages, chunks: result.chunks } });
   } catch (error) {
