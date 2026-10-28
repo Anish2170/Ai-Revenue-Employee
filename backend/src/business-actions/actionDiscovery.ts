@@ -44,12 +44,13 @@ const INTENT_RULES: Array<{ intent: DiscoveredActionIntent; rule: string; patter
   { intent: 'case_studies', rule: 'case_studies', base: 0.84, patterns: [/\b(case studies|customers|success stories)\b/i] },
 ];
 
-export function extractActionsFromHtml(html: string, page: CrawledPage): RawDiscoveredAction[] {
+export function extractActionsFromHtml(html: string, page: CrawledPage, maxCandidates = 500): RawDiscoveredAction[] {
   const $ = cheerio.load(html);
   const description = $('meta[name="description"]').attr('content')?.trim() ?? '';
   const actions: RawDiscoveredAction[] = [];
 
   $('a[href], button, [role="button"], input[type="submit"], input[type="button"], form').each((_i, el) => {
+    if(_i>=maxCandidates)return false;
     const node = $(el);
     const tag = String(el.tagName ?? '').toLowerCase();
     const href = tag === 'form' ? node.attr('action') : node.attr('href');

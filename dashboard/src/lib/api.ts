@@ -448,7 +448,18 @@ export class ApiClient {
     return request(`/api/websites/${websiteId}/knowledge/build/${buildId}`);
   }
 
-  buildKnowledge(websiteId: string, url: string): KnowledgeBuildHandle {
+  getKnowledgeManifest(websiteId: string, buildId: string) { return request(`/api/websites/${websiteId}/knowledge/build/${buildId}/manifest`); }
+  cancelKnowledgeBuild(websiteId: string, buildId: string) { return request(`/api/websites/${websiteId}/knowledge/build/${buildId}/cancel`, {method:'POST'}); }
+  getKnowledgeScopeReview(websiteId: string, buildId: string) { return request(`/api/websites/${websiteId}/knowledge/build/${buildId}/scope-review`); }
+  approveKnowledgeScope(websiteId: string, buildId: string, body: { reviewHash: string; excludedUrls: string[]; reason: string; acknowledgeLimitations: true; budget: { maxPages: number; maxRenderedPages: number } }) {
+    return request(`/api/websites/${websiteId}/knowledge/build/${buildId}/approve-scope`, { method: 'POST', body: JSON.stringify(body) });
+  }
+
+  queueKnowledgeBuild(websiteId: string, url: string, budget: { maxPages: number; maxRenderedPages: number }) {
+    return request<{ buildId: string; status: string }>(`/api/websites/${websiteId}/knowledge/build`, { method: 'POST', body: JSON.stringify({ url, budget }) });
+  }
+
+  buildKnowledge(websiteId: string, url: string, budget?: { maxPages: number; maxRenderedPages: number }): KnowledgeBuildHandle {
     let phaseCb: ((phase: string, data?: unknown) => void) | undefined;
     let completeCb: ((data?: unknown) => void) | undefined;
     let errorCb: ((error: Error) => void) | undefined;
@@ -481,7 +492,7 @@ export class ApiClient {
           method: 'POST',
           credentials: 'include',
         headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': await getCsrfToken() },
-          body: JSON.stringify({ url }),
+          body: JSON.stringify({ url, ...(budget ? { budget } : {}) }),
           signal: controller.signal,
         });
 
@@ -509,7 +520,7 @@ export class ApiClient {
           if (controller.signal.aborted) return;
           if (build.phase && (signature !== lastProgress || recovering)) { lastProgress = signature; phaseCb?.(build.phase, build.progress); }
           if (build.status === 'SUCCESS') { completeCb?.(build); return; }
-          if (build.status === 'FAILED' || build.status === 'CANCELLED') { errorCb?.(new Error('Knowledge build failed. Please try again.')); return; }
+          if (build.status === 'FAILED' || build.status === 'CANCELLED') { errorCb?.(new Error(build.phase==='partial'?'Crawl incomplete; previous usable knowledge retained. Review build details.':'Knowledge build failed. Previous usable knowledge retained.')); return; }
           window.setTimeout(() => { void poll().catch((err) => errorCb?.(err instanceof Error ? err : new Error(String(err)))); }, 1500);
         };
         await poll();

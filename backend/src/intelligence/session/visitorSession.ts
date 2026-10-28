@@ -14,9 +14,13 @@
  * store semantic events only — never PII, never raw coordinates.
  */
 import type { SemanticEvent } from '../types.js';
+import { semanticEventKey } from '../ingest/eventQuality.js';
+import type { PopupLifecycleState } from '../popupLifecycle.js';
 
 /** Mutable per-visitor state the perception loop needs across event batches. */
 export interface VisitorSession {
+  conversionCompleted?: boolean;
+  popupLifecycle?: PopupLifecycleState;
   /** Opaque anonymous session id (widget-generated). */
   id: string;
   /** Tenant this session belongs to (siteId), or null in the dev-fallback path. */
@@ -25,10 +29,13 @@ export interface VisitorSession {
   events: SemanticEvent[];
   /** Distinct event kinds seen so far (for cross-batch sequence checks). */
   seenKinds: Set<string>;
+  seenEventKeys: Set<string>;
+  latestEventTs: number | null;
   /** Interruptions spent this session (§7.3 fatigue). */
   priorInterruptions: number;
   /** Monotonic ms of the last interruption, or null. */
   lastInterruptionTs: number | null;
+  lastInterruptionAt: number | null;
   /** Whether the visitor explicitly dismissed us (§7.4). */
   dismissed: boolean;
   /** Returning visitor (first-party token present). */
@@ -92,8 +99,11 @@ class InMemorySessionStore implements SessionStore {
       siteId: init.siteId,
       events: [],
       seenKinds: new Set(),
+      seenEventKeys: new Set(),
+      latestEventTs: null,
       priorInterruptions: 0,
       lastInterruptionTs: null,
+      lastInterruptionAt: null,
       dismissed: false,
       returning: init.returning,
       bot: false,
@@ -109,7 +119,11 @@ class InMemorySessionStore implements SessionStore {
     for (const e of events) {
       s.events.push(e);
       s.seenKinds.add(e.type);
+      s.seenEventKeys.add(semanticEventKey(e));
+      s.latestEventTs = Math.max(s.latestEventTs ?? 0, e.ts);
     }
+    s.events.sort((a, b) => a.ts - b.ts);
+    while (s.seenEventKeys.size > 1000) s.seenEventKeys.delete(s.seenEventKeys.values().next().value!);
     if (s.events.length > MAX_EVENTS) {
       s.events.splice(0, s.events.length - MAX_EVENTS);
     }
@@ -120,7 +134,8 @@ class InMemorySessionStore implements SessionStore {
     const s = this.get(id);
     if (!s) return;
     s.priorInterruptions += 1;
-    s.lastInterruptionTs = ts;
+    s.lastInterruptionTs = Math.max(s.lastInterruptionTs ?? 0, ts);
+    s.lastInterruptionAt = nowWall();
     s.updatedAt = nowWall();
   }
 

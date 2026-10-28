@@ -40,6 +40,7 @@ const dashboardAnalyticsLimiter = rateLimit([
 const categorySchema = z.enum(['VISITOR', 'PAGE', 'POPUP', 'CHAT', 'KNOWLEDGE', 'WIDGET']);
 
 export const analyticsEventSchema = z.object({
+  decisionId: z.string().uuid().optional(),
   eventId: z.string().uuid(),
   category: categorySchema,
   eventName: z.string().min(1).max(80),

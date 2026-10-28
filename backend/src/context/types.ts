@@ -24,7 +24,12 @@ export type PageType =
   | 'other';
 
 /** One crawled page after clean-text extraction. */
+export interface ContentSection { heading: string; text: string }
 export interface CrawledPage {
+  sections?: ContentSection[];
+  renderer?: 'static' | 'js-rendered';
+  httpStatus?: number;
+  cleaning?: { removedNavigation: boolean; removedFooter: boolean; removedScripts: boolean; removedCookieBanners: boolean; beforeLength: number; afterLength: number };
   url: string;
   /** Path portion, e.g. "/pricing". */
   path: string;
@@ -39,6 +44,8 @@ export interface CrawledPage {
 
 /** Metadata attached to every chunk (ready for filtering / multi-lang / incremental). */
 export interface ChunkMetadata {
+  /** Repeated factual footer copies share one embedding, with source traceability. */
+  sourceAliases?: Array<{url:string;title:string;heading:string}>;
   id: string;
   /** Page path the chunk came from. */
   page: string;
@@ -94,6 +101,10 @@ export interface BusinessInstructions {
  * never touch the vector store, chunks, or instructions directly.
  */
 export interface ResolvedContext {
+  /** Relevance/coverage diagnostics are not factual authorization. */
+  retrieval?: import('./retrievalPlan.js').RetrievalDiagnostics;
+  /** Server-resolved scope for action authority; never model-provided. */
+  websiteId?: string;
   business: { name: string; description?: string };
   instructions: BusinessInstructions;
   /** Top-K, threshold-filtered, relevant chunks only. */
@@ -114,6 +125,11 @@ export interface ResolvedContext {
  * retrievals.
  */
 export interface KnowledgeSnapshot {
+  /** Limited publication keeps raw crawl completeness false and carries its audited contract. */
+  scopeApproval?: import('../knowledge/crawlScope.js').ScopeApproval;
+  /** Additive v1 metadata; old readers can ignore it. No database migration. */
+  publication?: { id: string; completedAt: string; completeness: 'complete'|'partial'; changed: number; unchanged: number; removed: number; embeddingsReused: number };
+  crawlManifest?: import('../crawler/crawlManifest.js').CrawlManifest;
   version: 1;
   embeddingModel: string;
   dimensions: number;

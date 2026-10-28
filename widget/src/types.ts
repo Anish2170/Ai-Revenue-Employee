@@ -31,6 +31,7 @@ export interface SessionState {
 }
 
 export interface PopupArtifact {
+  delivery?: PopupDeliveryMetadata;
   title: string;
   body: string;
   cta?: string;
@@ -43,6 +44,7 @@ export interface PopupArtifact {
 }
 
 export interface EngageDecision {
+  delivery?: PopupDeliveryMetadata;
   showPopup: boolean;
   intent?: string;
   confidence?: number;
@@ -62,6 +64,7 @@ export interface EngageDecision {
 }
 
 export interface EventsClientState {
+  safety?: { blockedReason: string | null; version: number; formStalled: boolean };
   popupShown: boolean;
   lastPopupAt: number | null;
   dismissed: boolean;
@@ -69,6 +72,17 @@ export interface EventsClientState {
   popupActive: boolean;
   popupCount: number;
 }
+
+export interface PopupDeliveryMetadata {
+  version: 2;
+  popupId: string;
+  decisionId: string;
+  pageInstanceId: string;
+  contextVersion: number;
+  expiresAt: number;
+  formAssistance: boolean;
+}
+export interface PopupPageContext { pageInstanceId: string; pageStartedAt: number; version: number; blockedReason: string | null; formStalled: boolean }
 
 export interface EventsResponse {
   status: 'ack' | 'bot' | 'ignored';
@@ -105,6 +119,7 @@ export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
   source?: ChatSource;
+  sources?:ChatSource[];
 }
 
 export interface WidgetConfig {

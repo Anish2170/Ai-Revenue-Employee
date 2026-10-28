@@ -10,11 +10,17 @@ import type {
   VisitorBehaviour,
   WidgetConfig,
   WidgetConversationResponse,
+  PopupPageContext,
+  EventsClientState,
 } from '../types.js';
-export type WidgetIdentity = { visitorId: string; sessionId: string; visitorToken: string; expiresAt: number };
+import { getWidgetIdentity } from '../session/identity.js';
+export type { WidgetIdentity } from '../session/identity.js';
+import type { WidgetIdentity } from '../session/identity.js';
 const REQUEST_TIMEOUT_MS = 10_000;
 
 async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}, timeoutMs = REQUEST_TIMEOUT_MS): Promise<Response> {
+  // Identity bootstrap supplies its own end-to-end deadline (including JSON).
+  if (init.signal) return fetch(input, init);
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
   try { return await fetch(input, { ...init, signal: controller.signal }); }
@@ -22,24 +28,18 @@ async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}
 }
 
 export class ApiClient {
-  private identityPromise: Promise<WidgetIdentity | null> | null = null;
-  constructor(private readonly cfg: WidgetConfig) {}
+  private sessionId: string | null = null;
+  constructor(private readonly cfg: WidgetConfig, private readonly onSessionChange?: (identity: WidgetIdentity) => void, private readonly onIdentityReady?: (identity: WidgetIdentity) => void) {}
 
-  private identity(): Promise<WidgetIdentity | null> {
-    if (this.identityPromise) return this.identityPromise;
-    this.identityPromise = (async () => {
-      const key = `aire_widget_identity:${this.cfg.siteId}`;
-      try {
-        const saved = JSON.parse(localStorage.getItem(key) ?? 'null') as WidgetIdentity | null;
-        if (saved && saved.expiresAt > Date.now()) return saved;
-        const res = await fetchWithTimeout(`${this.cfg.backendUrl}/widget/session`, { method: 'POST', credentials: 'omit', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ siteId: this.cfg.siteId }) });
-        if (!res.ok) return null;
-        const identity = await res.json() as WidgetIdentity;
-        localStorage.setItem(key, JSON.stringify(identity));
-        return identity;
-      } catch { return null; }
-    })();
-    return this.identityPromise;
+  private async identity(): Promise<WidgetIdentity | null> {
+    const identity = await getWidgetIdentity(this.cfg, fetchWithTimeout);
+    if (identity && identity.sessionId !== this.sessionId) {
+      const previous = this.sessionId;
+      this.sessionId = identity.sessionId;
+      if (previous) this.onSessionChange?.(identity);
+      else this.onIdentityReady?.(identity);
+    }
+    return identity;
   }
 
   /** The one server-issued anonymous identity shared by all widget transports. */
@@ -47,13 +47,16 @@ export class ApiClient {
     return this.identity();
   }
 
-  async postEngage(behaviour: VisitorBehaviour, session: SessionState): Promise<EngageDecision> {
+  async postEngage(behaviour: VisitorBehaviour, session: SessionState, popupContext?: { page: PopupPageContext; clientState: EventsClientState; signal?: AbortSignal }): Promise<EngageDecision> {
     try {
+      const previous = this.sessionId;
       const identity = await this.identity(); if (!identity) return { showPopup: false };
+      if (previous && previous !== identity.sessionId) return { showPopup: false };
       const res = await fetchWithTimeout(`${this.cfg.backendUrl}/engage`, {
         method: 'POST',
         credentials: 'omit',
         headers: { 'Content-Type': 'application/json' },
+        ...(popupContext?.signal ? { signal: popupContext.signal } : {}),
         body: JSON.stringify({
           siteId: this.cfg.siteId,
           visitorId: identity.visitorId,
@@ -61,6 +64,7 @@ export class ApiClient {
           visitorToken: identity.visitorToken,
           behaviour,
           session,
+          ...(popupContext ? { lifecycleVersion: 2, pageInstanceId: popupContext.page.pageInstanceId, pageStartedAt: popupContext.page.pageStartedAt, clientState: popupContext.clientState } : {}),
         }),
       });
       if (!res.ok) return { showPopup: false };
@@ -110,7 +114,7 @@ export class ApiClient {
     messages: ChatMessage[],
     behaviour: VisitorBehaviour | undefined,
     conversationId: string | null,
-    handlers: { onConversation?: (conversation: ChatConversationMeta) => void; onToken: (t: string) => void; onSource?: (source: ChatSource) => void; onError: (m: string) => void; onDone: () => void },
+    handlers: { onConversation?: (conversation: ChatConversationMeta) => void; onToken: (t: string) => void; onSource?: (source: ChatSource) => void; onLeadSaved?: (saved: boolean) => void; onError: (m: string) => void; onDone: () => void },
   ): () => void {
     const controller = new AbortController();
 
@@ -151,8 +155,9 @@ export class ApiClient {
               return;
             }
             try {
-              const obj = JSON.parse(payload) as { conversation?: ChatConversationMeta; token?: string; source?: ChatSource; error?: string };
-              if (obj.error) handlers.onError('The AI is temporarily unavailable. Please try again.');
+              const obj = JSON.parse(payload) as { conversation?: ChatConversationMeta; token?: string; source?: ChatSource; leadSaved?: boolean; error?: string };
+              if (obj.error) handlers.onError(typeof obj.error === 'string' ? obj.error.slice(0, 500) : 'The AI is temporarily unavailable. Please try again.');
+              else if (typeof obj.leadSaved === 'boolean') handlers.onLeadSaved?.(obj.leadSaved);
               else if (obj.conversation) handlers.onConversation?.(obj.conversation);
               else if (obj.token) handlers.onToken(obj.token);
               else if (obj.source) handlers.onSource?.(obj.source);

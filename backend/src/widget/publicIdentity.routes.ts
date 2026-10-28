@@ -5,11 +5,11 @@ import { issuePublicWidgetIdentity } from './publicIdentity.js';
 
 export const publicIdentityRouter = Router();
 publicIdentityRouter.post('/widget/session', async (req, res, next) => {
-  const parsed = z.object({ siteId: z.string().min(1).max(100) }).safeParse(req.body);
+  const parsed = z.object({ siteId: z.string().min(1).max(100), visitorToken: z.string().max(2048).optional() }).safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'INVALID_SITE' });
   try {
     await resolveTenant(parsed.data.siteId);
-    const { identity, token } = issuePublicWidgetIdentity(parsed.data.siteId);
+    const { identity, token } = issuePublicWidgetIdentity(parsed.data.siteId, parsed.data.visitorToken);
     res.status(201).json({ siteId: identity.siteId, visitorId: identity.visitorId, sessionId: identity.sessionId, visitorToken: token, expiresAt: identity.exp });
   } catch (err) {
     if (err instanceof TenantNotFoundError || err instanceof TenantDisabledError) return res.status(404).json({ error: 'TENANT_NOT_FOUND' });

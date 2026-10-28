@@ -26,6 +26,7 @@ export type SemanticType =
 export type Surface = 'desktop' | 'mobile' | 'tablet';
 
 export interface SemanticEvent {
+  id?: string;
   type: SemanticType;
   zone: Zone;
   /** Normalized magnitude 0..1. */

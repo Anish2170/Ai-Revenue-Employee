@@ -1,7 +1,10 @@
 import { prisma } from '../db/prisma.js';
+import { createHash } from 'node:crypto';
+import { parseChatLanguageState, resolveChatLanguage, type ChatLanguageState } from '../language/chatLanguage.js';
 import { generateDecision, llmAvailable } from '../llm/index.js';
 import type { ChatMessage } from '../validation/requestSchemas.js';
 import type { VisitorBehaviour } from '../types.js';
+import {sourceCitations,type SourceCitation} from './sourceCitations.js';
 
 type ConversationTenant = {
   organizationId: string;
@@ -35,6 +38,7 @@ export type WidgetConversation = ConversationSummary & {
     role: 'user' | 'assistant';
     content: string;
     source: { title: string; url: string } | null;
+    sources?:SourceCitation[];
     timestamp: Date;
   }>;
   memories: Array<{ id: string; kind: string; content: string; confidence: number | null }>;
@@ -45,12 +49,20 @@ export type PromptConversationContext = {
   summary?: string;
   memories: string[];
   recentMessages: ChatMessage[];
+  language?: ChatLanguageState;
 };
 
 const DEFAULT_TITLE = 'New Chat';
 const RECENT_MESSAGE_LIMIT = 12;
 const SUMMARY_BATCH_SIZE = 8;
 const MAX_MEMORY_ROWS = 12;
+const LANGUAGE_MEMORY_KIND = 'system_chat_language_v1';
+
+/** A stable UUID gives one policy record per conversation without a schema migration. */
+export function languageMemoryId(conversationId: string): string {
+  const hash = createHash('sha256').update(`chat-language-v1:${conversationId}`).digest('hex');
+  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-5${hash.slice(13, 16)}-8${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
+}
 
 const TITLE_SCHEMA = {
   type: 'object',
@@ -165,9 +177,10 @@ function toWidgetConversation(conversation: any): WidgetConversation {
       role: message.role === 'USER' ? 'user' : 'assistant',
       content: message.content,
       source: message.sourceTitle && message.sourceUrl ? { title: message.sourceTitle, url: message.sourceUrl } : null,
+      sources:sourceCitations(message.sourceMetadata,message.sourceTitle&&message.sourceUrl?{title:message.sourceTitle,url:message.sourceUrl}:null),
       timestamp: message.timestamp ?? message.createdAt,
     })),
-    memories: (conversation.memories ?? []).map((memory: any) => ({
+    memories: (conversation.memories ?? []).filter((memory: any) => memory.kind !== LANGUAGE_MEMORY_KIND).map((memory: any) => ({
       id: memory.id,
       kind: memory.kind,
       content: memory.content,
@@ -181,7 +194,7 @@ async function assertConversationOwner(organizationId: string, conversationId: s
     where: { id: conversationId, organizationId, deletedAt: null },
     include: {
       messages: { orderBy: { timestamp: 'asc' } },
-      memories: { orderBy: { updatedAt: 'desc' }, take: MAX_MEMORY_ROWS },
+      memories: { where: { kind: { not: LANGUAGE_MEMORY_KIND } }, orderBy: { updatedAt: 'desc' }, take: MAX_MEMORY_ROWS },
     },
   });
   if (!conversation) throw new ConversationNotFoundError();
@@ -193,7 +206,7 @@ async function findWidgetConversation(tenant: ConversationTenant, visitorId: str
     where: { id: conversationId, organizationId: tenant.organizationId, websiteId: tenant.websiteId, visitorId, deletedAt: null },
     include: {
       messages: { orderBy: { timestamp: 'asc' } },
-      memories: { orderBy: { updatedAt: 'desc' }, take: MAX_MEMORY_ROWS },
+      memories: { where: { kind: { not: LANGUAGE_MEMORY_KIND } }, orderBy: { updatedAt: 'desc' }, take: MAX_MEMORY_ROWS },
     },
   });
 }
@@ -252,7 +265,7 @@ export async function createConversation(input: {
     },
     include: {
       messages: { orderBy: { timestamp: 'asc' } },
-      memories: { orderBy: { updatedAt: 'desc' }, take: MAX_MEMORY_ROWS },
+      memories: { where: { kind: { not: LANGUAGE_MEMORY_KIND } }, orderBy: { updatedAt: 'desc' }, take: MAX_MEMORY_ROWS },
     },
   });
   await prisma.visitor.update({ where: { id: visitor.id }, data: { lastConversationId: conversation.id } });
@@ -284,7 +297,7 @@ export async function restoreConversation(input: {
     orderBy: { lastMessageAt: 'desc' },
     include: {
       messages: { orderBy: { timestamp: 'asc' } },
-      memories: { orderBy: { updatedAt: 'desc' }, take: MAX_MEMORY_ROWS },
+      memories: { where: { kind: { not: LANGUAGE_MEMORY_KIND } }, orderBy: { updatedAt: 'desc' }, take: MAX_MEMORY_ROWS },
     },
   });
   if (latest) {
@@ -386,21 +399,33 @@ export async function buildPromptContext(conversationId: string): Promise<Prompt
   const conversation = await prisma.conversation.findUnique({
     where: { id: conversationId },
     include: {
-      memories: { orderBy: { updatedAt: 'desc' }, take: MAX_MEMORY_ROWS },
+      memories: { where: { kind: { not: LANGUAGE_MEMORY_KIND } }, orderBy: { updatedAt: 'desc' }, take: MAX_MEMORY_ROWS },
       messages: { orderBy: { timestamp: 'desc' }, take: RECENT_MESSAGE_LIMIT },
     },
   });
   if (!conversation) throw new ConversationNotFoundError();
   const recentMessages = [...conversation.messages].reverse().map(toChatMessage);
+  const policyId = languageMemoryId(conversationId);
+  const policy = await prisma.conversationMemory.findUnique({ where: { id: policyId } });
+  const language = resolveChatLanguage(recentMessages, 'English', parseChatLanguageState(policy?.content));
+  const content = JSON.stringify(language);
+  if (policy?.content !== content) await prisma.conversationMemory.upsert({
+    where: { id: policyId },
+    create: { id: policyId, conversationId, organizationId: conversation.organizationId,
+      websiteId: conversation.websiteId, visitorId: conversation.visitorId,
+      kind: LANGUAGE_MEMORY_KIND, content, confidence: 1 },
+    update: { content },
+  });
   return {
     conversationId,
     summary: conversation.summary ?? undefined,
-    memories: conversation.memories.map((memory) => memory.content),
+    memories: conversation.memories.filter(memory => memory.kind !== LANGUAGE_MEMORY_KIND).map((memory) => memory.content),
     recentMessages,
+    language,
   };
 }
 
-export async function appendAssistantMessage(input: { conversationId: string; content: string; source?: SourceMeta }): Promise<void> {
+export async function appendAssistantMessage(input: { conversationId: string; content: string; source?: SourceMeta;sources?:SourceCitation[] }): Promise<void> {
   if (!input.content.trim()) return;
   await prisma.$transaction([
     prisma.conversationMessage.create({
@@ -410,7 +435,7 @@ export async function appendAssistantMessage(input: { conversationId: string; co
         content: input.content,
         sourceTitle: input.source?.title,
         sourceUrl: input.source?.url,
-        sourceMetadata: sourceMetadata(input.source) as any,
+        sourceMetadata: {...sourceMetadata(input.source),citations:sourceCitations({citations:input.sources},input.source)} as any,
         timestamp: new Date(),
       },
     }),
@@ -507,7 +532,7 @@ export async function updateConversationMemoryIfNeeded(conversationId: string): 
               .filter((item) => typeof item.content === 'string' && item.content.trim().length > 0)
               .slice(0, 6)
               .map((item) => ({
-                kind: typeof item.kind === 'string' ? item.kind.slice(0, 40) : 'fact',
+                kind: typeof item.kind === 'string' && !item.kind.startsWith('system_') ? item.kind.slice(0, 40) : 'fact',
                 content: String(item.content).replace(/\s+/g, ' ').trim().slice(0, 300),
                 confidence: typeof item.confidence === 'number' ? item.confidence : undefined,
               }))
@@ -546,7 +571,7 @@ export async function listConversations(organizationId: string, websiteId?: stri
     where: { organizationId, ...(websiteId ? { websiteId } : {}), deletedAt: null },
     orderBy: { lastMessageAt: 'desc' },
     take: 200,
-    select: { ...conversationSummarySelect, _count: { select: { messages: true, memories: true } } },
+    select: { ...conversationSummarySelect, _count: { select: { messages: true, memories: { where: { kind: { not: LANGUAGE_MEMORY_KIND } } } } } },
   });
   return conversations.map((conversation) => ({
     ...conversation,

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { config } from '../../config/index.js';
 import { createOpenAIProvider } from '../provider/openai.js';
+import { popupJsonSchema } from '../../validation/popupSchema.js';
 
 // Tests temporarily override the runtime config; production exposes it readonly.
 const primaryConfig = config.llm.primary as { model: string };
@@ -30,24 +31,36 @@ test('Luna streaming sends explicit none reasoning and preserves the chat contra
   assert.equal(fetchMock.mock.callCount(), 1);
 });
 
-test('Luna structured generation sends explicit none reasoning and preserves strict JSON', async (t) => {
+test('Luna structured generation sends the production popup schema with strict JSON', async (t) => {
   const originalModel = config.llm.primary.model;
   t.after(() => { primaryConfig.model = originalModel; });
   primaryConfig.model = 'gpt-6-luna';
   const req = {
     system: 'Return a grounded decision.', user: 'Supplied knowledge',
-    schema: { type: 'object', properties: { title: { type: 'string' } }, required: ['title'], additionalProperties: false },
+    schema: popupJsonSchema,
   };
+  const popup = { title: 'Support', body: 'Need help?', primaryAction: 'contact_support', secondaryAction: '', tone: 'supportive', popupType: 'support' };
   t.mock.method(globalThis, 'fetch', async (...[_url, init]: Parameters<typeof fetch>) => {
     assert.deepEqual(JSON.parse(String(init?.body)), {
       model: 'gpt-6-luna', reasoning_effort: 'none', temperature: 0.4,
       messages: [{ role: 'system', content: req.system }, { role: 'user', content: req.user }],
       response_format: { type: 'json_schema', json_schema: { name: 'result', strict: true, schema: req.schema } },
     });
-    return Response.json({ choices: [{ message: { content: JSON.stringify({ title: 'Support' }) } }] });
+    return Response.json({ choices: [{ message: { content: JSON.stringify(popup) } }] });
   });
-  assert.deepEqual(await createOpenAIProvider().generateStructured(req), { title: 'Support' });
+  assert.deepEqual(await createOpenAIProvider().generateStructured(req), popup);
 });
+
+for (const [name, response] of [
+  ['malformed JSON', { choices: [{ message: { content: '{broken' } }] }],
+  ['empty content', { choices: [{ message: { content: '' } }] }],
+  ['refusal', { choices: [{ message: { refusal: 'Cannot comply.' } }] }],
+] as const) {
+  test(`OpenAI popup parsing rejects ${name}`, async (t) => {
+    t.mock.method(globalThis, 'fetch', async () => Response.json(response));
+    await assert.rejects(() => createOpenAIProvider().generateStructured({ system: 'Popup', user: 'Facts', schema: popupJsonSchema }));
+  });
+}
 
 test('a non-Luna model override keeps its existing request parameters', async (t) => {
   const originalModel = config.llm.primary.model;

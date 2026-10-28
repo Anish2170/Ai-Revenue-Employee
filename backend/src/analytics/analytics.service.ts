@@ -21,6 +21,7 @@ export interface AnalyticsContext {
 }
 
 export interface AnalyticsEventInput extends AnalyticsContext {
+  decisionId?: string;
   eventId?: string;
   category: AnalyticsEventCategory;
   eventName: string;

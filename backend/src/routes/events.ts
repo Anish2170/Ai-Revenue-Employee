@@ -16,15 +16,16 @@ import { eventsRequestSchema, type EventsRequest } from '../validation/eventSche
 import { ingestEvents } from '../services/perceptionService.js';
 import { config, hasDatabase } from '../config/index.js';
 import { getBusinessInstructions } from '../context/instructions.js';
+import { publicPopupAction } from '../intelligence/popupActionPolicy.js';
 import { generateSafePopup } from '../intelligence/popupPipeline.js';
 import { SALES_POLICY } from '../intelligence/config/salesPolicy.config.js';
 import { sessionStore } from '../intelligence/session/visitorSession.js';
 import { resolveTenant, TenantNotFoundError, TenantDisabledError } from '../tenant/tenant.resolver.js';
 import { verifyPublicWidgetIdentity } from '../widget/publicIdentity.js';
 import { enqueueAnalyticsEvent } from '../analytics/analytics.service.js';
-import { enqueueAiDecisionLog } from '../analytics/decision-log.service.js';
-import { findBusinessAction } from '../business-actions/action.service.js';
-import { cooldownRemainingMs, popupTrace } from '../intelligence/popupTrace.js';
+import { enqueueAiDecisionLog, enqueueAiDecisionOutcomes } from '../analytics/decision-log.service.js';
+import { findBusinessAction, getEnabledBusinessActions } from '../business-actions/action.service.js';
+import { sessionCooldownRemainingMs, popupTrace } from '../intelligence/popupTrace.js';
 import type { BusinessInstructions } from '../context/types.js';
 import type { BusinessActionConfig } from '../business-actions/action.types.js';
 import type { GeneratedPopup } from '../intelligence/popupGeneration.js';
@@ -33,6 +34,9 @@ import type { SafePopupPipelineResult } from '../intelligence/popupPipeline.js';
 import type { AnalyticsContext, AnalyticsTenant } from '../analytics/analytics.service.js';
 import { logger } from '../logging/logger.js';
 import { safeIdentifier } from '../logging/sanitize.js';
+import { z } from 'zod';
+import { failureCategory } from '../llm/provider/errors.js';
+import { completePopup, failPopup, observePopupContext, reservePopup, transitionPopup, type PopupContext, type PopupDeliveryMetadata } from '../intelligence/popupLifecycle.js';
 
 export const eventsRouter = Router();
 
@@ -73,6 +77,7 @@ function devPopupLog(stage: string, detail?: unknown): void {
 function clientSuppressionReason(body: EventsRequest): { reason: string; cooldownRemainingMs?: number } | null {
   const state = body.clientState;
   if (!state) return null;
+  if (state.safety?.blockedReason) return { reason: state.safety.blockedReason };
   if (state.chatOpen) return { reason: 'chat_open' };
   if (state.popupActive) return { reason: 'popup_active' };
   if (state.dismissed) return { reason: 'dismissed' };
@@ -137,6 +142,7 @@ function enqueuePopupDecisionLog(
     finalOutcome: string;
     pipeline?: SafePopupPipelineResult;
     popup?: ReturnType<typeof publicPopup>;
+    decisionId?: string;
   },
 ): void {
   if (!tenant) return;
@@ -145,6 +151,7 @@ function enqueuePopupDecisionLog(
   const rejectedPopup = detail.pipeline?.trace.responseValidation?.ok === false ? detail.pipeline.trace.responseValidation.rejectedPopup : null;
   const action = actionDebug(detail.pipeline);
   enqueueAiDecisionLog(tenant, {
+    id: detail.decisionId,
     ...context,
     occurredAt: new Date(),
     behaviorSummary: behaviour.summary,
@@ -176,7 +183,7 @@ function enqueuePopupDecisionLog(
     finalOutcome: detail.finalOutcome,
   });
 }
-function publicPopup(popup: GeneratedPopup, actions: BusinessActionConfig[]) {
+function publicPopup(popup: GeneratedPopup, actions: BusinessActionConfig[], delivery?: PopupDeliveryMetadata) {
   const action = findBusinessAction(actions, popup.primaryAction);
   const secondaryAction = findBusinessAction(actions, popup.secondaryAction);
   return {
@@ -184,10 +191,11 @@ function publicPopup(popup: GeneratedPopup, actions: BusinessActionConfig[]) {
     body: popup.body,
     primaryAction: popup.primaryAction,
     secondaryAction: popup.secondaryAction,
-    action: action ?? undefined,
-    secondaryActionConfig: secondaryAction ?? undefined,
+    action: action ? publicPopupAction(action) : undefined,
+    secondaryActionConfig: secondaryAction ? publicPopupAction(secondaryAction) : undefined,
     tone: popup.tone,
     popupType: popup.popupType,
+    delivery,
   };
 }
 
@@ -241,6 +249,11 @@ eventsRouter.post('/events', eventsLimiter, async (req, res) => {
       browser: body.browser,
       surface: body.surface,
     };
+    const popupContext: PopupContext | null = body.lifecycleVersion === 2 && body.pageInstanceId && body.clientState?.safety
+      ? { pageInstanceId: body.pageInstanceId, pageStartedAt: body.pageStartedAt ?? 0, ...body.clientState.safety } : null;
+    const visitorSession = sessionStore.getOrCreate(body.sessionId, { siteId: publicSiteId, returning: body.returning });
+    // Context updates must be admitted even when all semantic events are duplicates.
+    if (popupContext && !observePopupContext(visitorSession, popupContext)) return res.json(ignoredResponse(['stale_context']));
 
     const result = ingestEvents({
       siteId: publicSiteId,
@@ -273,7 +286,7 @@ eventsRouter.post('/events', eventsLimiter, async (req, res) => {
         popupTrace(body.sessionId, '6_suppression_rules', {
           passed: false,
           reason: result.shadowDecision.suppressedBy ?? 'sales_brain_silent',
-          cooldownRemainingMs: cooldownRemainingMs(sessionStore.get(body.sessionId)?.lastInterruptionTs ?? null, result.decisionTs ?? 0, SALES_POLICY.cooldownMs),
+          cooldownRemainingMs: sessionCooldownRemainingMs(sessionStore.get(body.sessionId), result.decisionTs ?? 0, SALES_POLICY.cooldownMs),
           popupGenerated: false,
         });
         enqueueAnalyticsEvent(analyticsTenant, analyticsContext, {
@@ -295,6 +308,19 @@ eventsRouter.post('/events', eventsLimiter, async (req, res) => {
           session: safeIdentifier(body.sessionId),
         });
       } else {
+        // Older widgets cannot acknowledge display. Fail closed for proactive
+        // delivery until the matching widget asset is installed; chat is intact.
+        if (!popupContext) return res.json({ status: result.status, reason: 'lifecycle_upgrade_required' });
+        const reservation = reservePopup(visitorSession, popupContext, result.decisionTs ?? 0);
+        const candidate = reservation.candidate;
+        if (!candidate) return res.json({ status: result.status, reason: reservation.reason });
+        const disconnected = () => {
+          if (!res.writableEnded && candidate.status === 'generating') {
+            candidate.controller.abort(new Error('Widget request disconnected'));
+            failPopup(visitorSession, candidate);
+          }
+        };
+        res.once('close', disconnected);
         const pipelineInstructions = instructions ?? getBusinessInstructions();
         popupTrace(body.sessionId, '6_suppression_rules', { passed: true, reason: null, cooldownRemainingMs: 0 });
         popupTrace(body.sessionId, '7_cooldown', { passed: true, cooldownRemainingMs: 0 });
@@ -318,11 +344,14 @@ eventsRouter.post('/events', eventsLimiter, async (req, res) => {
             instructions: pipelineInstructions,
             websiteId,
             businessActions,
-          });
+            formAssistance: popupContext.formStalled,
+            pagePath: body.pageUrl ?? body.pagePath,
+          }, { signal: candidate.controller.signal, ...(websiteId ? { refreshActions: () => getEnabledBusinessActions(websiteId!, { skipSeed: true }) } : {}) });
 
           if (sprint42.ok && sprint42.popup.ok) {
-            sessionStore.recordInterruption(body.sessionId, result.decisionTs ?? 0);
-            popupArtifact = publicPopup(sprint42.popup.popup, businessActions);
+            if (!completePopup(visitorSession, candidate)) return res.json({ status: result.status, reason: 'candidate_obsolete' });
+            popupArtifact = { ...publicPopup(sprint42.popup.popup, sprint42.actions),
+              delivery: { version: 2 as const, popupId: candidate.id, decisionId: candidate.id, pageInstanceId: candidate.pageInstanceId, contextVersion: candidate.contextVersion, expiresAt: candidate.expiresAt, formAssistance: Boolean(popupContext.formStalled) } };
             popupTrace(body.sessionId, '8_popup_generation', {
               passed: true,
               popupGenerated: true,
@@ -330,10 +359,12 @@ eventsRouter.post('/events', eventsLimiter, async (req, res) => {
               title: popupArtifact.title,
               pipelineStages: sprint42.trace.stages,
             });
-            popupTrace(body.sessionId, '9_popup_delivery_to_widget', { passed: true, delivered: true, popupGenerated: true });
+            popupTrace(body.sessionId, '9_popup_delivery_to_widget', { passed: true, responsePrepared: true, browserDisplayConfirmed: false, popupGenerated: true, popupId: candidate.id });
             enqueueAnalyticsEvent(analyticsTenant, analyticsContext, {
               category: 'POPUP',
               eventName: 'popup_generated',
+              eventId: `${candidate.id}:generated`,
+              decisionId: candidate.id,
               popupType: popupArtifact.popupType,
               label: popupArtifact.tone,
               actionId: popupArtifact.primaryAction,
@@ -346,6 +377,7 @@ eventsRouter.post('/events', eventsLimiter, async (req, res) => {
               finalOutcome: 'Generated',
               pipeline: sprint42,
               popup: popupArtifact,
+              decisionId: candidate.id,
             });
             devPopupLog('popup_generated', {
               session: safeIdentifier(body.sessionId),
@@ -353,6 +385,7 @@ eventsRouter.post('/events', eventsLimiter, async (req, res) => {
               tone: popupArtifact.tone,
             });
           } else if (!sprint42.ok) {
+            failPopup(visitorSession, candidate);
             popupTrace(body.sessionId, '8_popup_generation', {
               passed: false,
               popupGenerated: false,
@@ -383,7 +416,8 @@ eventsRouter.post('/events', eventsLimiter, async (req, res) => {
             });
           }
         } catch (err) {
-          const detail = 'popup_generation_failed';
+          failPopup(visitorSession, candidate);
+          const detail = candidate.controller.signal.aborted ? 'popup_cancelled' : failureCategory(err) === 'timeout' ? 'popup_timeout' : 'popup_generation_failed';
           popupTrace(body.sessionId, '8_popup_generation', { passed: false, popupGenerated: false, stoppedAt: 'pipeline_error', reason: detail });
           popupTrace(body.sessionId, '9_popup_delivery_to_widget', { passed: false, delivered: false, reason: detail });
           enqueueAnalyticsEvent(analyticsTenant, analyticsContext, { category: 'POPUP', eventName: 'popup_suppressed', reason: detail, label: 'pipeline_error' });
@@ -395,9 +429,9 @@ eventsRouter.post('/events', eventsLimiter, async (req, res) => {
             suppressionReason: detail,
             finalOutcome: 'Suppressed',
           });
-          logger.warn('[popup] generation failed', { error: err });
+          if (detail !== 'popup_cancelled') logger.warn('[popup] generation failed', { error: err });
           devPopupLog('popup_suppressed', { reason: detail, session: safeIdentifier(body.sessionId) });
-        }
+        } finally { res.removeListener('close', disconnected); }
       }
     }
 
@@ -417,6 +451,44 @@ eventsRouter.post('/events', eventsLimiter, async (req, res) => {
   } catch (err) {
     logger.warn('[events] ignored ingest error', { error: err });
     return res.json(ignoredResponse(['ingest_error']));
+  }
+});
+
+const contextSchema = z.object({ pageInstanceId: z.string().uuid(), pageStartedAt: z.number().nonnegative().max(21_600_000), version: z.number().int().nonnegative(), blockedReason: z.string().max(80).nullable(), formStalled: z.boolean() });
+const lifecycleSchema = z.object({
+  siteId: z.string().min(1).max(100), visitorId: z.string().min(8).max(128), sessionId: z.string().min(8).max(128), visitorToken: z.string().min(1).max(1000),
+  operation: z.enum(['context', 'claim', 'displayed', 'release', 'dismissed', 'clicked']),
+  popupId: z.string().uuid().optional(), pageInstanceId: z.string().uuid(), context: contextSchema.optional(),
+}).strict();
+
+eventsRouter.post('/popup/lifecycle', eventsLimiter, async (req, res) => {
+  const parsed = lifecycleSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ ok: false });
+  const body = parsed.data;
+  const identity = verifyPublicWidgetIdentity(body.visitorToken, body.siteId);
+  if (!identity || identity.visitorId !== body.visitorId || identity.sessionId !== body.sessionId) return res.status(403).json({ ok: false });
+  try {
+    const tenant = hasDatabase ? await resolveTenant(body.siteId) : null;
+    const session = sessionStore.get(body.sessionId);
+    if (!session || (session.siteId !== null && session.siteId !== body.siteId)) return res.json({ ok: false, reason: 'session_unavailable' });
+    if (body.operation === 'context') {
+      if (!body.context || body.context.pageInstanceId !== body.pageInstanceId) return res.status(400).json({ ok: false });
+      return res.json({ ok: observePopupContext(session, body.context) });
+    }
+    if (!body.popupId) return res.status(400).json({ ok: false });
+    const result = transitionPopup(session, body.popupId, body.pageInstanceId, body.operation, body.context);
+    if (result.ok) {
+      const eventName = { claim: 'popup_delivered', displayed: 'popup_displayed', release: 'popup_not_displayed', clicked: 'popup_clicked', dismissed: 'popup_dismissed' }[body.operation];
+      const analyticsTenant = tenant ? { organizationId: tenant.organizationId, websiteId: tenant.websiteId } : null;
+      const context = { visitorId: body.visitorId, sessionId: body.sessionId };
+      const event = { category: 'POPUP' as const, eventName, decisionId: body.popupId, eventId: `${body.popupId}:${eventName}` };
+      enqueueAnalyticsEvent(analyticsTenant, context, event);
+      enqueueAiDecisionOutcomes(analyticsTenant, context, [event]);
+    }
+    return res.json({ ok: result.ok, ...(result.candidate?.claimUntil ? { claimUntil: result.candidate.claimUntil } : {}) });
+  } catch (error) {
+    logger.warn('[popup] lifecycle unavailable', { error });
+    return res.status(503).json({ ok: false });
   }
 });
 

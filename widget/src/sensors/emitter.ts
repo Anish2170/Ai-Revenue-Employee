@@ -12,6 +12,8 @@ import type { EmitFn, SemanticEvent, SemanticType, Surface, Zone } from './types
 
 export interface EmitterOptions {
   surface: Surface;
+  /** Shared visit origin: reloads must not restart the backend's cooldown clock. */
+  sessionStartedAt?: number;
   /** Flush interval in ms. */
   flushMs?: number;
   /** Max buffered events before an early flush. */
@@ -30,12 +32,14 @@ const MIN_INTENSITY = 0.05;
 export class EventEmitter {
   private buffer: SemanticEvent[] = [];
   private timer: ReturnType<typeof setInterval> | null = null;
-  private readonly start = Date.now();
+  private readonly start: number;
   private readonly flushMs: number;
   private readonly maxBuffer: number;
   private stopped = false;
+  private lastTs = 0;
 
   constructor(private readonly opts: EmitterOptions) {
+    this.start = opts.sessionStartedAt ?? Date.now();
     this.flushMs = opts.flushMs ?? DEFAULT_FLUSH_MS;
     this.maxBuffer = opts.maxBuffer ?? DEFAULT_MAX_BUFFER;
   }
@@ -45,7 +49,13 @@ export class EventEmitter {
     if (this.stopped) return;
     const clamped = Math.max(0, Math.min(1, intensity));
     if (clamped < MIN_INTENSITY) return;
-    this.buffer.push({ type, zone, intensity: clamped, ts: this.now(), surface: this.opts.surface });
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+    const id = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+    this.buffer.push({ id, type, zone, intensity: clamped, ts: this.now(), surface: this.opts.surface });
     this.opts.log?.('[AIRE] emit', type, zone, clamped.toFixed(2));
     if (this.buffer.length >= this.maxBuffer) this.flush();
   };
@@ -67,9 +77,10 @@ export class EventEmitter {
     this.flush();
   }
 
-  /** Monotonic ms since emitter start (matches backend's session clock). */
+  /** Nondecreasing ms since the visit origin, shared across page loads. */
   private now(): number {
-    return Date.now() - this.start;
+    this.lastTs = Math.max(this.lastTs, Date.now() - this.start, 0);
+    return this.lastTs;
   }
 
   private flush(): void {

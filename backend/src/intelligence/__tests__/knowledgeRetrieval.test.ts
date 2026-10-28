@@ -81,7 +81,7 @@ test('knowledgeRetrieval: keeps only minimal relevant knowledge', async () => {
     retrieveFn: async () => ({
       chunks: [
         chunk({ id: 'a', score: 0.9, content: 'First chunk has a lot of pricing details for the prompt.' }),
-        chunk({ id: 'b', content: 'Second chunk should not fit after the first clipped chunk.' }),
+        chunk({ id: 'b',score:0.8,content: 'A complete short source.' }),
       ],
       scores: [0.9, 0.8],
     }),
@@ -90,7 +90,9 @@ test('knowledgeRetrieval: keeps only minimal relevant knowledge', async () => {
   assert.equal(result.knowledgeAvailable, true);
   assert.equal(result.chunks.length, 1);
   assert.equal(result.chunks[0].content.length <= 30, true);
-  assert.equal(result.chunks[0].score, 0.9);
+  assert.equal(result.chunks[0].id, 'b');
+  assert.equal(result.chunks[0].score, 0.8);
+  assert.equal(result.chunks[0].truncated, false);
 });
 
 test('knowledgeRetrieval: reports missing knowledge without throwing', async () => {

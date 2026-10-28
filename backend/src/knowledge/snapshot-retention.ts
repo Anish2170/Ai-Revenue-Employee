@@ -1,5 +1,6 @@
 import { prisma } from '../db/prisma.js';
 import { getSnapshotStorage, loadSnapshotArtifact } from '../vectorstore/snapshotStorage.js';
+import { validateKnowledgeSnapshot } from './publication.js';
 
 /** Only prune immutable R2 snapshots after a usable replacement has been published. */
 export async function pruneKnowledgeSnapshots(organizationId: string, websiteId: string): Promise<number> {
@@ -18,6 +19,13 @@ export async function pruneKnowledgeSnapshots(organizationId: string, websiteId:
     // A missing/corrupt replacement must never cause older backups to be removed.
     const replacement = await loadSnapshotArtifact({ provider: 'R2', storageKey: latest.storageKey, contentSha256: latest.contentSha256 });
     if (!replacement?.documents?.length) throw new Error('Snapshot retention skipped: latest snapshot is not readable.');
+    // Byte integrity alone does not make a replacement queryable by our readers.
+    // Keep every backup if schema/model/vectors/scope or version identity fail.
+    validateKnowledgeSnapshot(replacement);
+    if (replacement.publication && replacement.publication.id !== latest.id)
+      throw new Error('Snapshot retention skipped: replacement identity mismatch.');
+    if (replacement.scopeApproval && (replacement.scopeApproval.organizationId !== organizationId || replacement.scopeApproval.websiteId !== websiteId))
+      throw new Error('Snapshot retention skipped: replacement tenant mismatch.');
     const retainedKeys = new Set(retained.map(snapshot => snapshot.storageKey));
     let removed = 0;
     for (const snapshot of obsolete) {

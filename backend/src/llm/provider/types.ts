@@ -15,6 +15,9 @@ export interface ChatTurn {
 
 /** Request for a single structured (JSON) generation. */
 export interface StructuredRequest {
+  signal?: AbortSignal;
+  /** Wall-clock end of the entire popup pipeline; retries share this budget. */
+  deadlineAt?: number;
   /** System instruction. */
   system: string;
   /** User content. */
@@ -25,6 +28,7 @@ export interface StructuredRequest {
 
 /** Request for a streamed chat completion. */
 export interface StreamRequest {
+  signal?: AbortSignal;
   system: string;
   messages: ChatTurn[];
   debug?: {
@@ -63,7 +67,7 @@ export interface LLMProvider {
    * @returns one vector per input, in order.
    * @throws if the provider errors.
    */
-  embed(texts: string[], taskType: EmbedTaskType): Promise<number[][]>;
+  embed(texts: string[], taskType: EmbedTaskType, options?: { signal?: AbortSignal; deadlineAt?: number }): Promise<number[][]>;
 }
 
 

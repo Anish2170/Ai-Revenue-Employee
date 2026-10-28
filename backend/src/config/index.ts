@@ -140,8 +140,10 @@ registerSensitiveValues([
   config.databaseUrl, config.sessionSecret,
 ]);
 
-/** True when an LLM provider is actually configured. */
-export const hasLLM = config.llm.primary.apiKey.length > 0 && config.gemini.apiKey.length > 0;
+/** Runtime generation readiness is separate from strict production startup policy. */
+export const hasPrimaryLLM = config.llm.primary.provider === 'openai' && config.llm.primary.apiKey.trim().length > 0;
+export const hasFallbackLLM = config.llm.fallback.provider === 'gemini' && config.gemini.apiKey.trim().length > 0;
+export const hasLLM = hasPrimaryLLM || hasFallbackLLM;
 
 /** True when a database is configured (enables SaaS/multi-tenant features). */
 export const hasDatabase = config.databaseUrl.length > 0;
@@ -192,6 +194,7 @@ export function validateProductionConfig(): void {
   }
   if (!config.llm.primary.model) throw new Error('PRIMARY_LLM_MODEL is required in production.');
   if (!config.llm.fallback.model) throw new Error('FALLBACK_LLM_MODEL is required in production.');
+  if (!config.gemini.embeddingModel.trim()) throw new Error('EMBEDDING_MODEL is required in production independently of generation models.');
   if (configuredKnowledgeStorage && configuredKnowledgeStorage !== 'local' && configuredKnowledgeStorage !== 'r2') {
     throw new Error('Invalid KNOWLEDGE_STORAGE in production. Supported values: local, r2.');
   }

@@ -10,20 +10,23 @@
  * only transports that artifact to the orchestrator; it never decides whether
  * to interrupt on its own.
  */
-import type { EventsClientState, EventsResponse, PopupArtifact } from '../types.js';
+import type { EventsClientState, EventsResponse, PopupArtifact, PopupPageContext } from '../types.js';
 import type { SemanticEvent, SensorAdapter, Surface } from './types.js';
 import { DesktopSensors } from './desktop.js';
 import { MobileSensors } from './mobile.js';
 import { EventEmitter } from './emitter.js';
-import { resolveReturning } from './session.js';
+import { touchWidgetSession } from '../session/identity.js';
 import type { WidgetIdentity } from '../api/client.js';
+import { currentPageKey } from '../core/navigation.js';
 
 export interface SensorEngineOptions {
   siteId: string;
   backendUrl: string;
   identity: WidgetIdentity;
+  getIdentity: () => Promise<WidgetIdentity | null>;
   debug: boolean;
   getClientState: () => EventsClientState;
+  getPageContext?: () => PopupPageContext;
   onPopup: (popup: PopupArtifact) => void;
 }
 
@@ -42,20 +45,37 @@ export class SensorEngine {
   private readonly sessionId: string;
   private readonly visitorId: string;
   private readonly visitorToken: string;
-  private readonly returning = resolveReturning();
+  private readonly returning: boolean;
   private readonly surface = detectSurface();
+  private stopped = false;
+  private pending = new Set<AbortController>();
+
+  cancelPending(): boolean {
+    const hadPending = this.pending.size > 0;
+    for (const controller of this.pending) controller.abort();
+    this.pending.clear();
+    return hadPending;
+  }
+
+  requestOpportunity(): void {
+    if (this.stopped || this.opts.getClientState().safety?.blockedReason) return;
+    this.emitter?.emit('resume', 'other', 0.5);
+  }
 
   constructor(private readonly opts: SensorEngineOptions) {
     this.sessionId = opts.identity.sessionId;
     this.visitorId = opts.identity.visitorId;
     this.visitorToken = opts.identity.visitorToken;
+    this.returning = opts.identity.returning;
   }
 
   start(): void {
     if (this.adapter) return;
+    this.stopped = false;
 
     this.emitter = new EventEmitter({
       surface: this.surface,
+      sessionStartedAt: this.opts.identity.sessionStartedAt,
       send: (events) => this.send(events),
       log: this.opts.debug ? (...a) => console.log(...a) : undefined,
     });
@@ -70,6 +90,8 @@ export class SensorEngine {
   }
 
   stop(): void {
+    this.stopped = true;
+    this.cancelPending();
     this.adapter?.stop();
     this.adapter = null;
     this.emitter?.stop();
@@ -77,7 +99,16 @@ export class SensorEngine {
   }
 
   /** Send a semantic batch and consume the optional validated popup artifact. */
-  private send(events: SemanticEvent[]): void {
+  private async send(events: SemanticEvent[]): Promise<void> {
+    if (this.stopped) return;
+    const pageKey = currentPageKey();
+    const context = this.opts.getPageContext?.();
+    let current: WidgetIdentity | null;
+    try { current = await this.opts.getIdentity(); } catch { return; }
+    // Renewal restarts sensors on a fresh clock. Old batches/responses stay old.
+    if (this.stopped || current?.sessionId !== this.sessionId || currentPageKey() !== pageKey) return;
+    if (context && this.opts.getPageContext?.().version !== context.version) return;
+    touchWidgetSession(this.opts, this.opts.identity);
     if (this.opts.debug) {
       console.log('[AIRE popup-trace] stage=1_widget_event_collection sending_batch', {
         passed: events.length > 0,
@@ -88,6 +119,7 @@ export class SensorEngine {
     }
 
     const body = JSON.stringify({
+      ...(context ? { lifecycleVersion: 2, pageInstanceId: context.pageInstanceId, pageStartedAt: context.pageStartedAt } : {}),
       siteId: this.opts.siteId,
       visitorToken: this.visitorToken,
       sessionId: this.sessionId,
@@ -105,22 +137,32 @@ export class SensorEngine {
       botSignal: { webdriver: navigatorWebdriver() },
     });
 
+    // A bounded number of event requests may overlap; the backend reservation
+    // coordinates generation. Abort all old work on page/session/safety changes.
+    if (this.pending.size >= 2) return;
+    const controller = new AbortController();
+    this.pending.add(controller);
+    const timer = window.setTimeout(() => controller.abort(), 13_000);
     void fetch(`${this.opts.backendUrl}/events`, {
       method: 'POST',
       credentials: 'omit',
       headers: { 'Content-Type': 'application/json' },
       body,
       keepalive: true,
+      signal: controller.signal,
     })
       .then(async (res) => {
         if (!res.ok) return;
         const payload = (await res.json().catch(() => null)) as EventsResponse | null;
         const popup = payload?.popup;
-        if (isPopupArtifact(popup)) this.opts.onPopup(popup);
+        const liveContext = this.opts.getPageContext?.();
+        if (!controller.signal.aborted && !this.stopped && currentPageKey() === pageKey
+          && (!context || (liveContext?.pageInstanceId === context.pageInstanceId && liveContext.version === context.version && !liveContext.blockedReason))
+          && isPopupArtifact(popup)) this.opts.onPopup(popup);
       })
       .catch(() => {
         /* transport failures are silent */
-      });
+      }).finally(() => { window.clearTimeout(timer); this.pending.delete(controller); });
   }
 }
 
@@ -131,6 +173,8 @@ function isPopupArtifact(value: unknown): value is PopupArtifact {
     && typeof v.body === 'string'
     && typeof v.popupType === 'string'
     && typeof v.tone === 'string'
+    && (v.delivery === undefined || (v.delivery.version === 2 && typeof v.delivery.popupId === 'string' && v.delivery.decisionId === v.delivery.popupId
+      && typeof v.delivery.pageInstanceId === 'string' && Number.isFinite(v.delivery.expiresAt) && Number.isInteger(v.delivery.contextVersion) && typeof v.delivery.formAssistance === 'boolean'))
     && (v.cta === undefined || typeof v.cta === 'string')
     && (v.primaryAction === undefined || typeof v.primaryAction === 'string')
     && (v.secondaryAction === undefined || typeof v.secondaryAction === 'string')

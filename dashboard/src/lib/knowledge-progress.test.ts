@@ -21,3 +21,24 @@ test('unknown totals and older build records never produce invalid percentages',
     assert.ok(view.percent >= 0 && view.percent < 100);
   }
 });
+test('partial refresh is not shown as complete website knowledge',()=>{
+  const view=describeBuildProgress({status:'FAILED',phase:'partial',coverage:{completeWithinScope:false,discovered:20,attempted:10,failed:2}});
+  assert.ok(view.percent<100);assert.match(view.title,/incomplete/i);assert.match(view.description,/previous/i);
+});
+test('published progress explicitly describes crawl scope rather than entire website completeness',()=>{
+  const view=describeBuildProgress({status:'SUCCESS',phase:'complete',coverage:{completeWithinScope:true,discovered:10,attempted:8,failed:0}});
+  assert.equal(view.percent,100);assert.match(view.description,/scope|entire website/i);
+});
+
+test('approved limited publication keeps missing-source warnings and describes build completion', () => {
+  const view = describeBuildProgress({ status: 'SUCCESS', coverage: { completeWithinScope: false }, configuration: { approval: { inventory: [
+    { url: '/pricing', disposition: 'required' }, { url: '/blog/old', disposition: 'owner_excluded' },
+  ] } } });
+  assert.equal(view.percent, 100); assert.equal(view.title, 'Approved scope ready');
+  assert.match(view.description, /1 required included/); assert.match(view.description, /1 optional pages/); assert.match(view.description, /not whole-website/);
+});
+
+test('approved configuration cannot turn a failed required-source build into success', () => {
+  const view = describeBuildProgress({ status: 'FAILED', phase: 'partial', coverage: { completeWithinScope: false }, configuration: { approval: { inventory: [] } } });
+  assert.ok(view.percent < 100); assert.match(view.description, /retained/);
+});

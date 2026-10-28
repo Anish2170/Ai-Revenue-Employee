@@ -7,6 +7,8 @@ export interface BusinessActionConfig {
   destinationType: BusinessActionDestinationType;
   destination: string;
   enabled: boolean;
+  /** Server-produced provenance, never accepted from a public widget/model. */
+  authority?: { source: 'owner' | 'discovered'; websiteId: string; actionId: string; label: string; destinationType: BusinessActionDestinationType; destination: string; confidence?: number };
 }
 
 export interface BusinessActionWithStats extends BusinessActionConfig {

@@ -43,7 +43,7 @@ async function loadWebsiteSnapshot(websiteId: string): Promise<KnowledgeSnapshot
 }
 
 function chunksForPage(snapshot: KnowledgeSnapshot, url: string): EmbeddedChunk[] {
-  return snapshot.documents.filter((chunk) => chunk.url === url);
+  return snapshot.documents.filter((chunk) => (chunk.url === url || chunk.sourceAliases?.some(source=>source.url===url)));
 }
 
 function pageDebug(snapshot: KnowledgeSnapshot, url: string) {
@@ -129,7 +129,7 @@ export async function getPageDetail(websiteId: string, url: string) {
 export async function listChunks(websiteId: string, page?: number, limit?: number, pageUrl?: string) {
   const snapshot = await loadWebsiteSnapshot(websiteId);
   if (!snapshot) return { items: [], pagination: { page: 1, limit: clampLimit(limit), total: 0, pages: 1 } };
-  const docs = pageUrl ? snapshot.documents.filter((chunk) => chunk.url === pageUrl) : snapshot.documents;
+  const docs = pageUrl ? snapshot.documents.filter((chunk) => (chunk.url === pageUrl || chunk.sourceAliases?.some(source=>source.url===pageUrl))) : snapshot.documents;
   const rows = docs.map((chunk, index) => ({
     number: index + 1,
     id: chunk.id,

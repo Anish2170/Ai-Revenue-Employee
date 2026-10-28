@@ -4,7 +4,8 @@
  * Supports both the legacy single-file path (dev-fallback tenant) and
  * per-website paths (`data/knowledge/<websiteId>.json`) for multi-tenant.
  */
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rename, unlink } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from '../config/index.js';
@@ -26,7 +27,9 @@ export function websiteSnapshotPath(websiteId: string): string {
 /** Persist a snapshot to any path, creating directories if needed. */
 export async function saveSnapshotFile(path: string, snapshot: KnowledgeSnapshot): Promise<string> {
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, JSON.stringify(snapshot), 'utf8');
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  try { await writeFile(temporary, JSON.stringify(snapshot), {encoding:'utf8',flag:'wx'}); await rename(temporary,path); }
+  finally { await unlink(temporary).catch(()=>undefined); }
   return path;
 }
 

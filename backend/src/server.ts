@@ -5,6 +5,8 @@
  * routes, and all tenant resource routers alongside the original widget routes.
  */
 import express from 'express';
+import { recoveryGuard } from './recovery-guard.js';
+import { requireAuth } from './auth/auth.middleware.js';
 import cookieParser from 'cookie-parser';
 import compression from 'compression';
 import helmet from 'helmet';
@@ -63,6 +65,7 @@ app.use(corsMiddleware);
 app.use(express.json({ limit: '64kb' }));
 app.use(cookieParser());
 app.use(requestLogging);
+app.use(recoveryGuard(requireAuth));
 
 // --- Health check ---
 app.get('/health', (_req, res) => {
@@ -87,7 +90,7 @@ app.get('/health', (_req, res) => {
       knowledge: { ready: knowledgeReady() },
     },
     environment: config.nodeEnv,
-    version: config.version,
+    version: config.version, recoveryMode: true, knowledgeProcessingPaused: true,
   });
 });
 
@@ -136,7 +139,7 @@ validateProductionConfig();
 
 // Load the persisted knowledge snapshot before accepting traffic.
 await loadOnBoot();
-startKnowledgeBuildWorker();
+// RECOVERY ARTIFACT: workers never start; no publication/retention runs.
 
 const server = app.listen(config.port, config.host, () => {
   console.info('[startup] AI Revenue Employee backend ready', {

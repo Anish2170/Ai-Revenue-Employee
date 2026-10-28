@@ -1,11 +1,11 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve, dirname, basename } from 'node:path';
 import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import { config } from '../config/index.js';
-import { resolvePublicUrl } from '../security/ssrf.js';
+import { safeFetch, parseAndValidateUrl, type SafeFetchOptions } from '../security/ssrf.js';
 
 interface CdpMessage {
   id?: number;
@@ -22,9 +22,12 @@ interface DomSnapshot {
   paragraphCount: number;
   linkCount: number;
   html: string;
+  oversized?: boolean;
 }
 
 export interface RenderedPage {
+  blockedResources?: string[];
+  incomplete?: boolean;
   url: string;
   status: number | null;
   readyState: string;
@@ -38,6 +41,7 @@ export interface RenderedPage {
 
 class CdpClient {
   private nextId = 1;
+  private closed=false;
   private pending = new Map<number, { resolve: (value: unknown) => void; reject: (err: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   private handlers = new Map<string, Set<(params: unknown) => void>>();
 
@@ -88,6 +92,7 @@ class CdpClient {
   }
 
   send<T = unknown>(method: string, params: Record<string, unknown> = {}, timeoutMs = 10_000): Promise<T> {
+    if(this.closed)return Promise.reject(new Error('Chrome DevTools connection closed.'));
     const id = this.nextId++;
     const payload = JSON.stringify({ id, method, params });
     return new Promise<T>((resolve, reject) => {
@@ -105,6 +110,7 @@ class CdpClient {
   }
 
   close(): void {
+    this.closed=true;this.rejectAll(new Error('Chrome DevTools connection closed.'));
     try {
       this.ws.close();
     } catch {
@@ -145,10 +151,16 @@ class CdpClient {
   }
 }
 
-export async function renderPage(url: string, timeoutMs: number): Promise<RenderedPage> {
+export interface RenderPolicy { origin?: string; signal?: AbortSignal; fetch?: (url: string, options?: Partial<SafeFetchOptions>) => ReturnType<typeof safeFetch>; allows?: (url: string) => boolean }
+export async function renderPage(url: string, timeoutMs: number, policy: RenderPolicy = {}): Promise<RenderedPage> {
   // Validate before Chrome starts navigation. Fetch interception below repeats
   // this check for every browser request, including redirect destinations.
-  await resolvePublicUrl(url);
+  parseAndValidateUrl(url);
+  const origin = policy.origin ?? new URL(url).origin;
+  if(new URL(url).origin !== origin) throw Error('Browser scope rejected');
+  const transport = policy.fetch ?? ((target:string, options?:Partial<SafeFetchOptions>)=>safeFetch(target,{timeoutMs,maxBytes:2*1024*1024,allowedOrigin:origin,...options}));
+  const controller=new AbortController(), signal=policy.signal?AbortSignal.any([policy.signal,controller.signal]):controller.signal;
+  signal.throwIfAborted();
   const executable = findBrowserExecutable();
   if (!executable) throw new Error('No Chrome/Edge executable found. Set CRAWL_BROWSER_PATH or CHROME_PATH.');
 
@@ -156,6 +168,9 @@ export async function renderPage(url: string, timeoutMs: number): Promise<Render
   let chrome: ChildProcess | null = null;
   let client: CdpClient | null = null;
 
+  const abort = () => { client?.close(); chrome?.kill(); };
+  signal.addEventListener('abort',abort,{once:true});
+  const deadlineTimer=setTimeout(()=>{controller.abort(Error('Browser deadline exceeded'));},timeoutMs);
   try {
     chrome = spawn(executable, [
       '--headless=new',
@@ -165,10 +180,14 @@ export async function renderPage(url: string, timeoutMs: number): Promise<Render
       '--no-default-browser-check',
       '--disable-extensions',
       '--disable-background-networking',
+      '--disable-quic', '--no-proxy-server',
+      '--host-resolver-rules=MAP * ~NOTFOUND',
+      '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
+      '--js-flags=--max-old-space-size=128',
       '--remote-debugging-port=0',
       `--user-data-dir=${userDataDir}`,
       'about:blank',
-    ], { stdio: ['ignore', 'ignore', 'pipe'] });
+    ], { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
 
     const port = await waitForDevToolsPort(userDataDir, chrome, Math.min(timeoutMs, 10_000));
     const target = await createTarget(port, Math.min(timeoutMs, 10_000));
@@ -178,6 +197,11 @@ export async function renderPage(url: string, timeoutMs: number): Promise<Render
     let lastNetworkChange = Date.now();
     let status: number | null = null;
     let responseUrl = url;
+    const blockedResources = new Set<string>();
+    let resourceCount=0,resourceBytes=0,incomplete=false;
+    const recordBlocked = (type: string) => {
+      if (['Script', 'XHR', 'Fetch'].includes(type)) { incomplete = true; blockedResources.add(type); }
+    };
 
     client.on('Network.requestWillBeSent', (params) => {
       const p = params as { requestId?: string; type?: string };
@@ -190,7 +214,11 @@ export async function renderPage(url: string, timeoutMs: number): Promise<Render
       lastNetworkChange = Date.now();
     };
     client.on('Network.loadingFinished', clearRequest);
-    client.on('Network.loadingFailed', clearRequest);
+    client.on('Network.loadingFailed', params => {
+      clearRequest(params);
+      const failure = params as { type?: string; blockedReason?: string };
+      if (failure.blockedReason) recordBlocked(failure.type ?? '');
+    });
     client.on('Network.responseReceived', (params) => {
       const p = params as { type?: string; response?: { status?: number; url?: string } };
       if (p.type === 'Document' && p.response) {
@@ -200,15 +228,27 @@ export async function renderPage(url: string, timeoutMs: number): Promise<Render
     });
 
     client.on('Fetch.requestPaused', (params) => {
-      const paused = params as { requestId?: string; request?: { url?: string } };
-      if (!paused.requestId || !paused.request?.url) return;
-      void resolvePublicUrl(paused.request.url)
-        .then(() => client?.send('Fetch.continueRequest', { requestId: paused.requestId }, timeoutMs))
-        .catch(() => client?.send('Fetch.failRequest', { requestId: paused.requestId, errorReason: 'BlockedByClient' }, timeoutMs));
+      const paused=params as {requestId:string;resourceType:string;request:{url:string;method:string}};
+      void (async()=>{
+        try{
+          if(signal.aborted || paused.request.method!=='GET' || ++resourceCount>40 || !['Document','Script','Stylesheet','XHR','Fetch'].includes(paused.resourceType))throw Error('Resource not allowed');
+          const target=parseAndValidateUrl(paused.request.url);
+          if(target.origin!==origin || policy.allows?.(target.href)===false || paused.resourceType==='Document' && target.href!==url)throw Error('Resource scope rejected');
+          const response=await transport(target.href,{signal,maxBytes:2*1024*1024});resourceBytes+=response.body.length;
+          if(new URL(response.url).origin!==origin)throw Error('Browser response scope rejected');
+          if(resourceBytes>8*1024*1024)throw Error('Browser byte budget');
+          const type=String(response.headers['content-type']??'text/plain');
+          const headers=[{name:'Content-Type',value:type},{name:'Content-Security-Policy',value:"default-src 'none'; script-src 'self' 'unsafe-inline'; connect-src 'self'; style-src 'self' 'unsafe-inline'; img-src data:; frame-src 'none'; worker-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'"}];
+          await client?.send('Fetch.fulfillRequest',{requestId:paused.requestId,responseCode:response.status,responseHeaders:headers,body:response.body.toString('base64')},timeoutMs);
+        }catch{recordBlocked(paused.resourceType);await client?.send('Fetch.failRequest',{requestId:paused.requestId,errorReason:'BlockedByClient'},timeoutMs).catch(()=>undefined);}
+      })().catch(()=>undefined);
     });
 
     await client.send('Page.enable');
     await client.send('Network.enable');
+    await client.send('Network.setBypassServiceWorker',{bypass:true});
+    await client.send('Network.setCacheDisabled',{cacheDisabled:true});
+    await client.send('Browser.setDownloadBehavior',{behavior:'deny'});
     await client.send('Fetch.enable', { patterns: [{ urlPattern: '*' }] });
     await client.send('Runtime.enable');
 
@@ -218,10 +258,11 @@ export async function renderPage(url: string, timeoutMs: number): Promise<Render
     await client.send('Page.navigate', { url }, timeoutMs);
     await domContentEvent;
     await loadEvent;
-    await waitForNetworkQuiet(activeRequests, () => lastNetworkChange, 600, Math.min(timeoutMs, 8_000));
-    const snapshot = await waitForStableDom(client, timeoutMs);
+    await waitForNetworkQuiet(activeRequests, () => lastNetworkChange, 600, Math.min(timeoutMs, 8_000),signal);
+    const snapshot = incomplete ? await readDomSnapshot(client) : await waitForStableDom(client, timeoutMs,signal);
     const finalUrl = await currentUrl(client, responseUrl);
-    await resolvePublicUrl(finalUrl);
+    signal.throwIfAborted();
+    if(new URL(finalUrl).origin!==origin || snapshot.oversized)throw Error('Browser result exceeds scope or size');
 
     return {
       url: finalUrl,
@@ -233,11 +274,14 @@ export async function renderPage(url: string, timeoutMs: number): Promise<Render
       linkCount: snapshot.linkCount,
       html: snapshot.html,
       waitStrategy,
+      incomplete,
+      blockedResources: [...blockedResources],
     };
   } finally {
-    client?.close();
+    clearTimeout(deadlineTimer);signal.removeEventListener('abort',abort);
+    controller.abort();client?.close();
     if (chrome && !chrome.killed) chrome.kill();
-    await rm(userDataDir, { recursive: true, force: true }).catch(() => undefined);
+    if(dirname(resolve(userDataDir))===resolve(tmpdir()) && basename(userDataDir).startsWith('aire-crawl-chrome-')) await rm(userDataDir, { recursive: true, force: true }).catch(() => undefined);
   }
 }
 
@@ -310,24 +354,26 @@ async function waitForNetworkQuiet(
   lastChange: () => number,
   quietMs: number,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
+    signal?.throwIfAborted();
     if (activeRequests.size === 0 && Date.now() - lastChange() >= quietMs) return;
     await delay(100);
   }
 }
 
-async function waitForStableDom(client: CdpClient, timeoutMs: number): Promise<DomSnapshot> {
+async function waitForStableDom(client: CdpClient, timeoutMs: number, signal?:AbortSignal): Promise<DomSnapshot> {
   const deadline = Date.now() + timeoutMs;
   let lastLength = -1;
   let stableCount = 0;
   let latest = await readDomSnapshot(client);
 
   while (Date.now() < deadline) {
-    latest = await readDomSnapshot(client);
+    signal?.throwIfAborted();latest = await readDomSnapshot(client);
     const length = latest.bodyText.length;
-    if (length >= 50 && length === lastLength && latest.readyState === 'complete') {
+    if (length > 0 && !/loading|please wait|preparing your/i.test(latest.bodyText) && length === lastLength && latest.readyState === 'complete') {
       stableCount += 1;
       if (stableCount >= 2) return latest;
     } else {
@@ -350,7 +396,8 @@ async function readDomSnapshot(client: CdpClient): Promise<DomSnapshot> {
       headingCount: document.querySelectorAll('h1,h2,h3,h4,h5,h6').length,
       paragraphCount: document.querySelectorAll('p').length,
       linkCount: document.querySelectorAll('a[href]').length,
-      html: document.documentElement ? document.documentElement.outerHTML : ''
+      oversized: (document.documentElement?.outerHTML.length ?? 0) > 2000000,
+      html: document.documentElement && document.documentElement.outerHTML.length <= 2000000 ? document.documentElement.outerHTML : ''
     };
   })()`;
 

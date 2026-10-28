@@ -94,6 +94,25 @@ test('popupPromptBuilder: schema is language-only and cannot decide interruption
   assert.equal(schemaText.includes('confidence'), false);
 });
 
+test('popupPromptBuilder: production schema satisfies OpenAI strict object requirements', () => {
+  const schema = popupPromptBuilder.build(buildInput()).schema;
+  function checkNode(node: Record<string, unknown>, path: string): void {
+    if (node.type === 'object') {
+      assert.equal(node.additionalProperties, false, `${path} must forbid extra properties`);
+      const properties = (node.properties ?? {}) as Record<string, Record<string, unknown>>;
+      assert.deepEqual([...(node.required as string[])].sort(), Object.keys(properties).sort(), `${path} must require every property`);
+      for (const [key, child] of Object.entries(properties)) checkNode(child, `${path}.${key}`);
+    }
+    if (node.items) checkNode(node.items as Record<string, unknown>, `${path}[]`);
+    for (const keyword of ['anyOf', 'oneOf', 'allOf']) {
+      for (const child of (node[keyword] ?? []) as Record<string, unknown>[]) checkNode(child, path);
+    }
+    for (const child of Object.values((node.$defs ?? {}) as Record<string, Record<string, unknown>>)) checkNode(child, path);
+  }
+  assert.equal(schema.type, 'object');
+  checkNode(schema, 'popup');
+});
+
 test('popupPromptBuilder: includes strategy, knowledge, and owner policy', () => {
   const prompt = popupPromptBuilder.build(buildInput());
 
@@ -125,14 +144,14 @@ test('popupPromptBuilder: missing knowledge tells model not to fabricate', () =>
   );
 
   assert.match(prompt.user, /Knowledge available: false/);
-  assert.match(prompt.user, /Do not fabricate facts/);
-  assert.match(prompt.system, /Use only the provided knowledge/);
+  assert.match(prompt.user, /Approved copy plan/);
+  assert.match(prompt.system, /Factual spans must be copied verbatim/);
 });
 
 test('popupPromptBuilder: exposes action IDs and labels but never destinations', () => {
   const prompt = popupPromptBuilder.build(buildInput());
 
-  assert.match(prompt.user, /book_demo: Book Demo/);
+  assert.equal(prompt.user.includes('book_demo: Book Demo'), false);
   assert.match(prompt.user, /pricing: Pricing/);
   assert.equal(prompt.user.includes('https://creovix.test/demo'), false);
   assert.equal(prompt.user.includes('https://creovix.test/pricing'), false);

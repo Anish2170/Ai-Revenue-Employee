@@ -10,6 +10,7 @@ import { z } from 'zod';
 
 /** A single raw event as sent by the widget. Kept loose; cleaned at ingest. */
 export const rawEventSchema = z.object({
+  id: z.string().uuid().optional(),
   type: z.string().max(40),
   zone: z.string().max(40),
   intensity: z.number().default(0.5),
@@ -18,6 +19,7 @@ export const rawEventSchema = z.object({
 });
 
 export const eventsClientStateSchema = z.object({
+  safety: z.object({ blockedReason: z.string().max(80).nullable(), version: z.number().int().nonnegative(), formStalled: z.boolean() }).optional(),
   /** Client-side popup has already been shown on this page. */
   popupShown: z.boolean().default(false),
   /** Epoch ms of the last visitor-visible popup display. */
@@ -33,6 +35,9 @@ export const eventsClientStateSchema = z.object({
 }).partial();
 
 export const eventsRequestSchema = z.object({
+  lifecycleVersion: z.literal(2).optional(),
+  pageInstanceId: z.string().uuid().optional(),
+  pageStartedAt: z.number().nonnegative().max(21_600_000).optional(),
   /** Public tenant handle (optional in dev-fallback). */
   siteId: z.string().max(100).optional(),
   visitorToken: z.string().min(1).max(1000).optional(),

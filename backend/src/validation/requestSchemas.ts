@@ -3,6 +3,7 @@
  * before any service logic runs (the `validate` middleware uses them).
  */
 import { z } from 'zod';
+import { eventsClientStateSchema } from './eventSchemas.js';
 
 export const visitorBehaviourSchema = z.object({
   page: z.string().max(2048).default('/'),
@@ -26,6 +27,10 @@ export const sessionStateSchema = z.object({
 });
 
 export const engageRequestSchema = z.object({
+  lifecycleVersion: z.literal(2).optional(),
+  pageInstanceId: z.string().uuid().optional(),
+  pageStartedAt: z.number().nonnegative().max(21_600_000).optional(),
+  clientState: eventsClientStateSchema.optional(),
   siteId: z.string().min(1).max(100),
   visitorId: z.string().min(1).max(100),
   sessionId: z.string().min(1).max(100),

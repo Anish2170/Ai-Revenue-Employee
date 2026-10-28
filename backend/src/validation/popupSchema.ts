@@ -17,6 +17,7 @@ export type PopupTone = (typeof POPUP_TONES)[number];
 
 export const popupJsonSchema = {
   type: 'object',
+  additionalProperties: false,
   properties: {
     title: {
       type: 'string',
@@ -32,7 +33,7 @@ export const popupJsonSchema = {
     },
     secondaryAction: {
       type: 'string',
-      description: 'Optional secondary Action ID chosen only from Available Actions.',
+      description: 'Optional secondary Action ID chosen only from Available Actions. Empty when no listed action fits.',
     },
     tone: {
       type: 'string',
@@ -45,5 +46,6 @@ export const popupJsonSchema = {
       description: 'Popup category matching the approved conversation strategy.',
     },
   },
-  required: ['title', 'body', 'tone', 'popupType'],
+  // Strict output requires every key; empty strings preserve optional actions.
+  required: ['title', 'body', 'primaryAction', 'secondaryAction', 'tone', 'popupType'],
 } as const;

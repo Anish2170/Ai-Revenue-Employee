@@ -11,18 +11,23 @@ function signature(payload: string): string {
   return createHmac('sha256', config.sessionSecret).update(`widget-identity.${payload}`).digest('base64url');
 }
 
-export function issuePublicWidgetIdentity(siteId: string): { identity: PublicWidgetIdentity; token: string } {
-  const identity = { siteId, visitorId: randomUUID(), sessionId: randomUUID(), exp: Date.now() + 30 * 24 * 60 * 60 * 1000 };
+export function issuePublicWidgetIdentity(siteId: string, visitorToken?: unknown): { identity: PublicWidgetIdentity; token: string } {
+  // A previous signed token proves visitor ownership only. Never reuse its session
+  // or trust a caller-supplied visitorId. Keep the original 30-day retention bound.
+  const previous = verifyPublicWidgetIdentity(visitorToken, siteId);
+  const identity = { siteId, visitorId: previous?.visitorId ?? randomUUID(), sessionId: randomUUID(), exp: previous?.exp ?? Date.now() + 30 * 24 * 60 * 60 * 1000 };
   const payload = encode(identity);
   return { identity, token: `${payload}.${signature(payload)}` };
 }
 
 export function verifyPublicWidgetIdentity(token: unknown, siteId: string): PublicWidgetIdentity | null {
   if (typeof token !== 'string') return null;
-  const [payload, supplied] = token.split('.');
-  if (!payload || !supplied) return null;
+  const [payload, supplied, extra] = token.split('.');
+  if (!payload || !supplied || extra !== undefined) return null;
   const expected = signature(payload);
-  if (supplied.length !== expected.length || !timingSafeEqual(Buffer.from(supplied), Buffer.from(expected))) return null;
+  const suppliedBytes = Buffer.from(supplied);
+  const expectedBytes = Buffer.from(expected);
+  if (suppliedBytes.length !== expectedBytes.length || !timingSafeEqual(suppliedBytes, expectedBytes)) return null;
   try {
     const identity = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as PublicWidgetIdentity;
     return identity.siteId === siteId && typeof identity.visitorId === 'string' && typeof identity.sessionId === 'string' && identity.exp > Date.now() ? identity : null;

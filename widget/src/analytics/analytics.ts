@@ -1,5 +1,5 @@
 import type { WidgetConfig } from '../types.js';
-import { resolveReturning } from '../sensors/session.js';
+import { touchWidgetSession } from '../session/identity.js';
 import type { WidgetIdentity } from '../api/client.js';
 
 type AnalyticsCategory = 'VISITOR' | 'PAGE' | 'POPUP' | 'CHAT' | 'KNOWLEDGE' | 'WIDGET';
@@ -40,7 +40,7 @@ export class AnalyticsTracker {
   private readonly visitorId: string;
   private readonly sessionId: string;
   private readonly visitorToken: string;
-  private readonly returning = resolveReturning();
+  private readonly returning: boolean;
   private readonly device = detectDevice();
   private readonly browser = detectBrowser();
   private readonly surface = detectSurface();
@@ -53,11 +53,13 @@ export class AnalyticsTracker {
   private timer: ReturnType<typeof setInterval> | null = null;
   private stopped = false;
   private sessionEnded = false;
+  private readonly restoreHistory: Array<() => void> = [];
 
-  constructor(private readonly cfg: WidgetConfig, identity: WidgetIdentity) {
+  constructor(private readonly cfg: WidgetConfig, private readonly identity: WidgetIdentity) {
     this.visitorId = identity.visitorId;
     this.sessionId = identity.sessionId;
     this.visitorToken = identity.visitorToken;
+    this.returning = identity.returning;
   }
 
   start(): void {
@@ -81,6 +83,7 @@ export class AnalyticsTracker {
     this.stopped = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    for (const restore of this.restoreHistory.splice(0)) restore();
     window.removeEventListener('pagehide', this.endSession, { capture: true } as EventListenerOptions);
     document.removeEventListener('visibilitychange', this.onVisibility, { capture: true } as EventListenerOptions);
     window.removeEventListener('popstate', this.onNavigation, { capture: true } as EventListenerOptions);
@@ -141,11 +144,17 @@ export class AnalyticsTracker {
     historyWithFlag[flag] = true;
     const original = history[method];
     const tracker = this;
-    history[method] = function patchedHistory(this: History, ...args: Parameters<History[typeof method]>) {
+    const patched = function patchedHistory(this: History, ...args: Parameters<History[typeof method]>) {
       const result = original.apply(this, args);
       tracker.onNavigation();
       return result;
     } as History[typeof method];
+    history[method] = patched;
+    this.restoreHistory.push(() => {
+      if (history[method] !== patched) return;
+      history[method] = original;
+      delete historyWithFlag[flag];
+    });
   }
 
   private flush(useBeacon = false): void {
@@ -165,6 +174,7 @@ export class AnalyticsTracker {
   }
 
   private payloadFor(events: AnalyticsEvent[]): string {
+    touchWidgetSession(this.cfg, this.identity);
     return JSON.stringify({
       siteId: this.cfg.siteId,
       visitorToken: this.visitorToken,

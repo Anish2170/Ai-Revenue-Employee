@@ -3,6 +3,7 @@ import { hasDatabase } from '../config/index.js';
 import type { AnalyticsTenant, AnalyticsContext, AnalyticsEventInput } from './analytics.service.js';
 
 export interface AiDecisionLogInput extends AnalyticsContext {
+  id?: string;
   occurredAt?: Date;
   behaviorSummary?: string | null;
   behaviorDominant?: string | null;
@@ -92,6 +93,7 @@ async function persistDecision(tenant: AnalyticsTenant, input: AiDecisionLogInpu
   const merged: AnalyticsContext = { ...input };
   await prisma.aiDecisionLog.create({
     data: {
+      ...(input.id ? { id: input.id } : {}),
       organizationId: tenant.organizationId,
       websiteId: tenant.websiteId,
       sessionId: cleanText(input.sessionId, 128) ?? 'unknown-session',
@@ -138,12 +140,16 @@ async function persistOutcome(tenant: AnalyticsTenant, context: AnalyticsContext
   const patch = outcomePatch(event.eventName);
   if (!patch) return;
 
+  // Never attach a popup outcome to the latest unrelated suppression row.
+  if (!event.decisionId) return;
   const latest = await prisma.aiDecisionLog.findFirst({
-    where: { organizationId: tenant.organizationId, websiteId: tenant.websiteId, sessionId },
-    orderBy: { occurredAt: 'desc' },
-    select: { id: true },
+    where: { id: event.decisionId, organizationId: tenant.organizationId, websiteId: tenant.websiteId, sessionId },
+    select: { id: true, finalOutcome: true },
   });
   if (!latest) return;
+  const rank: Record<string, number> = { Generated: 0, Delivered: 1, 'Not Displayed': 2, Displayed: 3, Dismissed: 4, Clicked: 5, 'Chat Opened': 6 };
+  // A delayed/retried display receipt cannot downgrade an already clicked row.
+  if ((rank[latest.finalOutcome] ?? -1) > (rank[String(patch.finalOutcome)] ?? -1)) delete patch.finalOutcome;
 
   await prisma.aiDecisionLog.update({
     where: { id: latest.id },
@@ -156,6 +162,8 @@ async function persistOutcome(tenant: AnalyticsTenant, context: AnalyticsContext
 }
 
 function outcomePatch(eventName: string): Record<string, boolean | string> | null {
+  if (eventName === 'popup_delivered') return { finalOutcome: 'Delivered' };
+  if (eventName === 'popup_not_displayed') return { finalOutcome: 'Not Displayed' };
   if (eventName === 'popup_displayed') return { popupDisplayed: true, finalOutcome: 'Displayed' };
   if (eventName === 'popup_clicked') return { popupClicked: true, finalOutcome: 'Clicked' };
   if (eventName === 'popup_dismissed') return { popupDismissed: true, finalOutcome: 'Dismissed' };

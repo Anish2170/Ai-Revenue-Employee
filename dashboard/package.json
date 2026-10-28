@@ -4,10 +4,10 @@
     "private":  true,
     "scripts":  {
                     "dev":  "next dev --webpack",
-                    "build":  "next build",
+                    "build":  "next build --webpack",
     "start":  "next start",
     "lint":  "eslint",
-    "test": "node --experimental-strip-types --test src/lib/api.test.ts src/lib/knowledge-progress.test.ts",
+    "test": "node --experimental-strip-types --test src/lib/api.test.ts src/lib/knowledge-progress.test.ts src/lib/knowledge-state.test.ts",
     "typecheck":  "tsc -p tsconfig.json --noEmit"
                 },
     "dependencies":  {

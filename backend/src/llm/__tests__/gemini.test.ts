@@ -3,6 +3,7 @@ import test, { type TestContext } from 'node:test';
 import { config } from '../../config/index.js';
 import { createGeminiProvider } from '../provider/gemini.js';
 import type { StreamRequest } from '../provider/types.js';
+import { popupJsonSchema } from '../../validation/popupSchema.js';
 
 const structured = {
   system: 'Answer only from business knowledge.', user: 'Supplied business facts',
@@ -23,6 +24,22 @@ function setup(t: TestContext) {
   geminiConfig.apiKey = 'unit-test-google-key';
   t.after(() => { geminiConfig.apiKey = original; });
 }
+
+test('Gemini converts the production popup schema and preserves empty optional actions', async (t) => {
+  setup(t);
+  const popup = { title: 'Need help?', body: 'Our team can help.', primaryAction: '', secondaryAction: '', tone: 'helpful', popupType: 'educational' };
+  t.mock.method(globalThis, 'fetch', async (...[_url, init]: Parameters<typeof fetch>) => {
+    const schema = JSON.parse(String(init?.body)).generationConfig.responseSchema;
+    assert.equal(schema.type, 'OBJECT');
+    assert.deepEqual(schema.required, popupJsonSchema.required);
+    assert.deepEqual(Object.keys(schema.properties), Object.keys(popupJsonSchema.properties));
+    assert.equal(schema.properties.primaryAction.type, 'STRING');
+    assert.equal(schema.properties.secondaryAction.type, 'STRING');
+    assert.equal(Object.hasOwn(schema, 'additionalProperties'), false, 'Gemini adapter only sends supported schema fields');
+    return Response.json({ candidates: [{ content: { role: 'model', parts: [{ text: JSON.stringify(popup) }] } }] });
+  });
+  assert.deepEqual(await createGeminiProvider('gemini-3.5-flash-lite').generateStructured({ ...structured, schema: popupJsonSchema }), popup);
+});
 
 async function collect(source: AsyncIterable<string>): Promise<string> {
   let output = '';

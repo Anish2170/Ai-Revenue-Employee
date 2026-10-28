@@ -629,6 +629,7 @@ enum BuildStatus {
 
 /// Append-only EVENT LOG of every KB build attempt (incl. failures). `currentPhase` powers live progress.
 model KnowledgeBuild {
+  configuration  Json? // immutable bounded budget + optional owner-reviewed scope contract
   id             String      @id @default(uuid()) @db.Uuid
   websiteId      String      @db.Uuid
   organizationId String      @db.Uuid

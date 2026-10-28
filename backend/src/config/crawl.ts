@@ -10,7 +10,7 @@ export const TRACKING_PARAM_DENYLIST = new Set([
   'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
   'fbclid', 'gclid', 'gclsrc', 'dclid', 'msclkid',
   'mc_cid', 'mc_eid',
-  'ref', 'source', 'referrer',
+  // Generic ref/source keys can encode business variants; preserve them.
   '_ga', '_gl', '_hsenc', '_hsmi', '__hstc', '__hsfp',
   'yclid', 'twclid', 'ttclid', 'li_fat_id',
   'spm', 'scm',

@@ -6,7 +6,7 @@ import { el } from '../utils/dom.js';
 import type { BusinessActionConfig, EngageDecision } from '../types.js';
 
 export interface PopupHandle {
-  remove: () => void;
+  remove: (immediate?: boolean) => void;
 }
 
 export interface PopupCallbacks {
@@ -55,7 +55,8 @@ export function renderPopup(
   layer.appendChild(card);
 
   let removed = false;
-  const remove = () => {
+  const remove = (immediate = false) => {
+    if (immediate) { removed = true; card.remove(); return; }
     if (removed) return;
     removed = true;
     card.classList.add('aire-leaving');
@@ -67,12 +68,12 @@ export function renderPopup(
     remove();
   });
   primaryCta?.addEventListener('click', () => {
+    remove(true);
     cb.onCta(decision.action);
-    remove();
   });
   secondaryCta?.addEventListener('click', () => {
+    remove(true);
     cb.onCta(decision.secondaryActionConfig);
-    remove();
   });
 
   return { remove };

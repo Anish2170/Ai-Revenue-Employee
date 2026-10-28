@@ -1,5 +1,7 @@
 export interface BuildProgressState {
+  configuration?: { approval?: { inventory: Array<{ disposition: string; url: string }> } } | null;
   status: string;
+  coverage?: { completeWithinScope?: boolean; discovered?: number; attempted?: number; fetched?: number; useful?:number; rendered?:number; duplicates?:number; skipped?:number; failed?: number; limits?: string[]; scope?:string; missingCategories?:string[] } | null;
   phase?: string;
   progress?: Record<string, number | null | undefined>;
   attempt?: number;
@@ -35,8 +37,14 @@ export function describeBuildProgress(build: BuildProgressState) {
     case 'indexing': percent = 94; title = 'Indexing knowledge'; description = 'Building the search index for your website content.'; break;
     case 'saving': percent = 98; title = 'Saving your knowledge base'; description = 'Saving the knowledge snapshot and publishing it for your assistant.'; break;
   }
-  if (build.status === 'SUCCESS') { percent = 100; title = 'Knowledge base ready'; description = `${p.pages ?? 0} pages and ${p.chunks ?? 0} chunks are ready for your assistant.`; }
+  if (build.status === 'SUCCESS') { percent = 100; title = 'Knowledge base ready'; description = `${p.pages ?? 0} pages and ${p.chunks ?? 0} chunks published for this crawl scope. This is not a claim that the entire website was understood.`; }
   if (build.status === 'RETRY_WAIT') { percent = 0; title = 'Waiting to retry'; description = `Attempt ${build.attempt ?? 1} of ${build.maxAttempts ?? 3} was interrupted. The build will retry automatically.`; }
   if (build.status === 'FAILED' || build.status === 'CANCELLED') { percent = Math.min(percent, 99); title = build.status === 'FAILED' ? 'Build failed' : 'Build cancelled'; description = 'The build did not complete. You can start another build below.'; }
+  const approval = build.configuration?.approval;
+  if(build.phase==='partial' || build.coverage?.completeWithinScope===false){percent=Math.min(percent,99);title='Build incomplete';description='Some discovered sources or crawl limits need review. Any previous usable knowledge has been retained.';}
+  if (build.status === 'SUCCESS' && approval) {
+    percent = 100; title = 'Approved scope ready';
+    description = `${approval.inventory.filter(entry => entry.disposition === 'required').length} required included sources processed. ${approval.inventory.filter(entry => entry.disposition === 'owner_excluded').length} optional pages explicitly excluded. Build work is complete within the approved scope; this is not whole-website coverage.`;
+  }
   return { percent, title, description, step };
 }

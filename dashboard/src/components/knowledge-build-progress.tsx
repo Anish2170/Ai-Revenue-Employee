@@ -23,7 +23,7 @@ export function KnowledgeBuildProgress({ build, connectionLost = false }: { buil
           <h3 className="font-semibold">{view.title}</h3>
           <p role="status" className="mt-1 text-sm text-[var(--text-muted)]">{view.description}</p>
         </div>
-        <span className="text-2xl font-semibold tabular-nums text-[var(--accent)]">{view.percent}%</span>
+        <span className="text-2xl font-semibold tabular-nums text-[var(--accent)]">{view.percent}%<span className="block text-xs font-normal">build work</span></span>
       </div>
       <div role="progressbar" aria-label="Knowledge build progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={view.percent} aria-valuetext={`${view.percent}% estimated. ${view.description}`}
         className="mt-4 h-3 overflow-hidden rounded-full bg-[var(--border)]">
@@ -35,7 +35,7 @@ export function KnowledgeBuildProgress({ build, connectionLost = false }: { buil
       </div>
       <ol aria-label="Build stages" className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         {BUILD_STEPS.map((step, index) => {
-          const done = build.status === 'SUCCESS' || index < view.step;
+          const done = build.status === 'SUCCESS' && (build.coverage?.completeWithinScope !== false || Boolean(build.configuration?.approval)) || index < view.step;
           const current = index === view.step && active && build.status !== 'RETRY_WAIT';
           return <li key={step.phase} aria-current={current ? 'step' : undefined} className={`flex items-center gap-2 text-xs ${done || current ? 'text-[var(--accent)]' : 'text-[var(--text-muted)]'}`}>
             <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full border ${current ? 'border-[var(--accent)] font-bold' : 'border-[var(--border)]'}`}>{done ? '✓' : index + 1}</span>
@@ -43,6 +43,13 @@ export function KnowledgeBuildProgress({ build, connectionLost = false }: { buil
           </li>;
         })}
       </ol>
+      {build.coverage && <div className="mt-4 space-y-1 text-xs text-[var(--text-muted)]">
+        <p>{build.coverage.discovered ?? 0} discovered · {build.coverage.attempted ?? 0} attempted · {build.coverage.useful ?? 0} useful · {build.coverage.failed ?? 0} failed · {build.coverage.skipped ?? 0} excluded/gone</p>
+        <p>{build.coverage.rendered ?? 0} browser renders · {build.coverage.duplicates ?? 0} duplicate pages</p>
+        <p>Coverage: {build.status === 'SUCCESS' && build.configuration?.approval ? 'all required included sources processed; approved exclusions remain outside knowledge' : build.coverage.completeWithinScope ? 'discovered public HTML scope processed' : 'partial — not published as complete knowledge'}.</p>
+        {Boolean(build.coverage.limits?.length) && <p>Limits/restrictions: {build.coverage.limits!.join(', ')}</p>}
+        {Boolean(build.coverage.missingCategories?.length) && <p>Categories with missing or omitted sources: {build.coverage.missingCategories!.join(', ')}</p>}
+      </div>}
       {connectionLost && <p className="mt-4 text-sm text-[var(--warning)]">Connection interrupted. Showing the last confirmed progress; the build may still be running.</p>}
     </div>
   );
