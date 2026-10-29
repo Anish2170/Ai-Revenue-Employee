@@ -11,6 +11,8 @@
  * Every exit path returns a safe {@link EngageDecision}; the widget can never be
  * broken by this endpoint. A dev-only decision trace is attached when enabled.
  */
+import { getEnabledBusinessActions } from '../business-actions/action.service.js';
+import { validateLegacyPopupSafety } from '../intelligence/legacyPopupSafety.js';
 import { config } from '../config/index.js';
 import { getBusinessContext } from '../context/provider.js';
 import { buildBehaviourQuery } from '../context/retriever.js';
@@ -27,8 +29,11 @@ import type {
 } from '../types.js';
 import type { BusinessInstructions } from '../context/types.js';
 import type { BusinessActionConfig } from '../business-actions/action.types.js';
+import { abortable, checkCancelled } from '../llm/cancellation.js';
 
 export interface EngageOptions {
+  signal?: AbortSignal;
+  deadlineAt?: number;
   tenant?: { websiteId: string; instructions: BusinessInstructions; businessActions?: BusinessActionConfig[] };
 }
 
@@ -65,19 +70,29 @@ export async function evaluateEngagement(
 
   try {
     // 2–4. Retrieve RAG context for this visitor → summary → prompt → LLM.
-    const context = await getBusinessContext({ query: buildBehaviourQuery(behaviour), behaviour, tenant: opts.tenant });
+    const context = await abortable(getBusinessContext({ query: buildBehaviourQuery(behaviour), behaviour, tenant: opts.tenant, signal: opts.signal, deadlineAt: opts.deadlineAt,purpose:'popup',page:{path:behaviour.page} }), opts.signal);
+    context.websiteId = opts.tenant?.websiteId;
+    checkCancelled(opts.signal);
+    if (context.retrieval?.conflicts.length) return withTrace({showPopup:false}, {
+      ruleMatched:gate.ruleMatched,llmCalled:false,reason:'Conflicting knowledge; engagement withheld.',processingTimeMs:elapsed(),
+    });
     const summary = summarize(behaviour);
     const prompt = builder.build(context, behaviour, summary, gate);
 
     const raw = await generateDecision({
+      signal: opts.signal,
+      deadlineAt: opts.deadlineAt,
       system: prompt.system,
       user: prompt.user,
       schema: prompt.schema,
     });
 
+    if (opts.tenant) context.businessActions = await abortable(getEnabledBusinessActions(opts.tenant.websiteId, { skipSeed: true }), opts.signal);
+    checkCancelled(opts.signal);
     // 5. Validate + sanitize (CTA url allowlisted; never navigate to current page).
     const allowedUrls = (context.siteLinks ?? []).map((l) => l.url);
-    const validated = validateEngageDecision(raw, allowedUrls, behaviour.page, context.businessActions);
+    const structured = validateEngageDecision(raw, allowedUrls, behaviour.page, context.businessActions);
+    const validated = validateLegacyPopupSafety(raw, structured, context, behaviour);
 
     // 6. Post-LLM gate — confidence floor + dedup.
     const final = finalizeDecision(validated, session);

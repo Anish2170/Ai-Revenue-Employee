@@ -20,6 +20,7 @@ const instructions: BusinessInstructions = {
 };
 
 const enabledActions: BusinessActionConfig[] = [
+  { actionId: 'learn_more', label: 'Learn More', destinationType: 'URL', destination: 'https://creovix.test/services', enabled: true },
   { actionId: 'pricing', label: 'View Pricing', destinationType: 'URL', destination: 'https://creovix.test/pricing', enabled: true },
   { actionId: 'book_demo', label: 'Book Demo', destinationType: 'URL', destination: 'https://creovix.test/demo', enabled: true },
   { actionId: 'schedule_site_visit', label: 'Schedule Site Visit', destinationType: 'URL', destination: 'https://creovix.test/site-visit', enabled: true },
@@ -90,6 +91,50 @@ test('responseValidation: applies enabled fallback action when LLM omits a requi
   assert.deepEqual(result.reasons, []);
 });
 
+for (const [name, actions] of [
+  ['missing', {}],
+  ['null', { primaryAction: null, secondaryAction: null }],
+  ['empty', { primaryAction: '', secondaryAction: '' }],
+] as const) {
+  test(`responseValidation: ${name} actions preserve conversion fallback and suppression rules`, () => {
+    const { strategy } = fixture();
+    const input = { llm: llm(validRaw(actions)), strategy, knowledge: knowledge(), instructions };
+    const result = validatePopupResponse({ ...input, enabledActions });
+    assert.equal(result.ok, true);
+    assert.equal(result.popup.primaryAction, 'pricing');
+    assert.equal(Object.hasOwn(result.popup, 'secondaryAction'), false);
+    assert.equal(result.actionDebug.fallbackApplied, true);
+    const withoutAction = validatePopupResponse({ ...input, enabledActions: [] });
+    assert.equal(withoutAction.ok, false);
+    assert.deepEqual(withoutAction.reasons, ['missing_business_action']);
+  });
+
+  test(`responseValidation: ${name} actions remain absent in educational and trust popup contracts`, () => {
+    const { strategy } = fixture();
+    for (const [kind, popupType] of [['Educate', 'educational'], ['BuildTrust', 'trust']] as const) {
+      const result = validatePopupResponse({
+        llm: llm(validRaw({ ...actions, popupType })),
+        strategy: { ...strategy, kind }, knowledge: knowledge(), instructions, enabledActions: [],
+      });
+      assert.equal(result.ok, true);
+      assert.equal(Object.hasOwn(result.popup, 'primaryAction'), false);
+      assert.equal(Object.hasOwn(result.popup, 'secondaryAction'), false);
+      assert.equal(result.actionDebug.fallbackApplied, false);
+    }
+  });
+}
+
+test('responseValidation: invalid action values and extra fields still fail schema validation', () => {
+  const { strategy } = fixture();
+  for (const overrides of [
+    { primaryAction: 42 }, { secondaryAction: {} }, { primaryAction: 'x'.repeat(65) }, { extra: 'unexpected' },
+  ]) {
+    const result = validatePopupResponse({ llm: llm(validRaw(overrides)), strategy, knowledge: knowledge(), instructions, enabledActions });
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.reasons, ['schema_violation']);
+  }
+});
+
 test('responseValidation: rejects conversion popups when no valid business action exists', () => {
   const { strategy } = fixture();
   const result = validatePopupResponse({ llm: llm(validRaw()), strategy, knowledge: knowledge(), instructions, enabledActions: [] });
@@ -105,7 +150,7 @@ test('responseValidation: rejects conversion popups when no valid business actio
 test('responseValidation: accepts only enabled configured action IDs', () => {
   const { strategy } = fixture();
   const result = validatePopupResponse({
-    llm: llm(validRaw({ primaryAction: 'pricing', secondaryAction: 'book_demo' })),
+    llm: llm(validRaw({ primaryAction: 'pricing', secondaryAction: 'learn_more' })),
     strategy,
     knowledge: knowledge(),
     instructions,
@@ -114,10 +159,10 @@ test('responseValidation: accepts only enabled configured action IDs', () => {
 
   assert.equal(result.ok, true);
   assert.equal(result.popup.primaryAction, 'pricing');
-  assert.equal(result.popup.secondaryAction, 'book_demo');
+  assert.equal(result.popup.secondaryAction, 'learn_more');
 });
 
-test('responseValidation: accepts custom action IDs when configured and enabled', () => {
+test('responseValidation: rejects enabled custom appointment IDs for pricing strategy', () => {
   const { strategy } = fixture();
   const result = validatePopupResponse({
     llm: llm(validRaw({ primaryAction: 'schedule_site_visit' })),
@@ -127,8 +172,8 @@ test('responseValidation: accepts custom action IDs when configured and enabled'
     enabledActions,
   });
 
-  assert.equal(result.ok, true);
-  assert.equal(result.popup.primaryAction, 'schedule_site_visit');
+  assert.equal(result.ok, false);
+  assert.ok(result.reasons.includes('cta_not_allowed'));
 });
 
 test('responseValidation: rejects missing or disabled action IDs', () => {
@@ -214,6 +259,7 @@ test('responseValidation: accepts a lead strategy with a configured lead action'
   const leadStrategy: ConversationStrategy = {
     ...strategy,
     kind: 'GenerateLead',
+    business: { ...strategy.business, objectiveKey: 'collect_lead' },
     tone: 'helpful',
     ctaIntent: 'capture_lead',
   };
@@ -344,6 +390,7 @@ test('responseValidation: accepts configured aliases for contact and support act
   const leadStrategy: ConversationStrategy = {
     ...strategy,
     kind: 'GenerateLead',
+    business: { ...strategy.business, objectiveKey: 'collect_lead' },
     tone: 'helpful',
     ctaIntent: 'capture_lead',
   };

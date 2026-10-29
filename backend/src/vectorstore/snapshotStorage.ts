@@ -1,11 +1,12 @@
 import { DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, unlink, writeFile, stat } from 'node:fs/promises';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config, hasDatabase } from '../config/index.js';
 import type { KnowledgeSnapshot } from '../context/types.js';
 import { prisma } from '../db/prisma.js';
+import { validateKnowledgeSnapshot } from '../knowledge/publication.js';
 import { loadSnapshotFile, websiteSnapshotPath } from './persistence.js';
 
 const backendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -19,7 +20,8 @@ export function snapshotSha256(bytes: Uint8Array): string { return createHash('s
 export function r2SnapshotKey(organizationId: string, websiteId: string, snapshotId: string): string {
   return `knowledge/v1/org/${organizationId}/website/${websiteId}/snapshot/${snapshotId}.json`;
 }
-export function serializeSnapshot(snapshot: KnowledgeSnapshot): Buffer { return Buffer.from(JSON.stringify(snapshot), 'utf8'); }
+export const MAX_SNAPSHOT_BYTES=32*1024*1024;
+export function serializeSnapshot(snapshot: KnowledgeSnapshot): Buffer { const bytes=Buffer.from(JSON.stringify(snapshot),'utf8');if(bytes.length>MAX_SNAPSHOT_BYTES)throw new SnapshotStorageError('Snapshot size limit exceeded.');return bytes; }
 
 export interface SnapshotStorage {
   readonly provider: StorageProviderName;
@@ -39,11 +41,12 @@ class LocalSnapshotStorage implements SnapshotStorage {
   async write(key: string, bytes: Buffer): Promise<StoredArtifact> {
     const path = this.pathFor(key);
     await mkdir(dirname(path), { recursive: true });
-    await writeFile(path, bytes);
+    // Immutable per-version keys; active READY bytes are never overwritten.
+    await writeFile(path, bytes, { flag: 'wx' });
     return { provider: this.provider, storageKey: key, contentSha256: snapshotSha256(bytes), contentBytes: bytes.byteLength, etag: null };
   }
   async read(key: string) {
-    try { return { bytes: await readFile(this.pathFor(key)), etag: null }; } catch { return null; }
+    try { if((await stat(this.pathFor(key))).size>MAX_SNAPSHOT_BYTES)throw new SnapshotStorageError('Snapshot size limit exceeded.');return { bytes: await readFile(this.pathFor(key)), etag: null }; } catch { return null; }
   }
 }
 
@@ -57,7 +60,7 @@ class R2SnapshotStorage implements SnapshotStorage {
   async write(key: string, bytes: Buffer): Promise<StoredArtifact> {
     const exists = await this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: key })).then(() => true).catch(() => false);
     if (exists) throw new SnapshotStorageError('Refusing to overwrite immutable knowledge snapshot object.');
-    const result = await this.client.send(new PutObjectCommand({ Bucket: this.bucket, Key: key, Body: bytes, ContentType: 'application/json', ChecksumSHA256: Buffer.from(snapshotSha256(bytes), 'hex').toString('base64') })) as { ETag?: string };
+    const result = await this.client.send(new PutObjectCommand({ Bucket: this.bucket, Key: key, Body: bytes, IfNoneMatch: '*', ContentType: 'application/json', ChecksumSHA256: Buffer.from(snapshotSha256(bytes), 'hex').toString('base64') })) as { ETag?: string };
     const verified = await this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: key })) as { ContentLength?: number; ETag?: string };
     if (verified.ContentLength !== bytes.byteLength) throw new SnapshotStorageError('R2 upload verification failed: byte size mismatch.');
     const downloaded = await this.read(key);
@@ -66,9 +69,14 @@ class R2SnapshotStorage implements SnapshotStorage {
   }
   async read(key: string) {
     try {
-      const response = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: key })) as { Body?: { transformToByteArray?: () => Promise<Uint8Array> }; ETag?: string };
+      const response = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: key })) as { ContentLength?:number;Body?: { transformToByteArray?: () => Promise<Uint8Array>;[Symbol.asyncIterator]?:()=>AsyncIterator<Uint8Array> }; ETag?: string };
       if (!response.Body?.transformToByteArray) throw new SnapshotStorageError('R2 object response has no readable body.');
-      return { bytes: Buffer.from(await response.Body.transformToByteArray()), etag: response.ETag ?? null };
+      if((response.ContentLength??0)>MAX_SNAPSHOT_BYTES)throw new SnapshotStorageError('Snapshot size limit exceeded.');
+      let bytes:Buffer;
+      if(response.Body[Symbol.asyncIterator]){const parts:Buffer[]=[];let size=0;for await(const part of response.Body as AsyncIterable<Uint8Array>){size+=part.length;if(size>MAX_SNAPSHOT_BYTES)throw new SnapshotStorageError('Snapshot size limit exceeded.');parts.push(Buffer.from(part));}bytes=Buffer.concat(parts);}
+      else bytes=Buffer.from(await response.Body.transformToByteArray());
+      if(bytes.length>MAX_SNAPSHOT_BYTES)throw new SnapshotStorageError('Snapshot size limit exceeded.');
+      return {bytes,etag:response.ETag??null};
     } catch (error) {
       const code = (error as { name?: string }).name;
       if (code === 'NoSuchKey' || code === 'NotFound') return null;
@@ -108,17 +116,14 @@ export async function loadSnapshotArtifact(input: { provider: StorageProviderNam
 }
 
 /** Load the currently queryable artifact. Legacy local files remain readable when metadata is absent. */
-export async function loadLatestWebsiteSnapshot(websiteId: string): Promise<{ snapshot: KnowledgeSnapshot | null; snapshotId: string | null; storageKey: string | null }> {
-  const row = hasDatabase ? await prisma.knowledgeSnapshot.findFirst({ where: { websiteId, status: 'READY' }, orderBy: { createdAt: 'desc' } }).catch(() => null) : null;
-  if (!row) return { snapshot: await loadSnapshotFile(websiteSnapshotPath(websiteId)), snapshotId: null, storageKey: null };
-  try {
-    const snapshot = await loadSnapshotArtifact({ provider: row.storageProvider, storageKey: row.storageKey, contentSha256: row.contentSha256 });
-    if (!snapshot) console.error(`[knowledge-storage] READY snapshot artifact missing for website ${websiteId}.`);
-    return { snapshot, snapshotId: row.id, storageKey: row.storageKey };
-  } catch (error) {
-    console.error(`[knowledge-storage] READY snapshot artifact rejected for website ${websiteId}:`, error instanceof Error ? error.message : 'unknown');
-    return { snapshot: null, snapshotId: row.id, storageKey: row.storageKey };
-  }
+export async function loadLatestWebsiteSnapshot(websiteId:string):Promise<{snapshot:KnowledgeSnapshot|null;snapshotId:string|null;storageKey:string|null}>{
+ const row=hasDatabase?await prisma.knowledgeSnapshot.findFirst({where:{websiteId,status:'READY'},orderBy:{createdAt:'desc'}}):null;
+ if(!row){const snapshot=await loadSnapshotFile(websiteSnapshotPath(websiteId));if(snapshot){try{validateKnowledgeSnapshot(snapshot);}catch{return {snapshot:null,snapshotId:null,storageKey:null};}}return {snapshot,snapshotId:null,storageKey:null};}
+ const read=async(candidate:typeof row)=>{try{const snapshot=await loadSnapshotArtifact({provider:candidate.storageProvider,storageKey:candidate.storageKey,contentSha256:candidate.contentSha256});if(snapshot){validateKnowledgeSnapshot(snapshot);if(snapshot.publication&&snapshot.publication.id!==candidate.id)throw Error('Snapshot identity mismatch');if(snapshot.scopeApproval&&(snapshot.scopeApproval.websiteId!==candidate.websiteId||snapshot.scopeApproval.organizationId!==candidate.organizationId))throw Error('Snapshot tenant mismatch');return {snapshot,snapshotId:candidate.id,storageKey:candidate.storageKey};}}catch{}return null;};
+ const latest=await read(row);if(latest)return latest;
+ const older=await prisma.knowledgeSnapshot.findMany({where:{websiteId,status:'READY',id:{not:row.id}},orderBy:{createdAt:'desc'},take:3});
+ for(const candidate of older){const valid=await read(candidate);if(valid)return valid;}
+ return {snapshot:null,snapshotId:row.id,storageKey:row.storageKey};
 }
 
 export { LocalSnapshotStorage, R2SnapshotStorage };

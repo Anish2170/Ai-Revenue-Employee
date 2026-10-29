@@ -66,6 +66,7 @@ function badMomentPenalty(behaviour: BehaviourState): number {
  */
 function suppressionReason(input: BrainInput): string | null {
   const { behaviour, confidence, context, objective, intent, now } = input;
+  if (context.interruptionBlockedReason) return context.interruptionBlockedReason;
 
   if (badMomentPenalty(behaviour) === 1) return 'distracted';
   if (context.dismissed) return 'recently_dismissed';
@@ -78,6 +79,7 @@ function suppressionReason(input: BrainInput): string | null {
   }
 
   // Cooldown.
+  if ((context.cooldownRemainingMs ?? 0) > 0) return 'cooldown';
   if (context.lastInterruptionTs !== null) {
     const elapsed = now - context.lastInterruptionTs;
     if (elapsed < SALES_POLICY.cooldownMs) return 'cooldown';

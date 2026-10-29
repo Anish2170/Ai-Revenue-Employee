@@ -21,6 +21,10 @@ const SURFACE_SET = new Set<string>(SURFACES);
 /** Max plausible session length (ms) — events beyond this are clock errors. */
 const MAX_TS = 6 * 60 * 60 * 1000; // 6h
 
+export function semanticEventKey(event: SemanticEvent): string {
+  return event.id ? `id:${event.id}` : JSON.stringify([event.type, event.zone, event.intensity, event.ts, event.surface]);
+}
+
 /**
  * Validate and clean a raw event batch.
  *
@@ -29,10 +33,11 @@ const MAX_TS = 6 * 60 * 60 * 1000; // 6h
  *                  checks that span batches — e.g. form_stall needs a prior
  *                  form_start). Pass an empty set for a fresh session.
  */
-export function validateEvents(raw: unknown[], priorSeen: Set<string> = new Set()): QualityResult {
+export function validateEvents(raw: unknown[], priorSeen: Set<string> = new Set(), context: { minTs?: number; seenEventKeys?: Set<string> } = {}): QualityResult {
   const clean: SemanticEvent[] = [];
   const dropped: string[] = [];
   const seen = new Set(priorSeen);
+  const eventKeys = new Set(context.seenEventKeys);
 
   // First pass: shape + range validation.
   const candidates: SemanticEvent[] = [];
@@ -56,10 +61,15 @@ export function validateEvents(raw: unknown[], priorSeen: Set<string> = new Set(
       dropped.push('bad_ts');
       continue;
     }
+    if (ts < (context.minTs ?? 0)) { dropped.push('late_event'); continue; }
+    if (e.id !== undefined && (typeof e.id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(e.id))) {
+      dropped.push('bad_event_id'); continue;
+    }
     const intensityRaw = typeof e.intensity === 'number' && Number.isFinite(e.intensity) ? e.intensity : 0.5;
     const intensity = Math.max(0, Math.min(1, intensityRaw)); // clamp
 
     candidates.push({
+      ...(typeof e.id === 'string' ? { id: e.id } : {}),
       type: e.type as SemanticEvent['type'],
       zone: e.zone as SemanticEvent['zone'],
       intensity,
@@ -73,6 +83,8 @@ export function validateEvents(raw: unknown[], priorSeen: Set<string> = new Set(
 
   // Second pass: sequence sanity (impossible orderings, §10.4).
   for (const e of candidates) {
+    const key = semanticEventKey(e);
+    if (eventKeys.has(key)) { dropped.push('duplicate_event'); continue; }
     if (e.type === 'form_stall' && !seen.has('form_start')) {
       dropped.push('form_stall_without_start');
       continue;
@@ -82,6 +94,7 @@ export function validateEvents(raw: unknown[], priorSeen: Set<string> = new Set(
       continue;
     }
     seen.add(e.type);
+    eventKeys.add(key);
     clean.push(e);
   }
 

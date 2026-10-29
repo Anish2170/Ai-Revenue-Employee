@@ -19,11 +19,12 @@ import { perceive } from '../intelligence/perceive.js';
 import { objectiveFromInstructions, DEFAULT_OBJECTIVE } from '../intelligence/businessObjective.js';
 import { config } from '../config/index.js';
 import { SALES_POLICY } from '../intelligence/config/salesPolicy.config.js';
-import { cooldownRemainingMs, popupTrace } from '../intelligence/popupTrace.js';
+import { sessionCooldownRemainingMs, popupTrace } from '../intelligence/popupTrace.js';
 import type { BusinessInstructions } from '../context/types.js';
 import type { BusinessObjective, SalesDecision, Surface } from '../intelligence/types.js';
 
 export interface IngestClientState {
+  safety?: { blockedReason: string | null; version: number; formStalled: boolean };
   dismissed?: boolean;
 }
 
@@ -73,7 +74,9 @@ export function ingestEvents(opts: IngestOptions): IngestResult {
   }
 
   // 1. Event-quality validation (cross-batch sequence checks use seenKinds).
-  const { clean, dropped } = validateEvents(opts.rawEvents, session.seenKinds);
+  const { clean, dropped } = validateEvents(opts.rawEvents, session.seenKinds, {
+    minTs: session.latestEventTs ?? 0, seenEventKeys: session.seenEventKeys,
+  });
   popupTrace(opts.sessionId, '1_event_quality', {
     passed: clean.length > 0,
     acceptedThisBatch: clean.length,
@@ -83,6 +86,9 @@ export function ingestEvents(opts: IngestOptions): IngestResult {
 
   // 2. Attach accepted events to the server-side session.
   sessionStore.appendEvents(opts.sessionId, clean);
+
+  // An empty, duplicate or obsolete batch must not re-trigger old evidence.
+  if (clean.length === 0) return { status: 'ignored', accepted: 0, dropped };
 
   // 3. Bot filtering over the full accumulated session (+ client signals).
   const verdict = classifyBot(session.events, opts.botSignal ?? {});
@@ -98,6 +104,7 @@ export function ingestEvents(opts: IngestOptions): IngestResult {
 
   // 4. Perceive (shadow). `now` = latest event ts (the session's own clock).
   const now = session.events[session.events.length - 1].ts;
+  const remainingCooldown = sessionCooldownRemainingMs(session, now, SALES_POLICY.cooldownMs);
   const objective = opts.instructions ? objectiveFromInstructions(opts.instructions) : DEFAULT_OBJECTIVE;
 
   popupTrace(opts.sessionId, '0_session_context', {
@@ -106,7 +113,7 @@ export function ingestEvents(opts: IngestOptions): IngestResult {
     priorInterruptions: session.priorInterruptions,
     lastInterruptionTs: session.lastInterruptionTs,
     dismissed: session.dismissed,
-    cooldownRemainingMs: cooldownRemainingMs(session.lastInterruptionTs, now, SALES_POLICY.cooldownMs),
+    cooldownRemainingMs: remainingCooldown,
   });
 
   const decision = perceive({
@@ -115,8 +122,10 @@ export function ingestEvents(opts: IngestOptions): IngestResult {
     context: {
       priorInterruptions: session.priorInterruptions,
       lastInterruptionTs: session.lastInterruptionTs,
+      cooldownRemainingMs: remainingCooldown,
       dismissed: session.dismissed,
       returning: session.returning,
+      interruptionBlockedReason: session.conversionCompleted ? 'converted' : opts.clientState?.safety?.blockedReason ?? undefined,
     },
     objective,
     surface: opts.surface,
@@ -140,7 +149,7 @@ export function ingestEvents(opts: IngestOptions): IngestResult {
     threshold: trace.policy.threshold,
     scorePassed: trace.policy.speakScore >= trace.policy.threshold,
     suppressionReason: decision.suppressedBy,
-    cooldownRemainingMs: cooldownRemainingMs(session.lastInterruptionTs, now, SALES_POLICY.cooldownMs),
+    cooldownRemainingMs: remainingCooldown,
     because: decision.because,
   });
   popupTrace(opts.sessionId, '5_popup_eligibility', {

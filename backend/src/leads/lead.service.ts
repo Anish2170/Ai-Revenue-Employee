@@ -1,4 +1,5 @@
 import { prisma } from '../db/prisma.js';
+import { localizedFollowUpOffer } from '../language/chatLanguage.js';
 import type { ChatMessage } from '../validation/requestSchemas.js';
 import type { VisitorBehaviour } from '../types.js';
 
@@ -218,6 +219,11 @@ function inferIntent(messages: ChatMessage[], behaviour?: VisitorBehaviour): Int
     shouldCapture: !hasStrongRejection && label !== 'LOW',
   };
 }
+/** Reuse the existing intent assessment; persistence availability is a separate
+ * server capability and does not by itself authorize a sales interruption. */
+export function shouldOfferContactCapture(messages: ChatMessage[], behaviour?: VisitorBehaviour): boolean {
+  return inferIntent(messages, behaviour).shouldCapture;
+}
 function formatLeadReasons(reasons: string[]): string {
   if (reasons.length === 0) return 'Visitor shared validated contact details after a contextually qualified conversation.';
   return reasons.map((reason) => `- ${reason}`).join('\n');
@@ -229,24 +235,20 @@ function scoreLabel(score: number): 'LOW' | 'MEDIUM' | 'HIGH' {
 }
 
 function suggestedNextAction(intent: string, hasPhone: boolean): string {
-  if (/demo|consultation/i.test(intent)) return hasPhone ? 'Call to schedule the consultation.' : 'Email available consultation times.';
-  if (/enterprise|company scale/i.test(intent)) return 'Send an implementation guide and ask about team size, timeline, and rollout needs.';
-  if (/pricing/i.test(intent)) return 'Send a pricing comparison with the most relevant plan recommendation.';
-  if (/comparison/i.test(intent)) return 'Send a vendor comparison summary tailored to the visitor\'s priorities.';
-  if (/purchase timeline/i.test(intent)) return 'Follow up with decision support material and next-step options for the timeline.';
-  if (/implementation/i.test(intent)) return 'Send an implementation checklist and offer a setup call.';
-  return 'Follow up with the promised helpful resource.';
+  if (/demo|consultation/i.test(intent)) return 'Confirm the requested service and appointment availability before arranging follow-up.';
+  if (/pricing/i.test(intent)) return 'Discuss verified pricing and qualifications relevant to the visitor.';
+  return 'Review the visitor request and verified business information before following up; no resource or delivery was promised.';
 }
 
-export async function captureLeadFromConversation(input: LeadCaptureInput): Promise<void> {
+export async function captureLeadFromConversation(input: LeadCaptureInput): Promise<boolean> {
   const contact = extractContact(input.messages);
   const intent = inferIntent(input.messages, input.behaviour);
-  const assistantOfferedValue = /send|email|call|book|schedule|quote|proposal|comparison|guide|checklist|summary|times/i.test(input.assistantReply);
+  const assistantOfferedValue = /send|email|call|book|schedule|quote|proposal|comparison|guide|checklist|summary|times/i.test(input.assistantReply) || localizedFollowUpOffer(input.assistantReply);
   const invalidAttempts = invalidContactAttempts(input.messages);
 
-  if (!contact.email && !contact.phone) return;
-  if (invalidAttempts >= 3) return;
-  if (!intent.shouldCapture && !assistantOfferedValue) return;
+  if (!contact.email && !contact.phone) return false;
+  if (invalidAttempts >= 3) return false;
+  if (!intent.shouldCapture && !assistantOfferedValue) return false;
 
   let score = intent.score + 25;
   if (contact.email) score += 12;
@@ -294,6 +296,7 @@ export async function captureLeadFromConversation(input: LeadCaptureInput): Prom
       capturedAt: new Date(),
     },
   });
+  return true;
 }
 
 export async function listLeads(organizationId: string, websiteId?: string) {

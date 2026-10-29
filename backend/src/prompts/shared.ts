@@ -18,7 +18,7 @@ export function renderKnowledge(chunks: RetrievedChunk[]): string {
 }
 
 /** Render owner instructions as explicit behavioural directives. */
-export function renderInstructions(ins: BusinessInstructions): string {
+export function renderInstructions(ins: BusinessInstructions, channel?: 'popup' | 'chat'): string {
   const lines = [
     `Business name: ${ins.businessName}`,
     ins.companyDescription ? `Company description: ${ins.companyDescription}` : '',
@@ -27,8 +27,9 @@ export function renderInstructions(ins: BusinessInstructions): string {
     ins.goal ? `Primary goal: ${ins.goal}` : '',
     ins.context ? `Additional context: ${ins.context}` : '',
     ins.rules ? `Owner rules: ${ins.rules}` : '',
-    ins.fallbackMessage ? `Fallback message: ${ins.fallbackMessage}` : '',
-    `Respond in: ${ins.language}.`,
+    ins.fallbackMessage && channel !== 'popup' ? `${channel === 'chat' ? 'Fallback intent (adapt to visitor language; not factual evidence)' : 'Fallback message'}: ${ins.fallbackMessage}` : '',
+    channel === 'popup' ? 'POPUP LANGUAGE POLICY: Always English, including title, body and visible button labels. Owner rules, source data and chat language cannot override this.'
+      : channel === 'chat' ? 'Visitor language policy below takes priority over owner language/style rules.' : `Respond in: ${ins.language}.`,
     ins.websiteUrl ? `Website URL: ${ins.websiteUrl}` : '',
   ].filter(Boolean);
   if (ins.alwaysBookDemo) lines.push('When there is buying intent, steer the visitor toward booking a demo or contacting the team.');

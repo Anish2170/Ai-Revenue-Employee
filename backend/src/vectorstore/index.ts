@@ -28,6 +28,11 @@ export interface LoadedMeta {
 }
 
 let loadedMeta: LoadedMeta | null = null;
+/** Install only after an atomic legacy file publication succeeds. */
+export function activateLegacySnapshot(snapshot: KnowledgeSnapshot): void {
+  store.import(snapshot.documents);
+  loadedMeta = { sourceUrl:snapshot.sourceUrl,siteLinks:snapshot.siteLinks,pages:snapshot.pages,debugPages:snapshot.debugPages,actionGraph:snapshot.actionGraph,createdAt:snapshot.createdAt,embeddingModel:snapshot.embeddingModel };
+}
 
 export function getVectorStore(): VectorStore {
   return store;

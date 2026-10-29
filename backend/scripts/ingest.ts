@@ -16,7 +16,8 @@ async function main() {
   try {
     const result = await ingest(url);
     console.log('\n✓ Ingestion complete:');
-    console.log(JSON.stringify(result, null, 2));
+    const { snapshot: _internal, ...summary } = result;
+    console.log(JSON.stringify(summary, null, 2));
     process.exit(0);
   } catch (err) {
     console.error('\n✗ Ingestion failed:', err instanceof Error ? err.message : err);

@@ -73,6 +73,14 @@ test('whitespace-only required API keys are rejected', () => {
   assert.match(result.message ?? '', /GEMINI_API_KEY/);
 });
 
+test('production requires an embedding model independently of configured generation models', () => {
+  for (const embeddingModel of ['', '   ']) {
+    const result = validate({ EMBEDDING_MODEL: embeddingModel });
+    assert.equal(result.ok, false);
+    assert.match(result.message ?? '', /EMBEDDING_MODEL/);
+  }
+});
+
 test('unrelated required-variable and origin validation remains intact', () => {
   const missingDatabase = validate({ DATABASE_URL: '' });
   assert.equal(missingDatabase.ok, false);

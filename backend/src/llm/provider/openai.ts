@@ -1,6 +1,7 @@
 import { config } from '../../config/index.js';
 import type { EmbedTaskType, LLMProvider, StreamRequest, StructuredRequest } from './types.js';
 import { LLMTimeoutError } from './errors.js';
+import { abortable, checkCancelled, deadlineScope } from '../cancellation.js';
 
 const endpoint = 'https://api.openai.com/v1/chat/completions';
 
@@ -9,12 +10,13 @@ function messages(req: StreamRequest | StructuredRequest) {
   return [{ role: 'system', content: req.system }, ...conversation];
 }
 
-async function request(body: Record<string, unknown>): Promise<Response> {
+async function request(body: Record<string, unknown>, signal?: AbortSignal): Promise<Response> {
+  checkCancelled(signal);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), config.llm.connectionTimeoutMs);
   try {
     const response = await fetch(endpoint, {
-      method: 'POST', signal: controller.signal,
+      method: 'POST', signal: signal ? AbortSignal.any([controller.signal, signal]) : controller.signal,
       headers: { Authorization: `Bearer ${config.llm.primary.apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
@@ -26,6 +28,7 @@ async function request(body: Record<string, unknown>): Promise<Response> {
     clearTimeout(timer);
     return response;
   } catch (error) {
+    checkCancelled(signal);
     if (controller.signal.aborted) throw new LLMTimeoutError('OpenAI connection timed out.');
     throw error;
   } finally { clearTimeout(timer); }
@@ -41,14 +44,19 @@ export function createOpenAIProvider(): LLMProvider {
   return {
     id: `openai:${model}`,
     async generateStructured(req) {
-      const response = await request({ model, ...reasoningOptions, messages: messages(req), temperature: 0.4, response_format: { type: 'json_schema', json_schema: { name: 'result', strict: true, schema: req.schema } } });
-      const body = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
-      const text = body.choices?.[0]?.message?.content;
-      if (!text) throw new Error('OpenAI returned an empty structured response');
-      return JSON.parse(text);
+      const timeout = Math.min(config.llm.responseTimeoutMs, req.deadlineAt === undefined ? Infinity : req.deadlineAt - Date.now());
+      const scope = deadlineScope(req.signal, timeout);
+      try {
+        const response = await abortable(request({ model, ...reasoningOptions, messages: messages(req), temperature: 0.4, response_format: { type: 'json_schema', json_schema: { name: 'result', strict: true, schema: req.schema } } }, scope.signal), scope.signal);
+        const body = await abortable(response.json(), scope.signal) as { choices?: Array<{ message?: { content?: string } }> };
+        checkCancelled(scope.signal);
+        const text = body.choices?.[0]?.message?.content;
+        if (!text) throw new Error('OpenAI returned an empty structured response');
+        return JSON.parse(text);
+      } finally { scope.close(); }
     },
     async *streamText(req) {
-      const response = await request({ model, ...reasoningOptions, messages: messages(req), temperature: 0.6, stream: true });
+      const response = await request({ model, ...reasoningOptions, messages: messages(req), temperature: 0.6, stream: true }, req.signal);
       const reader = response.body?.getReader();
       if (!reader) throw new Error('OpenAI returned no stream body');
       const decoder = new TextDecoder(); let buffer = '';
@@ -58,10 +66,10 @@ export function createOpenAIProvider(): LLMProvider {
           const remaining = deadline - Date.now();
           if (remaining <= 0) throw new LLMTimeoutError('OpenAI response timed out.');
           const timeout = Math.min(remaining, config.llm.streamInactivityTimeoutMs);
-          const next = await new Promise<{ done: boolean; value?: Uint8Array }>((resolve, reject) => {
+          const next = await abortable(new Promise<{ done: boolean; value?: Uint8Array }>((resolve, reject) => {
             const timer = setTimeout(() => reject(new LLMTimeoutError(timeout === remaining ? 'OpenAI response timed out.' : 'OpenAI stream became inactive.')), timeout);
             reader.read().then(value => { clearTimeout(timer); resolve(value); }, error => { clearTimeout(timer); reject(error); });
-          });
+          }), req.signal);
           if (next.done) return;
           buffer += decoder.decode(next.value, { stream: true });
           const lines = buffer.split('\n'); buffer = lines.pop() ?? '';

@@ -13,12 +13,15 @@ import { streamChatReply } from '../services/chatService.js';
 import { config, hasDatabase } from '../config/index.js';
 import { resolveTenant, TenantNotFoundError, TenantDisabledError } from '../tenant/tenant.resolver.js';
 import { appendAssistantMessage, prepareConversationForChat, scheduleConversationMaintenance, type PromptConversationContext } from '../conversations/conversation.service.js';
-import { captureLeadFromConversation } from '../leads/lead.service.js';
+import type { BusinessActionConfig } from '../business-actions/action.types.js';
+import { getEnabledBusinessActions } from '../business-actions/action.service.js';
+import { captureLeadFromConversation, shouldOfferContactCapture } from '../leads/lead.service.js';
 import { resolveTenantFromRequestOrigin } from '../tenant/originSnapshotTenant.resolver.js';
 import type { BusinessInstructions } from '../context/types.js';
 import type { ChatRequest } from '../validation/requestSchemas.js';
 import { logger } from '../logging/logger.js';
 import { verifyPublicWidgetRequestIdentity } from '../widget/publicIdentity.js';
+import { chatFailureMessage, resolveChatLanguage } from '../language/chatLanguage.js';
 
 export const chatRouter = Router();
 
@@ -47,6 +50,7 @@ chatRouter.post('/chat', chatLimiter, validateBody(chatRequestSchema), async (re
   chatTrace(requestId, 'entered /chat');
 
   const body = req.body as ChatRequest;
+  let language = resolveChatLanguage(body.messages);
   if (!verifyPublicWidgetRequestIdentity(body)) {
     return res.status(403).json({ error: 'INVALID_WIDGET_SESSION' });
   }
@@ -65,8 +69,8 @@ chatRouter.post('/chat', chatLimiter, validateBody(chatRequestSchema), async (re
   };
 
   if (!llmAvailable()) {
-    chatTrace(requestId, 'LLM unavailable', { reason: 'missing GEMINI_API_KEY' });
-    send({ error: "Sorry, I'm having trouble responding right now. Please try again in a moment." });
+    chatTrace(requestId, 'LLM unavailable', { reason: 'no supported generation provider configured' });
+    send({ error: chatFailureMessage(language) });
     return done();
   }
 
@@ -80,7 +84,7 @@ chatRouter.post('/chat', chatLimiter, validateBody(chatRequestSchema), async (re
       databaseEnabled: hasDatabase,
     });
 
-    let tenant: { organizationId?: string; websiteId: string; instructions: BusinessInstructions } | undefined;
+    let tenant: { organizationId?: string; websiteId: string; instructions: BusinessInstructions; businessActions?: BusinessActionConfig[] } | undefined;
     let tenantSource: 'database' | 'origin_snapshot' | 'none' = 'none';
 
     if (hasDatabase) {
@@ -171,26 +175,35 @@ chatRouter.post('/chat', chatLimiter, validateBody(chatRequestSchema), async (re
       });
       conversation = prepared.conversation;
       promptContext = prepared.prompt;
+      language = resolveChatLanguage(promptContext.recentMessages, tenant.instructions.language, promptContext.language);
       send({ conversation: { id: conversation.id, title: conversation.title, titleStatus: conversation.titleStatus } });
     }
 
-    const stream = await streamChatReply({ messages: promptContext?.recentMessages ?? messages, behaviour, tenant, conversation: promptContext, debug: { requestId } });
+    const refreshActions = async () => tenantSource === 'database' ? getEnabledBusinessActions(tenant!.websiteId, { skipSeed: true }) : [];
+    try { tenant.businessActions = await refreshActions(); } catch { tenant.businessActions = []; }
+    const cancellation = new AbortController();
+    const cancel = () => { if (!res.writableEnded) cancellation.abort(new Error('Chat client disconnected')); };
+    res.on('close', cancel);
+    const stream = await streamChatReply({ messages: promptContext?.recentMessages ?? messages, behaviour, tenant, conversation: promptContext,
+      leadCaptureAvailable: Boolean(conversation && tenant.organizationId), allowLeadInvitation: shouldOfferContactCapture(promptContext?.recentMessages ?? messages, behaviour), refreshActions, signal: cancellation.signal, debug: { requestId } });
     let finalResponse = '';
     let source: { title: string; url: string } | null = null;
+    const sources:Array<{title:string;url:string}>=[];
     for await (const event of stream) {
       if (event.type === 'token') {
         finalResponse += event.text;
         send({ token: event.text });
       } else if (event.type === 'source') {
-        source = event.source;
+        source ??= event.source;
+        if(sources.length<5&&!sources.some(item=>item.url===event.source.url))sources.push(event.source);
         send({ source: event.source });
       }
     }
 
     if (conversation) {
-      await appendAssistantMessage({ conversationId: conversation.id, content: finalResponse, source });
+      await appendAssistantMessage({ conversationId: conversation.id, content: finalResponse, source,sources });
       if (tenant?.organizationId) {
-        await captureLeadFromConversation({
+        const leadSaved = await captureLeadFromConversation({
           tenant: { organizationId: tenant.organizationId, websiteId: tenant.websiteId },
           conversationId: conversation.id,
           visitorId,
@@ -199,13 +212,14 @@ chatRouter.post('/chat', chatLimiter, validateBody(chatRequestSchema), async (re
           assistantReply: finalResponse,
           behaviour,
         });
+        send({ leadSaved });
       }
       scheduleConversationMaintenance(conversation.id);
     }
 
     chatTrace(requestId, 'response_validation', {
-      status: 'not_applicable',
-      reason: 'streaming chat route has no response validator; popup response validation is separate',
+      status: 'evidence_and_capability_gated',
+      reason: 'draft buffered and checked before any token release; popup validation remains separate',
     });
     chatTrace(requestId, 'final response', {
       chars: finalResponse.length,
@@ -214,7 +228,7 @@ chatRouter.post('/chat', chatLimiter, validateBody(chatRequestSchema), async (re
     done();
   } catch (err) {
     logger.error(`[chat:${requestId}] stream error`, { error: err });
-    send({ error: "Sorry, I'm having trouble responding right now. Please try again in a moment." });
+    send({ error: chatFailureMessage(language) });
     done();
   }
 });

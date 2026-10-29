@@ -28,3 +28,12 @@ test('mergeBusinessActions skips disabled actions', () => {
 
   assert.deepEqual(merged.map((item) => item.actionId), ['support']);
 });
+
+test('explicitly disabled configured action cannot silently return through discovery', () => {
+  const disabled = action('pricing', 'https://example.test/pricing', false);
+  const discovered = action('pricing', 'https://example.test/pricing', true);
+  assert.deepEqual(mergeBusinessActions([disabled], [discovered]), []);
+});
+test('untouched empty disabled starters still allow discovered actions', () => {
+  assert.equal(mergeBusinessActions([action('pricing', '', false)], [action('pricing')]).length, 1);
+});

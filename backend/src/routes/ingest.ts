@@ -10,6 +10,7 @@ import { validateBody } from '../middleware/validate.js';
 import { clientIp, hours, rateLimit } from '../middleware/rateLimit.js';
 import { ingest } from '../services/ingestService.js';
 import { resolvePublicUrl } from '../security/ssrf.js';
+import { config, hasDatabase } from '../config/index.js';
 
 const ingestRequestSchema = z.object({
   url: z.string().url(),
@@ -23,10 +24,13 @@ const publicIngestLimiter = rateLimit([
 
 ingestRouter.post('/ingest', publicIngestLimiter, validateBody(ingestRequestSchema), async (req, res, next) => {
   try {
+    // Production/multi-tenant builds must use the authenticated durable queue.
+    if(config.isProduction || hasDatabase)return res.status(404).json({error:'Use the authenticated website knowledge build endpoint.'});
     const { url } = req.body as { url: string };
     await resolvePublicUrl(url);
     const result = await ingest(url);
-    res.json({ ok: true, ...result });
+    const {snapshot:_internal,...summary}=result;
+    res.json({ ok: true, ...summary });
   } catch (err) {
     next(err);
   }

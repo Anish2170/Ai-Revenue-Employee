@@ -1,92 +1,81 @@
-/**
- * Chunker. Splits each crawled page's clean text into ~500–800 word chunks that
- * respect natural boundaries (blank-line separated blocks / paragraphs), and
- * attaches rich metadata to every chunk.
- *
- * Each chunk also gets its own content hash (future chunk-level incremental
- * diffing) and a `language` tag (from business instructions for now — no
- * per-chunk detection yet).
- */
+/** Source/section-bound chunks; short factual sections are not trailing junk. */
 import { createHash } from 'node:crypto';
-import type { Chunk, CrawledPage } from '../context/types.js';
-
-const TARGET_WORDS = 650; // middle of the 500–800 band
-const MAX_WORDS = 800;
-const MIN_WORDS = 40; // drop trivially small trailing fragments
-
-function sha256(input: string): string {
-  return createHash('sha256').update(input).digest('hex');
-}
-
-function wordCount(s: string): number {
-  return s.split(/\s+/).filter(Boolean).length;
-}
-
-function slugify(s: string): string {
-  return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60);
-}
-
-/** Heuristic: a short, title-like line with no terminal punctuation is a heading. */
-function isHeading(block: string): boolean {
-  const t = block.trim();
-  if (t.length === 0 || t.length > 80) return false;
-  return wordCount(t) <= 10 && !/[.!?:]$/.test(t);
-}
-
-/**
- * Split one page into chunks. Accumulates blocks until ~TARGET_WORDS, breaking
- * at block boundaries; never exceeds MAX_WORDS. Tracks the most recent heading
- * so each chunk carries its section/heading.
- */
-function chunkPage(page: CrawledPage, language: string): Chunk[] {
-  const blocks = page.text.split(/\n{2,}/).map((b) => b.trim()).filter(Boolean);
-  const chunks: Chunk[] = [];
-
-  let buffer: string[] = [];
-  let bufferWords = 0;
-  let currentHeading = page.title;
-  let index = 0;
-
-  const flush = () => {
-    const content = buffer.join('\n\n').trim();
-    buffer = [];
-    bufferWords = 0;
-    if (wordCount(content) < MIN_WORDS) return;
-    const heading = currentHeading || page.title;
-    chunks.push({
-      id: `${page.path}#${index}`,
-      page: page.path,
-      url: page.url,
-      pageType: page.pageType,
-      section: slugify(heading) || `section-${index}`,
-      heading,
-      title: page.title,
-      language,
-      hash: sha256(content),
-      lastCrawled: page.lastCrawled,
-      content,
-    });
-    index += 1;
-  };
-
-  for (const block of blocks) {
-    if (isHeading(block)) {
-      // A new heading starts a new section; flush if we already have content.
-      if (bufferWords >= TARGET_WORDS) flush();
-      currentHeading = block;
+import type { Chunk, CrawledPage, ContentSection } from '../context/types.js';
+import { usefulBusinessText } from '../crawler/contentPolicy.js';
+const TARGET_WORDS = 650, MAX_WORDS = 800, MAX_UNIT_CHARS = 8000;
+const hash = (text: string) => createHash('sha256').update(text).digest('hex');
+const words = (text: string) => text.split(/\s+/u).filter(Boolean).length;
+function legacySections(page: CrawledPage): ContentSection[] {
+    const sections: ContentSection[] = [];
+    let heading = page.title, parts: string[] = [];
+    const flush = () => { if (parts.length)
+        sections.push({ heading, text: parts.join('\n\n') }); parts = []; };
+    for (const block of page.text.split(/\n{2,}/u).map(s => s.trim()).filter(Boolean)) {
+        if (block.length <= 80 && words(block) <= 10 && !/[.!?:$₹€£¥]/u.test(block) && /\p{L}/u.test(block) && !usefulBusinessText(block)) {
+            flush();
+            heading = block;
+        }
+        else
+            parts.push(block);
     }
-    const w = wordCount(block);
-    if (bufferWords + w > MAX_WORDS && bufferWords > 0) flush();
-    buffer.push(block);
-    bufferWords += w;
-    if (bufferWords >= TARGET_WORDS) flush();
-  }
-  flush();
-
-  return chunks;
+    flush();
+    return sections;
 }
-
-/** Chunk all crawled pages. */
-export function chunkPages(pages: CrawledPage[], language: string): Chunk[] {
-  return pages.flatMap((page) => chunkPage(page, language));
+export interface ChunkingResult {
+    chunks: Chunk[];
+    omitted: Array<{
+        url: string;
+        heading: string;
+        reason: 'low_value' | 'oversized_semantic_unit';
+    }>;
 }
+export function buildChunks(pages: CrawledPage[], language: string): ChunkingResult {
+    const chunks: Chunk[] = [], omitted: ChunkingResult['omitted'] = [];
+    for (const page of pages) {
+        for (const section of page.sections?.length ? page.sections : legacySections(page)) {
+            if (!usefulBusinessText(section.text)) {
+                omitted.push({ url: page.url, heading: section.heading, reason: 'low_value' });
+                continue;
+            }
+            const sensitive = /[$₹€£¥]\s*\d|refund|billed|subject to|conditions|not offered|only .*customers|excluding|including/i.test(section.text);
+            if (sensitive && (words(section.text) > MAX_WORDS || section.text.length > MAX_UNIT_CHARS)) {
+                omitted.push({ url: page.url, heading: section.heading, reason: 'oversized_semantic_unit' });
+                continue;
+            }
+            const paragraphs = section.text.split(/\n{2,}/u).map(s => s.trim()).filter(Boolean);
+            let parts: string[] = [], size = 0;
+            const flush = () => {
+                if (!parts.length)
+                    return;
+                const content = parts.join('\n\n');
+                parts = [];
+                size = 0;
+                const identity = hash(`${page.url}\n${section.heading}\n${content}`).slice(0, 16);
+                const chunk: Chunk = { id: `${new URL(page.url).pathname}${new URL(page.url).search}#${identity}`, page: page.path, url: page.url, pageType: page.pageType, section: section.heading.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '-').slice(0, 80), heading: section.heading || page.title, title: page.title, language, hash: hash(content), lastCrawled: page.lastCrawled, content };
+                const repeated = chunk.heading === 'Public contact and hours' ? chunks.find(other => other.heading === chunk.heading && other.hash === chunk.hash) : undefined;
+                if (repeated) {
+                    (repeated.sourceAliases ??= []).push({ url: chunk.url, title: chunk.title, heading: chunk.heading });
+                }
+                else if (!chunks.some(other => other.id === chunk.id))
+                    chunks.push(chunk);
+            };
+            for (const paragraph of paragraphs) {
+                if (paragraph.length > MAX_UNIT_CHARS) {
+                    flush();
+                    omitted.push({ url: page.url, heading: section.heading, reason: 'oversized_semantic_unit' });
+                    continue;
+                }
+                // Never slice an individual sentence/qualification. Larger paragraphs
+                // may exceed the word target but remain under a hard whole-unit cap.
+                if ((size + words(paragraph) > MAX_WORDS || parts.join("\n\n").length + paragraph.length > MAX_UNIT_CHARS) && parts.length)
+                    flush();
+                parts.push(paragraph);
+                size += words(paragraph);
+                // Sensitive sections stay atomic, including short trailing qualifications.
+            }
+            flush();
+        }
+    }
+    return { chunks, omitted };
+}
+export function chunkPages(pages: CrawledPage[], language: string): Chunk[] { return buildChunks(pages, language).chunks; }

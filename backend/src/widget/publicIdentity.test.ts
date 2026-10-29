@@ -3,7 +3,7 @@ import { createHmac } from 'node:crypto';
 import test from 'node:test';
 import { config } from '../config/index.js';
 import { chatRequestSchema, engageRequestSchema } from '../validation/requestSchemas.js';
-import { issuePublicWidgetIdentity, verifyPublicWidgetRequestIdentity, type PublicWidgetIdentity } from './publicIdentity.js';
+import { issuePublicWidgetIdentity, verifyPublicWidgetIdentity, verifyPublicWidgetRequestIdentity, type PublicWidgetIdentity } from './publicIdentity.js';
 
 function signedToken(identity: PublicWidgetIdentity): string {
   const payload = Buffer.from(JSON.stringify(identity)).toString('base64url');
@@ -61,3 +61,28 @@ test('wrong-visitor widget token is rejected', () => {
 test('wrong-session widget token is rejected', () => {
   assert.equal(verifyPublicWidgetRequestIdentity({ ...validIdentityRequest, sessionId: 'session-other' }), null);
 });
+
+test('resuming a signed visitor issues a fresh session without extending visitor retention', () => {
+  const resumed = issuePublicWidgetIdentity('site-valid', issued.token);
+  assert.equal(resumed.identity.visitorId, issued.identity.visitorId);
+  assert.notEqual(resumed.identity.sessionId, issued.identity.sessionId);
+  assert.equal(resumed.identity.exp, issued.identity.exp);
+  assert.deepEqual(verifyPublicWidgetIdentity(resumed.token, 'site-valid'), resumed.identity);
+  assert.equal(verifyPublicWidgetRequestIdentity({ ...validIdentityRequest, sessionId: resumed.identity.sessionId }), null);
+  assert.equal(verifyPublicWidgetRequestIdentity({ ...validIdentityRequest, visitorToken: resumed.token }), null);
+});
+
+for (const [name, token] of [
+  ['tampered', `${issued.token}corrupt`],
+  ['wrong site', issuePublicWidgetIdentity('site-other').token],
+  ['expired', signedToken({ ...issued.identity, exp: Date.now() - 1 })],
+  ['malformed Unicode signature', `${issued.token.split('.')[0]}.${'é'.repeat(43)}`],
+  ['extra token segment', `${issued.token}.extra`],
+] as const) {
+  test(`visitor resume rejects ${name} proof and issues an unrelated identity`, () => {
+    const fresh = issuePublicWidgetIdentity('site-valid', token);
+    assert.notEqual(fresh.identity.visitorId, issued.identity.visitorId);
+    assert.notEqual(fresh.identity.sessionId, issued.identity.sessionId);
+    assert.deepEqual(verifyPublicWidgetIdentity(fresh.token, 'site-valid'), fresh.identity);
+  });
+}

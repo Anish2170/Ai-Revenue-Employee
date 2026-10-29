@@ -18,3 +18,15 @@ export function cooldownRemainingMs(lastInterruptionTs: number | null, now: numb
   return Math.max(0, cooldownMs - Math.max(0, now - lastInterruptionTs));
 }
 
+/** Both clocks must allow a new interruption; visitor timestamps cannot shorten it. */
+export function sessionCooldownRemainingMs(
+  session: { lastInterruptionTs: number | null; lastInterruptionAt: number | null } | undefined,
+  now: number, cooldownMs: number, wallNow = Date.now(),
+): number {
+  if (!session) return 0;
+  return Math.max(
+    cooldownRemainingMs(session.lastInterruptionTs, now, cooldownMs),
+    cooldownRemainingMs(session.lastInterruptionAt, wallNow, cooldownMs),
+  );
+}
+

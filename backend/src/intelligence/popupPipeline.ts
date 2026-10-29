@@ -2,9 +2,8 @@
  * Sprint 4.2 popup pipeline.
  *
  * Composes the completed 4.2 layers after the Sprint 4.1 Sales Brain has
- * already made its deterministic decision. This function is intentionally not
- * wired to /events yet; it gives the backend a safe "mouth" without changing
- * visitor-visible behavior until the product surface opts in later.
+ * already made its deterministic decision. The /events route delivers only
+ * validated candidates through the separate claim/display lifecycle.
  */
 import type { BusinessInstructions } from '../context/types.js';
 import type { BusinessActionConfig } from '../business-actions/action.types.js';
@@ -16,6 +15,7 @@ import { generatePopupLanguage, type PopupLlmOptions, type PopupLlmResult } from
 import { validatePopupResponse, type PopupResponseValidationResult } from './responseValidation.js';
 import { validatePreLlmSafety, type PreLlmSafetyResult } from './safetyLayer.js';
 import type { BusinessObjective, SalesDecision } from './types.js';
+import { abortable, checkCancelled, deadlineScope } from '../llm/cancellation.js';
 
 export type PopupPipelineStage =
   | 'strategy'
@@ -27,6 +27,9 @@ export type PopupPipelineStage =
   | 'popup_generation';
 
 export interface GenerateSafePopupInput {
+  /** A genuine paused form gets support, never a competing sales CTA. */
+  formAssistance?: boolean;
+  pagePath?: string;
   decision: SalesDecision;
   objective: BusinessObjective;
   business: {
@@ -38,6 +41,9 @@ export interface GenerateSafePopupInput {
 }
 
 export interface GenerateSafePopupOptions {
+  refreshActions?: () => Promise<BusinessActionConfig[]>;
+  signal?: AbortSignal;
+  timeoutMs?: number;
   knowledge?: StrategyKnowledgeOptions;
   llm?: PopupLlmOptions;
 }
@@ -54,6 +60,7 @@ export interface PopupPipelineTrace {
 export type SafePopupPipelineResult =
   | {
       ok: true;
+      actions: BusinessActionConfig[];
       popup: PopupGenerationResult & { ok: true };
       trace: PopupPipelineTrace;
     }
@@ -69,6 +76,15 @@ export async function generateSafePopup(
   input: GenerateSafePopupInput,
   opts: GenerateSafePopupOptions = {},
 ): Promise<SafePopupPipelineResult> {
+  const timeoutMs = opts.timeoutMs ?? 12_000;
+  const deadlineAt = Date.now() + timeoutMs;
+  const scope = deadlineScope(opts.signal, timeoutMs);
+  try { return await abortable(runPipeline(input, { ...opts, signal: scope.signal }, deadlineAt), scope.signal); }
+  finally { scope.close(); }
+}
+
+async function runPipeline(input: GenerateSafePopupInput, opts: GenerateSafePopupOptions, deadlineAt: number): Promise<SafePopupPipelineResult> {
+  checkCancelled(opts.signal);
   const stages: PopupPipelineStage[] = [];
   const trace: PopupPipelineTrace = {
     stages,
@@ -80,12 +96,13 @@ export async function generateSafePopup(
   };
 
   stages.push('strategy');
-  const strategy = buildConversationStrategy({ decision: input.decision, objective: input.objective });
+  const strategy = buildConversationStrategy({ decision: input.decision, objective: input.objective, formAssistance: input.formAssistance });
   trace.strategy = strategy;
   if (!strategy) return stop('strategy', 'missing_strategy', trace, null);
 
   stages.push('knowledge');
-  const knowledge = await retrieveStrategyKnowledge(strategy, { ...opts.knowledge, websiteId: opts.knowledge?.websiteId ?? input.websiteId });
+  const knowledge = await abortable(retrieveStrategyKnowledge(strategy, { pagePath:input.pagePath,sourceUrl:input.instructions.websiteUrl,...opts.knowledge, signal: opts.signal, deadlineAt, websiteId: opts.knowledge?.websiteId ?? input.websiteId }), opts.signal);
+  checkCancelled(opts.signal);
   trace.knowledge = knowledge;
 
   stages.push('safety');
@@ -100,15 +117,20 @@ export async function generateSafePopup(
     strategy,
     knowledge,
     businessActions: input.businessActions ?? [],
+    websiteId: input.websiteId,
+    groundingContext: { pagePath: input.pagePath },
   });
 
   stages.push('llm');
-  const llm = await generatePopupLanguage({ prompt, safety }, opts.llm);
+  const llm = await generatePopupLanguage({ prompt, safety }, { ...opts.llm, signal: opts.signal, deadlineAt });
+  checkCancelled(opts.signal);
   trace.llm = llm;
   if (!llm.ok) return stop('llm', llm.reason, trace, null);
 
   stages.push('response_validation');
-  const responseValidation = validatePopupResponse({ llm, strategy, knowledge, instructions: input.instructions, enabledActions: input.businessActions ?? [] });
+  const actions = opts.refreshActions ? await abortable(opts.refreshActions(), opts.signal) : input.businessActions ?? [];
+  checkCancelled(opts.signal);
+  const responseValidation = validatePopupResponse({ llm, strategy, knowledge, instructions: input.instructions, enabledActions: actions, websiteId: input.websiteId, groundingContext: { pagePath: input.pagePath } });
   trace.responseValidation = responseValidation;
   if (!responseValidation.ok) {
     const popup = generatePopup({ validation: responseValidation, strategy });
@@ -119,7 +141,7 @@ export async function generateSafePopup(
   const popup = generatePopup({ validation: responseValidation, strategy });
   if (!popup.ok) return stop('popup_generation', popup.reason, trace, popup);
 
-  return { ok: true, popup, trace };
+  return { ok: true, popup, trace, actions };
 }
 
 function stop(

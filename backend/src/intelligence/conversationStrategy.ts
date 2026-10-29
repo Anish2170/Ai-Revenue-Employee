@@ -72,6 +72,7 @@ export interface ConversationStrategy {
 }
 
 export interface ConversationStrategyInput {
+  formAssistance?: boolean;
   /** Must already be produced by the deterministic Sales Brain. */
   decision: SalesDecision;
   objective: BusinessObjective;
@@ -86,7 +87,7 @@ export function buildConversationStrategy(input: ConversationStrategyInput): Con
   if (decision.action !== 'speak' || decision.suppressedBy !== null) return null;
 
   const { behaviour, intent, confidence } = decision.trace;
-  const kind = chooseStrategy(decision, objective);
+  const kind = input.formAssistance ? 'Support' : chooseStrategy(decision, objective);
   const tone = toneFor(kind);
   const ctaIntent = ctaFor(kind, objective);
 

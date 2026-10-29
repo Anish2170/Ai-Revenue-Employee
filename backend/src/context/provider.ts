@@ -9,14 +9,20 @@ import { getBusinessInstructions } from './instructions.js';
 import { buildBehaviourQuery, retrieve } from './retriever.js';
 import { staticBusinessContext } from './staticContext.js';
 import { getLoadedMeta, knowledgeReady } from '../vectorstore/index.js';
-import { getWebsiteMeta, knowledgeReadyForWebsite } from '../vectorstore/registry.js';
+import { getWebsiteStore, getWebsiteMeta, knowledgeReadyForWebsite } from '../vectorstore/registry.js';
 import type { BusinessInstructions, ResolvedContext, RetrievedChunk } from './types.js';
 import type { BusinessActionConfig } from '../business-actions/action.types.js';
 import type { SiteLink, VisitorBehaviour } from '../types.js';
 import { logger } from '../logging/logger.js';
+import type {RetrievalPage} from './retrievalPlan.js';
 
 export interface ContextRequest {
+  signal?: AbortSignal;
+  deadlineAt?: number;
   query: string;
+  page?:RetrievalPage;
+  history?:string[];
+  purpose?:'chat'|'popup';
   behaviour?: VisitorBehaviour;
   /** When set, uses per-website store + tenant instructions. */
   tenant?: {
@@ -32,11 +38,19 @@ export async function getBusinessContext(req: ContextRequest): Promise<ResolvedC
   const websiteId = req.tenant?.websiteId;
   const query = req.query?.trim() || (req.behaviour ? buildBehaviourQuery(req.behaviour) : '');
 
-  const ready = websiteId ? await knowledgeReadyForWebsite(websiteId) : knowledgeReady();
+  const pinned=websiteId?await getWebsiteStore(websiteId):null;
+  // A configured website-origin change does not authorize the previous site's
+  // facts. Keep the artifact for rollback, but do not serve it as the new site.
+  if(pinned?.meta && instructions.websiteUrl){
+    let matches=false;
+    try{matches=new URL(pinned.meta.sourceUrl).origin===new URL(instructions.websiteUrl).origin;}catch{}
+    if(!matches)return buildTenantEmptyContext(instructions,[],businessActions);
+  }
+  const ready=pinned?pinned.store.size()>0:knowledgeReady();
 
   if (ready) {
-    const { chunks, scores } = await retrieve(query, websiteId);
-    const meta = websiteId ? await getWebsiteMeta(websiteId) : getLoadedMeta();
+    const { chunks, scores,diagnostics } = await retrieve(query, websiteId, { signal: req.signal, deadlineAt: req.deadlineAt, pinnedStore:pinned?.store,sourceUrl:pinned?.meta?.sourceUrl??instructions.websiteUrl,activeVersion:pinned?.meta?.activeVersion,page:req.page??(req.behaviour?{path:req.behaviour.page}:undefined),history:req.history,purpose:req.purpose });
+    const meta = pinned?.meta ?? (websiteId ? null : getLoadedMeta());
     if (chunks.length > 0) {
       return {
         business: { name: instructions.businessName },
@@ -46,12 +60,13 @@ export async function getBusinessContext(req: ContextRequest): Promise<ResolvedC
         businessActions,
         source: 'rag',
         scores,
+        retrieval:diagnostics,
       };
     }
 
     if (websiteId) {
       logger.warn('[knowledge] tenant returned no chunks; no global fallback allowed', { websiteId });
-      return buildTenantEmptyContext(instructions, meta?.siteLinks ?? [], businessActions);
+      return {...buildTenantEmptyContext(instructions, meta?.siteLinks ?? [], businessActions),retrieval:diagnostics};
     }
 
     logger.warn('[knowledge] no chunks passed threshold; using fallback');

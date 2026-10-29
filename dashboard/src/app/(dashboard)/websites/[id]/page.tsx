@@ -1,10 +1,10 @@
 'use client';
 
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { api, type KnowledgeBuildHandle } from '@/lib/api';
+import { api } from '@/lib/api';
 import { Button, Card, Badge, Spinner } from '@/components/ui';
-import { KnowledgeBuildProgress } from '@/components/knowledge-build-progress';
+import { KnowledgeTab } from '@/components/knowledge-tab';
 import { AnalyticsView } from '@/components/analytics-view';
 
 type Tab = 'analytics' | 'instructions' | 'widget' | 'knowledge';
@@ -28,7 +28,12 @@ export default function WebsiteDetailPage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    api.getWebsite(id).then((w) => setWebsite(w as Website)).catch(() => router.push('/websites')).finally(() => setLoading(false));
+    let current = true;
+    setLoading(true); setWebsite(null);
+    api.getWebsite(id).then(w => { if (current) setWebsite(w as Website); })
+      .catch(() => { if (current) router.push('/websites'); })
+      .finally(() => { if (current) setLoading(false); });
+    return () => { current = false; };
   }, [id, router]);
 
   if (loading) return <div className="flex items-center justify-center h-64"><Spinner /></div>;
@@ -73,7 +78,7 @@ export default function WebsiteDetailPage() {
       {tab === 'analytics' && <AnalyticsView websiteId={id} websiteName={website.name} />}
       {tab === 'instructions' && <InstructionsTab websiteId={id} />}
       {tab === 'widget' && <WidgetTab websiteId={id} />}
-      {tab === 'knowledge' && <KnowledgeTab websiteId={id} websiteUrl={website.url} />}
+      {tab === 'knowledge' && <KnowledgeTab key={id} websiteId={id} websiteUrl={website.url} />}
     </div>
   );
 }
@@ -279,128 +284,4 @@ function WidgetTab({ websiteId }: { websiteId: string }) {
 // ---------------------------------------------------------------------------
 // Knowledge Tab
 // ---------------------------------------------------------------------------
-
-function KnowledgeTab({ websiteId, websiteUrl }: { websiteId: string; websiteUrl: string }) {
-  const [status, setStatus] = useState<AnyRecord | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [building, setBuilding] = useState(false);
-  const [buildUrl, setBuildUrl] = useState(websiteUrl);
-  const [liveBuild, setLiveBuild] = useState<AnyRecord | null>(null);
-  const [connectionLost, setConnectionLost] = useState(false);
-  const [error, setError] = useState('');
-  const handleRef = useRef<KnowledgeBuildHandle | null>(null);
-
-  const fetchStatus = useCallback(() => {
-    api.getKnowledgeStatus(websiteId)
-      .then((data) => { setStatus(data as AnyRecord); setConnectionLost(false); })
-      .catch(() => setConnectionLost(true))
-      .finally(() => setLoading(false));
-  }, [websiteId]);
-
-  useEffect(() => {
-    fetchStatus();
-  }, [fetchStatus]);
-
-  useEffect(() => {
-    const active = ['QUEUED', 'RUNNING', 'RETRY_WAIT'].includes(String(status?.lastBuild?.status));
-    if (!active) return;
-    const timer = window.setInterval(fetchStatus, 1500);
-    return () => window.clearInterval(timer);
-  }, [fetchStatus, status?.lastBuild?.status]);
-
-  const startBuild = () => {
-    if (!buildUrl) return;
-    setBuilding(true);
-    setLiveBuild({ status: 'QUEUED', phase: 'queued', progress: {}, createdAt: new Date().toISOString() });
-    setConnectionLost(false);
-    setError('');
-
-    const handle = api.buildKnowledge(websiteId, buildUrl)
-      .onPhase((phase, data) => {
-        if (phase === 'connection_lost') { setConnectionLost(true); return; }
-        setConnectionLost(false);
-        setLiveBuild((previous) => ({ ...previous, status: phase === 'retry_wait' ? 'RETRY_WAIT' : 'RUNNING', phase, progress: data as AnyRecord }));
-      })
-      .onComplete((data) => {
-        setLiveBuild(data as AnyRecord);
-        setBuilding(false);
-        fetchStatus();
-      })
-      .onError((err) => {
-        setError(err.message);
-        setConnectionLost(true);
-        setBuilding(false);
-        setLiveBuild(null);
-        fetchStatus();
-      });
-
-    handleRef.current = handle;
-    handle.start();
-  };
-
-  useEffect(() => () => handleRef.current?.abort(), []);
-
-  const currentBuild = liveBuild ?? status?.lastBuild;
-  const isActive = building || ['QUEUED', 'RUNNING', 'RETRY_WAIT'].includes(String(currentBuild?.status));
-
-  if (loading) return <div className="flex justify-center py-12"><Spinner /></div>;
-
-  return (
-    <div className="space-y-6">
-      {/* Current Status */}
-      <Card>
-        <h2 className="text-lg font-semibold mb-4">Knowledge Base Status</h2>
-        {status?.hasKnowledge ? (
-          <div className="space-y-2 text-sm">
-            <p><Badge variant="success">Ready</Badge></p>
-            <p className="text-[var(--text-muted)]">
-              {status.snapshot.pagesCrawled} pages · {status.snapshot.chunkCount} chunks · Model: {status.snapshot.embeddingModel}
-            </p>
-            <p className="text-[var(--text-muted)]">
-              Source: {status.snapshot.sourceUrl}
-            </p>
-            <p className="text-[var(--text-muted)]">
-              Built: {new Date(status.snapshot.createdAt).toLocaleString()}
-            </p>
-          </div>
-        ) : (
-          <p className="text-[var(--text-muted)] text-sm">No knowledge base built yet. Crawl your website below to get started.</p>
-        )}
-      </Card>
-
-      {status?.lastBuild && (
-        <Card>
-          <h2 className="text-lg font-semibold mb-2">Latest Build</h2>
-          <p className="text-sm text-[var(--text-muted)]">{String(status.lastBuild.status).replace('_', ' ')} · {status.lastBuild.phase || 'queued'} · attempt {status.lastBuild.attempt ?? 0}/{status.lastBuild.maxAttempts ?? 3}</p>
-          {status.lastBuild.error && <p className="mt-2 text-sm text-[var(--danger)]">{status.lastBuild.error}</p>}
-        </Card>
-      )}
-
-      {/* Build */}
-      <Card>
-        <h2 className="text-lg font-semibold mb-4">{status?.hasKnowledge ? 'Rebuild Knowledge' : 'Build Knowledge Base'}</h2>
-        <div className="flex gap-3 items-end">
-          <div className="flex-1">
-            <label className="block text-sm font-medium mb-1">URL to crawl</label>
-            <input
-              className="w-full px-3 py-2 bg-[var(--bg-input)] border border-[var(--border)] rounded-lg text-[var(--text)] text-sm focus:outline-none focus:border-[var(--accent)]"
-              value={buildUrl}
-              onChange={(e) => setBuildUrl(e.target.value)}
-              placeholder="https://example.com"
-              disabled={isActive}
-            />
-          </div>
-          <Button variant="primary" onClick={startBuild} loading={isActive} disabled={isActive || !buildUrl}>
-            {isActive ? 'Building…' : status?.hasKnowledge ? 'Rebuild' : 'Start Build'}
-          </Button>
-        </div>
-
-        {error && <p className="text-[var(--danger)] text-sm mt-3">{error}</p>}
-
-        {currentBuild && <KnowledgeBuildProgress build={currentBuild} connectionLost={connectionLost} />}
-
-      </Card>
-    </div>
-  );
-}
 

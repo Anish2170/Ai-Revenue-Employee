@@ -18,6 +18,7 @@ import type {
   StructuredRequest,
 } from './types.js';
 import { logger } from '../../logging/logger.js';
+import { abortable, checkCancelled } from '../cancellation.js';
 
 /** Map our neutral task type to Gemini's embedding taskType enum value. */
 function geminiTaskType(t: EmbedTaskType): string {
@@ -105,16 +106,20 @@ export function createGeminiProvider(modelOverride = config.llm.fallback.model):
     id: `gemini:${model}`,
 
     async generateStructured(req: StructuredRequest): Promise<unknown> {
-      const response = await ai.models.generateContent({
+      checkCancelled(req.signal);
+      const response = await abortable(ai.models.generateContent({
         model,
         contents: [{ role: 'user', parts: [{ text: req.user }] }],
         config: {
+          // Installed SDK 0.7 supports HTTP timeout, not external abortSignal.
+          httpOptions: { timeout: Math.max(1, Math.min(config.llm.responseTimeoutMs, (req.deadlineAt ?? Date.now() + config.llm.responseTimeoutMs) - Date.now())) },
           systemInstruction: req.system,
           responseMimeType: 'application/json',
           responseSchema: toGeminiSchema(req.schema),
           ...(isFlashLite35 ? {} : { temperature: 0.4 }),
         },
-      });
+      }), req.signal);
+      checkCancelled(req.signal);
 
       const text = response.text;
       if (!text) throw new Error('Gemini returned an empty structured response');
@@ -124,6 +129,7 @@ export function createGeminiProvider(modelOverride = config.llm.fallback.model):
     async *streamText(req: StreamRequest): AsyncIterable<string> {
       let raw = '';
       try {
+        checkCancelled(req.signal);
         if (isFlashLite35) {
           const lastNonEmpty = [...req.messages].reverse().find((message) => message.content.trim());
           if (!lastNonEmpty || lastNonEmpty.role !== 'user') {
@@ -137,16 +143,17 @@ export function createGeminiProvider(modelOverride = config.llm.fallback.model):
           systemChars: req.system.length,
         });
 
-        const stream = await ai.models.generateContentStream({
+        const stream = await abortable(ai.models.generateContentStream({
           model,
           contents: toGeminiContents(req.messages),
           config: {
             systemInstruction: req.system,
             ...(isFlashLite35 ? {} : { temperature: 0.6 }),
           },
-        });
+        }), req.signal);
 
         for await (const chunk of stream) {
+          checkCancelled(req.signal);
           const text = chunk.text;
           if (text) {
             raw += text;
@@ -162,34 +169,38 @@ export function createGeminiProvider(modelOverride = config.llm.fallback.model):
       }
     },
 
-    async embed(texts: string[], taskType: EmbedTaskType): Promise<number[][]> {
+    async embed(texts: string[], taskType: EmbedTaskType, options?: { signal?: AbortSignal; deadlineAt?: number }): Promise<number[][]> {
       if (texts.length === 0) return [];
       const embeddingModel = config.gemini.embeddingModel;
       const taskTypeStr = geminiTaskType(taskType);
       const BATCH = 100;
       const out: number[][] = [];
+      const httpOptions = options ? { timeout: Math.max(1, Math.min(config.llm.responseTimeoutMs, (options.deadlineAt ?? Date.now() + config.llm.responseTimeoutMs) - Date.now())) } : undefined;
 
       const embedOne = async (text: string): Promise<number[]> => {
-        const res = await ai.models.embedContent({
+        checkCancelled(options?.signal);
+        const res = await abortable(ai.models.embedContent({
           model: embeddingModel,
           contents: text,
-          config: { taskType: taskTypeStr },
-        });
+          config: { taskType: taskTypeStr, ...(httpOptions ? { httpOptions } : {}) },
+        }), options?.signal);
         return res.embeddings?.[0]?.values ?? [];
       };
 
       for (let i = 0; i < texts.length; i += BATCH) {
+        checkCancelled(options?.signal);
         const batch = texts.slice(i, i + BATCH);
         try {
-          const res = await ai.models.embedContent({
+          const res = await abortable(ai.models.embedContent({
             model: embeddingModel,
             contents: batch,
-            config: { taskType: taskTypeStr },
-          });
+            config: { taskType: taskTypeStr, ...(httpOptions ? { httpOptions } : {}) },
+          }), options?.signal);
           const vectors = (res.embeddings ?? []).map((e) => e.values ?? []);
           if (vectors.length !== batch.length) throw new Error('embedding count mismatch');
           out.push(...vectors);
         } catch {
+          checkCancelled(options?.signal);
           // Per-item fallback so one bad input doesn't fail the whole batch.
           for (const text of batch) out.push(await embedOne(text));
         }

@@ -2,6 +2,7 @@
  * Floating chat window with persistent conversations.
  */
 import { el } from '../utils/dom.js';
+import { asksForLeadEmail } from './leadLanguage.js';
 import type { ApiClient } from '../api/client.js';
 import type { ChatConversationMeta, ChatMessage, ChatSource, VisitorBehaviour, WidgetConversationResponse } from '../types.js';
 
@@ -49,6 +50,8 @@ export class ChatWindow {
   private streaming = false;
   private abort: (() => void) | null = null;
   private savedLeadCards = new Set<string>();
+  private responseVersion=0;
+  private pendingReplyBubble:HTMLElement|null=null;
 
   constructor(
     private readonly layer: HTMLElement,
@@ -59,6 +62,14 @@ export class ChatWindow {
   ) {}
 
   get isOpen(): boolean { return this.panel !== null; }
+
+  /** Keep the conversation open; an in-flight page-bound reply is now stale. */
+  onNavigation():void{
+    if(!this.streaming)return;
+    this.responseVersion++;this.abort?.();this.abort=null;
+    if(this.pendingReplyBubble)this.pendingReplyBubble.textContent='Page changed. Please ask your question again.';
+    this.pendingReplyBubble=null;this.setStreaming(false);
+  }
 
   restoreLatest(): Promise<void> {
     return this.ensureRestored();
@@ -112,7 +123,7 @@ export class ChatWindow {
     this.conversations = response.conversations;
     this.conversationId = response.conversation.id;
     storeConversationId(response.conversation.id);
-    this.history = response.conversation.messages.map((message) => ({ role: message.role, content: message.content, ...(message.source ? { source: message.source } : {}) }));
+    this.history = response.conversation.messages.map((message) => ({ role: message.role, content: message.content, ...(message.source ? { source: message.source } : {}),...(message.sources?.length?{sources:message.sources.slice(0,5)}:{}) }));
     this.updateConversationSelect();
     this.renderMessages();
   }
@@ -205,7 +216,7 @@ export class ChatWindow {
     }
     for (const message of this.history) {
       this.appendBubble(message.role === 'user' ? 'user' : 'ai', message.content);
-      if (message.role === 'assistant' && message.source) this.appendSource(message.source);
+      if (message.role === 'assistant') for(const source of message.sources?.length?message.sources:message.source?[message.source]:[])this.appendSource(source);
       if (message.role === 'assistant' && this.shouldShowLeadCard(message.content)) this.appendLeadCaptureCard(message.content);
     }
   }
@@ -227,6 +238,9 @@ export class ChatWindow {
   }
 
   private naturalTransition(_popupText: string): string {
+    // Resume an established conversation instead of injecting an English
+    // conversational reply over a visitor's existing language choice.
+    if (this.history.some(message => message.role === 'user')) return '';
     return 'Great, I can help with that. What would you like to know first?';
   }
 
@@ -289,22 +303,28 @@ export class ChatWindow {
   private streamReply(userText: string): void {
     this.setStreaming(true);
     const bubble = this.appendBubble('ai', '');
+    const responseVersion=++this.responseVersion;
+    this.pendingReplyBubble=bubble;
     const typing = el('div', 'aire-typing');
     typing.append(el('span'), el('span'), el('span'));
     bubble.appendChild(typing);
 
     let acc = '';
     let started = false;
+    let failed = false;
     let source: ChatSource | null = null;
-    let sourceEl: HTMLDivElement | null = null;
-    const outbound: ChatMessage[] = [
+    const sources:ChatSource[]=[];
+    // Bounded history also preserves language continuity when durable chat is unavailable.
+    // The backend still persists only the latest user/pending opener, as before.
+    const outbound: ChatMessage[] = this.conversationId ? [
       ...(this.pendingAssistant ? [{ role: 'assistant' as const, content: this.pendingAssistant }] : []),
       { role: 'user', content: userText },
-    ];
+    ] : this.history.slice(-50);
     this.pendingAssistant = null;
 
     this.abort = this.api.streamChat(outbound, this.getBehaviour(), this.conversationId, {
       onConversation: (conversation: ChatConversationMeta) => {
+        if(responseVersion!==this.responseVersion)return;
         this.conversationId = conversation.id;
         storeConversationId(conversation.id);
         const existing = this.conversations.find((item) => item.id === conversation.id);
@@ -313,6 +333,7 @@ export class ChatWindow {
         this.updateConversationSelect();
       },
       onToken: (t) => {
+        if(responseVersion!==this.responseVersion)return;
         if (!started) {
           started = true;
           bubble.textContent = '';
@@ -322,20 +343,22 @@ export class ChatWindow {
         this.scrollToBottom();
       },
       onSource: (s) => {
-        if (sourceEl) return;
-        source = s;
-        sourceEl = this.appendSource(s);
+        if(responseVersion!==this.responseVersion||sources.length>=5||sources.some(item=>item.url===s.url))return;
+        sources.push(s);source ??= s;
+        this.appendSource(s);
       },
-      onError: (m) => { bubble.textContent = acc || m; },
+      onError: (m) => { if(responseVersion!==this.responseVersion)return;failed = true; bubble.textContent = acc || m; },
       onDone: () => {
-        if (!started && !acc) bubble.textContent = 'Sorry, I could not generate a reply.';
+        if(responseVersion!==this.responseVersion)return;
+        if (!started && !acc && !failed) bubble.textContent = 'Sorry, I could not generate a reply.';
         if (acc) {
-          this.history.push({ role: 'assistant', content: acc, ...(source ? { source } : {}) });
+          this.history.push({ role: 'assistant', content: acc, ...(source ? { source,sources } : {}) });
           this.analytics.onAiResponseCompleted?.({ length: acc.length });
           if (this.shouldShowLeadCard(acc)) this.appendLeadCaptureCard(acc);
         }
         this.setStreaming(false);
         this.abort = null;
+        this.pendingReplyBubble=null;
         this.scrollToBottom();
       },
     });
@@ -343,10 +366,7 @@ export class ChatWindow {
 
 
   private shouldShowLeadCard(text: string): boolean {
-    const normalized = text.toLowerCase();
-    const asksForEmail = /\b(best email|email address|what(?:'s| is) your email|what(?:'s| is) the best email|email it|email this|email that|email it to you|email that to you|send .* email|send .* inbox)\b/i.test(text);
-    const declined = /\b(no thanks|no thank you|not now|do not email|don't email|no need)\b/i.test(normalized);
-    return !declined && asksForEmail;
+    return asksForLeadEmail(text);
   }
 
   private leadCardKey(messageText: string): string {
@@ -360,17 +380,17 @@ export class ChatWindow {
     card.setAttribute('data-lead-key', key);
     card.noValidate = true;
 
-    const title = el('div', 'aire-lead-card__title', 'Get Your Resource');
+    const title = el('div', 'aire-lead-card__title', 'Leave Contact Details');
     const icon = el('span', 'aire-lead-card__icon', 'Email');
     title.prepend(icon);
-    const subtitle = el('div', 'aire-lead-card__subtitle', "Enter your email below and we'll use it to send the information discussed.");
+    const subtitle = el('div', 'aire-lead-card__subtitle', "Share your email for follow-up. This does not send an email or complete a booking.");
     const label = el('label', 'aire-lead-card__label', 'Email Address') as HTMLLabelElement;
     const input = el('input', 'aire-lead-card__input') as HTMLInputElement;
     input.type = 'email';
     input.placeholder = 'you@example.com';
     input.autocomplete = 'email';
     const error = el('div', 'aire-lead-card__error', '');
-    const button = el('button', 'aire-lead-card__button', this.savedLeadCards.has(key) ? 'Email Saved' : 'Send') as HTMLButtonElement;
+    const button = el('button', 'aire-lead-card__button', this.savedLeadCards.has(key) ? 'Email Saved' : 'Save') as HTMLButtonElement;
     button.type = 'submit';
     if (this.savedLeadCards.has(key)) {
       input.disabled = true;
@@ -398,8 +418,7 @@ export class ChatWindow {
       input.disabled = true;
       button.disabled = true;
       button.textContent = 'Saving...';
-      this.savedLeadCards.add(key);
-      this.submitLeadEmail(email, button);
+      this.submitLeadEmail(email, button, input, key);
     });
 
     this.messagesEl.appendChild(card);
@@ -407,10 +426,11 @@ export class ChatWindow {
     return card;
   }
 
-  private submitLeadEmail(email: string, button: HTMLButtonElement): void {
-    const outbound: ChatMessage[] = [{ role: 'user', content: `My email is ${email}` }];
+  private submitLeadEmail(email: string, button: HTMLButtonElement, input?: HTMLInputElement, key?: string): void {
+    const outbound: ChatMessage[] = [...(this.conversationId ? [] : this.history.slice(-49)), { role: 'user', content: `My email is ${email}` }];
     let completed = false;
     let failed = false;
+    let saved: boolean | undefined;
     const abort = this.api.streamChat(outbound, this.getBehaviour(), this.conversationId, {
       onConversation: (conversation: ChatConversationMeta) => {
         this.conversationId = conversation.id;
@@ -422,18 +442,23 @@ export class ChatWindow {
       },
       onToken: () => { /* keep lead-card submission quiet in the UI */ },
       onSource: () => { /* no visible source for hidden lead submission */ },
+      onLeadSaved: (value: boolean) => { saved = value; },
       onError: () => {
         if (completed) return;
         failed = true;
         button.disabled = false;
-        button.textContent = 'Send';
+        button.textContent = 'Try Again';
+        if (input) input.disabled = false;
       },
       onDone: () => {
         if (failed) return;
         completed = true;
         abort();
-        button.textContent = 'Email Saved';
-        button.classList.add('aire-lead-card__button--saved');
+        button.textContent = saved === true ? 'Email Saved' : saved === false ? 'Try Again' : 'Submitted';
+        if (saved === true) {
+          if (key) this.savedLeadCards.add(key);
+          button.classList.add('aire-lead-card__button--saved');
+        } else if (saved === false) { button.disabled = false; if (input) input.disabled = false; }
         this.scrollToBottom();
       },
     });

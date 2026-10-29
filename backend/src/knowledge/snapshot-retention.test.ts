@@ -3,10 +3,11 @@ import test from 'node:test';
 import { prisma } from '../db/prisma.js';
 import { pruneKnowledgeSnapshots } from './snapshot-retention.js';
 import { r2SnapshotKey, setSnapshotStorageForTests, snapshotSha256 } from '../vectorstore/snapshotStorage.js';
+import { config } from '../config/index.js';
 
 test('retention protects the latest three, tenant boundaries, and backups when storage fails', async () => {
   const original = prisma.$transaction;
-  const bytes = Buffer.from(JSON.stringify({ documents: [{ text: 'knowledge', embedding: [1] }] }));
+  const bytes = Buffer.from(JSON.stringify({ version: 1, embeddingModel: config.gemini.embeddingModel, dimensions: 1, documents: [{ id: 'fixture', content: 'knowledge', embedding: [1] }] }));
   const snapshots = ['newest', 'second', 'third', 'oldest'].map(id => ({
     id, storageKey: r2SnapshotKey('org', 'site', id), contentSha256: snapshotSha256(bytes),
   }));

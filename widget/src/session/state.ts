@@ -3,13 +3,13 @@
  *
  * Sprint 1 has no server-side session store, so the widget is the source of
  * truth for cooldown/frequency/dedup counters and sends them to the backend on
- * every /engage call. Persisted in sessionStorage so it survives in-tab soft
- * navigations. On a new page, the per-page flags (popupShown/dismissed) reset so
- * each page gets a fresh chance, while cumulative counters persist for the cap.
+ * every /engage call. Persisted in sessionStorage and bound to the server-issued
+ * session so counters survive navigation but never leak into a different visit.
+ * Default navigation resets the per-page shown flag; dismissal and counters stay.
  */
 import type { SessionState } from '../types.js';
 
-const KEY = 'aire_session_v1';
+const KEY = 'aire_session_v2';
 
 const empty: SessionState = {
   popupShown: false,
@@ -19,17 +19,24 @@ const empty: SessionState = {
 };
 
 export class SessionManager {
-  private state: SessionState;
+  private state: SessionState = { ...empty };
+  private sessionId: string | null = null;
 
-  constructor() {
+  constructor(private readonly siteId: string) {}
+
+  /** Counters belong to the signed visit, never to a previous tab session. */
+  bind(sessionId: string): void {
+    if (this.sessionId === sessionId) return;
+    this.sessionId = sessionId;
     this.state = this.load();
+    this.persist();
   }
 
   get(): SessionState {
     return { ...this.state };
   }
 
-  /** Record that an /engage evaluation just happened (cooldown + frequency). */
+  /** Record a successfully inserted popup (display cooldown + frequency). */
   markEngaged(): void {
     this.state.engageCount += 1;
     this.state.lastEngageAt = Date.now();
@@ -46,17 +53,19 @@ export class SessionManager {
     this.persist();
   }
 
-  /** Reset per-page flags on navigation; keep cumulative counters. */
+  /** A page change permits a new candidate, but never revokes a dismissal. */
   resetForPage(): void {
     this.state.popupShown = false;
-    this.state.dismissed = false;
     this.persist();
   }
 
   private load(): SessionState {
     try {
-      const raw = sessionStorage.getItem(KEY);
-      if (raw) return { ...empty, ...(JSON.parse(raw) as Partial<SessionState>) };
+      const raw = sessionStorage.getItem(`${KEY}:${this.siteId}`);
+      if (raw) {
+        const saved = JSON.parse(raw) as { sessionId: string; state: SessionState };
+        if (saved.sessionId === this.sessionId) return { ...empty, ...saved.state, popupShown: false };
+      }
     } catch {
       /* storage blocked (private mode / sandbox) — fall back to memory */
     }
@@ -65,7 +74,7 @@ export class SessionManager {
 
   private persist(): void {
     try {
-      sessionStorage.setItem(KEY, JSON.stringify(this.state));
+      if (this.sessionId) sessionStorage.setItem(`${KEY}:${this.siteId}`, JSON.stringify({ sessionId: this.sessionId, state: this.state }));
     } catch {
       /* ignore */
     }

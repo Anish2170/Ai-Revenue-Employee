@@ -12,15 +12,17 @@ import type { SiteLink } from '../types.js';
  */
 export function normalizeUrl(input: string, base?: string): string | null {
   try {
+    if(input.length>4096)return null;
     const u = new URL(input, base);
     if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+    if (u.username || u.password || [...u.searchParams.keys()].some(key => /^(?:(?:access|refresh|id)[_-]?token|token|api[_-]?key|access[_-]?key|secret|password|auth|authorization|signature|credential|session(?:id)?)$/i.test(key))) return null;
     u.hash = '';
 
     const cleaned = new URLSearchParams();
     const entries = [...u.searchParams.entries()]
       .filter(([k]) => !TRACKING_PARAM_DENYLIST.has(k.toLowerCase()))
       .sort(([a], [b]) => a.localeCompare(b));
-    for (const [k, v] of entries) cleaned.set(k, v);
+    for (const [k, v] of entries) cleaned.append(k, v);
     const qs = cleaned.toString();
 
     let path = u.pathname;

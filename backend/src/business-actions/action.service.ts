@@ -66,27 +66,28 @@ export async function listBusinessActions(organizationId: string, websiteId: str
   }));
 }
 
-export async function getEnabledBusinessActions(websiteId: string): Promise<BusinessActionConfig[]> {
-  await seedStarterActionsForWebsite(websiteId);
-  const manualActions = await getEnabledStoredBusinessActions(websiteId);
+export async function getEnabledBusinessActions(websiteId: string, options: { skipSeed?: boolean } = {}): Promise<BusinessActionConfig[]> {
+  if (!options.skipSeed) await seedStarterActionsForWebsite(websiteId);
+  const manualActions = await getStoredActionSettings(websiteId);
   const graph = await getDiscoveredActionGraph(websiteId);
-  const discoveredActions = graph ? actionsFromGraph(graph, await getOverrideMap(websiteId)) : [];
+  const discoveredActions = graph ? actionsFromGraph(graph, await getOverrideMap(websiteId), websiteId) : [];
   return mergeBusinessActions(manualActions, discoveredActions);
 }
 
-async function getEnabledStoredBusinessActions(websiteId: string): Promise<BusinessActionConfig[]> {
+async function getStoredActionSettings(websiteId: string): Promise<BusinessActionConfig[]> {
   const actions = await prisma.businessAction.findMany({
-    where: { websiteId, enabled: true },
+    where: { websiteId },
     orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
   });
   return actions
-    .filter((action) => hasExecutableDestination(action.destinationType, action.destination))
+    .filter((action) => action.enabled ? hasExecutableDestination(action.destinationType, action.destination) : Boolean(action.destination.trim()) || action.destinationType === 'CHAT')
     .map((action) => ({
       actionId: action.actionId,
       label: action.label,
       destinationType: action.destinationType,
       destination: action.destination,
       enabled: action.enabled,
+      authority: { source: 'owner' as const, websiteId, actionId: action.actionId, label: action.label, destinationType: action.destinationType, destination: action.destination },
     }));
 }
 
@@ -95,7 +96,13 @@ export function mergeBusinessActions(...actionGroups: BusinessActionConfig[][]):
   const seen = new Set<string>();
   for (const group of actionGroups) {
     for (const action of group) {
-      if (!action.enabled || seen.has(action.actionId)) continue;
+      if (seen.has(action.actionId)) continue;
+      if (!action.enabled) {
+        // Empty disabled starter URLs are defaults, not an owner veto. A
+        // configured disabled action must not reappear from discovery.
+        if (action.destination.trim() || action.destinationType === 'CHAT') seen.add(action.actionId);
+        continue;
+      }
       seen.add(action.actionId);
       merged.push(action);
     }
@@ -116,12 +123,12 @@ export async function resolveDiscoveredAction(websiteId: string, intent: string 
   if (direct) {
     const override = await getOverrideForIntent(websiteId, direct.intent);
     const overrideCandidate = override ? findCandidateByUrl(direct, override.url) : null;
-    if (overrideCandidate) return actionFromCandidate(direct.intent, overrideCandidate);
-    return actionFromCandidate(direct.intent, direct.preferred);
+    if (overrideCandidate) return actionFromCandidate(direct.intent, overrideCandidate, websiteId);
+    return actionFromCandidate(direct.intent, direct.preferred, websiteId);
   }
   const node = closestSemanticNode(graph, intent);
   if (!node) return null;
-  return actionFromCandidate(node.intent, node.preferred);
+  return actionFromCandidate(node.intent, node.preferred, websiteId);
 }
 
 export async function createBusinessAction(
@@ -391,17 +398,18 @@ function ctr(stats?: ActionStats): number {
   if (!stats || stats.displayed === 0) return 0;
   return stats.clicked / stats.displayed;
 }
-function actionsFromGraph(graph: DiscoveredActionGraph, overrides = new Map<string, string>()): BusinessActionConfig[] {
-  return graph.nodes.map((node) => actionFromCandidate(node.intent, findCandidateByUrl(node, overrides.get(node.intent)) ?? node.preferred));
+function actionsFromGraph(graph: DiscoveredActionGraph, overrides = new Map<string, string>(), websiteId = ''): BusinessActionConfig[] {
+  return graph.nodes.map((node) => actionFromCandidate(node.intent, findCandidateByUrl(node, overrides.get(node.intent)) ?? node.preferred, websiteId));
 }
 
-function actionFromCandidate(intent: DiscoveredActionIntent, candidate: DiscoveredActionGraph['nodes'][number]['preferred']): BusinessActionConfig {
+function actionFromCandidate(intent: DiscoveredActionIntent, candidate: DiscoveredActionGraph['nodes'][number]['preferred'], websiteId: string): BusinessActionConfig {
   return {
     actionId: intent,
     label: candidate.label,
     destinationType: 'URL',
     destination: candidate.url,
     enabled: true,
+    authority: { source: 'discovered', websiteId, actionId: intent, label: candidate.label, destinationType: 'URL', destination: candidate.url, confidence: candidate.confidence },
   };
 }
 

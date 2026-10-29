@@ -6,7 +6,8 @@
  * model; optional action IDs must match the enabled business configuration.
  */
 import type { BusinessActionConfig } from '../business-actions/action.types.js';
-import { findBusinessAction } from '../business-actions/action.service.js';
+import { buildPopupCopyPlan, checkPopupGrounding, type PopupEvidence, type PopupGroundingContext } from './popupGrounding.js';
+import { popupCompatibleActions, resolvePopupAction, type PopupActionContext } from './popupActionPolicy.js';
 import type { BusinessInstructions } from '../context/types.js';
 import {
   MAX_POPUP_ACTION_ID_LENGTH,
@@ -34,6 +35,7 @@ export type PopupMissingActionReason =
   | 'Business action disabled'
   | 'LLM omitted action'
   | 'Unknown action id'
+  | 'Action incompatible with popup'
 
 export interface PopupActionValidationDebug {
   expectedAction: boolean;
@@ -61,12 +63,15 @@ export interface PopupResponseValidationInput {
   knowledge: StrategyKnowledgeResult;
   instructions: BusinessInstructions;
   enabledActions?: BusinessActionConfig[];
+  websiteId?: string;
+  groundingContext?: PopupGroundingContext;
 }
 
 export type PopupResponseValidationResult =
   | {
       ok: true;
       popup: ValidatedPopupLanguage;
+      evidence: PopupEvidence[];
       reasons: [];
       fallback: null;
       actionDebug: PopupActionValidationDebug;
@@ -94,61 +99,11 @@ const EXPECTED_POPUP_TYPE: Record<ConversationStrategyKind, PopupType> = {
   Support: 'support',
 };
 
-const FALLBACK_ACTIONS_BY_TYPE: Partial<Record<PopupType, readonly string[]>> = {
-  comparison: ['pricing', 'learn_more'],
-  pricing: ['pricing'],
-  booking: ['book_demo', 'contact'],
-  lead: ['book_demo', 'contact'],
-  support: ['support'],
-};
-
-const CTA_INTENT_FALLBACKS: Partial<Record<ConversationStrategy['ctaIntent'], readonly string[]>> = {
-  compare_options: ['pricing', 'learn_more'],
-  discuss_pricing: ['pricing'],
-  capture_lead: ['book_demo', 'contact'],
-  book_demo: ['book_demo', 'contact'],
-  book_appointment: ['book_demo', 'contact'],
-  offer_support: ['support'],
-  learn_more: ['learn_more'],
-};
-
 const POPUP_TYPES_REQUIRING_ACTION = new Set<PopupType>(['comparison', 'pricing', 'booking', 'lead', 'support']);
-
-const ACTION_ID_ALIASES: Partial<Record<string, readonly string[]>> = {
-  contact: ['contact_sales'],
-  contact_sales: ['contact'],
-  support: ['contact_support'],
-  contact_support: ['support'],
-  learn_more: ['documentation'],
-  documentation: ['learn_more'],
-};
-
-const DISCOUNT_PATTERN = /\b(discount|coupon|promo|promotion|special offer|limited[- ]time|deal|save\s+\d+|%\s*off|\d+\s*%\s*off)\b/i;
-const PRICE_AMOUNT_PATTERN = /(?:[$?��]\s*\d+(?:[.,]\d+)?|\b\d+(?:[.,]\d+)?\s*(?:usd|inr|eur|gbp|dollars?|rupees?)\b|\b\d+(?:[.,]\d+)?\s*\/\s*(?:mo|month|year|yr)\b)/i;
+const DISCOUNT_PATTERN = /\b(discount|coupon|promo|promotion|special offer|limited[- ]time|deal|save\s+\d+|\d+\s*%\s*off)\b/i;
+// Diagnostic patterns never establish factual support.
+const PRICE_AMOUNT_PATTERN = /[$€£₹¥]|\b(?:USD|EUR|GBP|INR|CAD|AUD|price|costs?|fees?|savings?|discount)\b|\d+\s*%/i;
 const GUARANTEE_PATTERN = /\b(guarantee|guaranteed|money[- ]back|refund|risk[- ]free|no[- ]risk)\b/i;
-
-const CLAIM_PATTERNS: RegExp[] = [
-  /\bsoc\s*2\b/i,
-  /\bhipaa\b/i,
-  /\bgdpr\b/i,
-  /\biso\s*\d+/i,
-  /\bslack\b/i,
-  /\bsalesforce\b/i,
-  /\bhubspot\b/i,
-  /\bshopify\b/i,
-  /\bzapier\b/i,
-  /\bwhatsapp\b/i,
-  /\bstripe\b/i,
-  /\bcalendly\b/i,
-  /\bcertified\b/i,
-  /\baward[- ]winning\b/i,
-  /\b\d+\s*(?:customers|clients|teams|companies)\b/i,
-  /\b24\s*\/\s*7\b/i,
-  /\bcase stud(?:y|ies)\b/i,
-];
-
-const FEATURE_CLAIM_PATTERN =
-  /\b(?:includes|offers|supports|provides|has|features|comes with)\s+([a-z0-9][a-z0-9 -]{1,90}?\b(?:integration|integrations|automation|automations|dashboard|dashboards|analytics|reporting|crm|api|apis|feature|features|tool|tools))\b/i;
 
 const REQUIRED_KEYS = ['title', 'body', 'tone', 'popupType'] as const;
 const OPTIONAL_KEYS = ['primaryAction', 'secondaryAction'] as const;
@@ -160,9 +115,11 @@ export function validatePopupResponse(input: PopupResponseValidationInput): Popu
   const parsed = parseRawPopup(input.llm.raw);
   if (!parsed.ok) return reject(parsed.reasons, null, defaultActionDebug(null, false));
 
-  const popup = parsed.popup;
+  const grounding = checkPopupGrounding(parsed.popup.title, parsed.popup.body, buildPopupCopyPlan(input.knowledge, input.instructions, input.groundingContext));
+  const popup = { ...parsed.popup, body: grounding.body };
+  if (grounding.ok && popup.body.length > MAX_POPUP_BODY_LENGTH) return reject(['schema_violation'], popup, defaultActionDebug(popup.primaryAction ?? null, false));
   const reasons: PopupResponseRejectReason[] = [];
-  const actionResolution = resolvePopupActions(popup, input.strategy, input.enabledActions ?? []);
+  const actionResolution = resolvePopupActions(popup, input.strategy, input.enabledActions ?? [], input.instructions, { websiteId: input.websiteId, websiteUrl: input.instructions.websiteUrl, businessName: input.instructions.businessName });
   const validatedPopup = actionResolution.popup;
 
   if (popup.tone !== input.strategy.tone || popup.popupType !== EXPECTED_POPUP_TYPE[input.strategy.kind]) {
@@ -180,42 +137,33 @@ export function validatePopupResponse(input: PopupResponseValidationInput): Popu
   }
 
   const combined = `${popup.title} ${popup.body}`;
-  const knowledgeText = input.knowledge.chunks.map((chunk) => chunk.content).join(' ');
 
   if (input.instructions.avoidDiscounts && DISCOUNT_PATTERN.test(combined)) {
     reasons.push('business_policy');
   }
 
-  if (PRICE_AMOUNT_PATTERN.test(combined) && !isSupported(combined.match(PRICE_AMOUNT_PATTERN)?.[0] ?? '', knowledgeText)) {
-    reasons.push('invented_pricing');
-  }
-
-  if (GUARANTEE_PATTERN.test(combined) && !containsAnySupportedClaim(combined, knowledgeText, GUARANTEE_PATTERN)) {
-    reasons.push('invented_guarantee');
-  }
-
-  if (hasUnsupportedSpecificClaim(combined, knowledgeText)) {
+  if (!grounding.ok) {
     reasons.push('unsupported_claim');
-  }
-
-  if (hasUnsupportedFeatureClaim(combined, knowledgeText)) {
-    reasons.push('unsupported_claim');
+    if (PRICE_AMOUNT_PATTERN.test(combined)) reasons.push('invented_pricing');
+    if (GUARANTEE_PATTERN.test(combined)) reasons.push('invented_guarantee');
   }
 
   return reasons.length > 0
     ? reject(unique(reasons), popup, actionResolution.actionDebug)
-    : { ok: true, popup: validatedPopup, reasons: [], fallback: null, actionDebug: actionResolution.actionDebug };
+    : { ok: true, popup: validatedPopup, evidence: grounding.evidence, reasons: [], fallback: null, actionDebug: actionResolution.actionDebug };
 }
 
 function resolvePopupActions(
   popup: ValidatedPopupLanguage,
   strategy: ConversationStrategy,
   enabledActions: BusinessActionConfig[],
+  instructions: BusinessInstructions,
+  context: PopupActionContext,
 ): { ok: boolean; popup: ValidatedPopupLanguage; invalidAction: boolean; actionDebug: PopupActionValidationDebug } {
   const expectedAction = POPUP_TYPES_REQUIRING_ACTION.has(popup.popupType);
   const primaryActionReturned = popup.primaryAction ?? null;
-  const primary = findCompatibleBusinessAction(enabledActions, popup.primaryAction);
-  const secondary = findCompatibleBusinessAction(enabledActions, popup.secondaryAction);
+  const primary = resolvePopupAction(enabledActions, popup.primaryAction, strategy, instructions, false, `${popup.title} ${popup.body}`, context);
+  const secondary = resolvePopupAction(enabledActions, popup.secondaryAction, strategy, instructions, true, `${popup.title} ${popup.body}`, context);
   const invalidAction = Boolean((popup.primaryAction && !primary) || (popup.secondaryAction && !secondary));
 
   if (primary) {
@@ -237,7 +185,7 @@ function resolvePopupActions(
     };
   }
 
-  const fallback = expectedAction ? findFallbackAction(enabledActions, popup.popupType, strategy.ctaIntent) : null;
+  const fallback = expectedAction && !popup.primaryAction ? popupCompatibleActions(enabledActions, strategy, instructions, false, `${popup.title} ${popup.body}`, context)[0] : null;
   if (fallback) {
     return {
       ok: true,
@@ -273,38 +221,9 @@ function resolvePopupActions(
   };
 }
 
-function findFallbackAction(
-  enabledActions: BusinessActionConfig[],
-  popupType: PopupType,
-  ctaIntent: ConversationStrategy['ctaIntent'],
-): BusinessActionConfig | null {
-  for (const actionId of fallbackCandidates(popupType, ctaIntent)) {
-    const action = findCompatibleBusinessAction(enabledActions, actionId);
-    if (action) return action;
-  }
-  return null;
-}
-
-function fallbackCandidates(popupType: PopupType, ctaIntent: ConversationStrategy['ctaIntent']): readonly string[] {
-  const candidates = [...(CTA_INTENT_FALLBACKS[ctaIntent] ?? []), ...(FALLBACK_ACTIONS_BY_TYPE[popupType] ?? [])];
-  return candidates.flatMap(compatibleActionIds).filter((actionId, index, list) => list.indexOf(actionId) === index);
-}
-
-function findCompatibleBusinessAction(actions: BusinessActionConfig[], actionId: string | null | undefined): BusinessActionConfig | null {
-  for (const compatibleId of compatibleActionIds(actionId)) {
-    const action = findBusinessAction(actions, compatibleId);
-    if (action) return action;
-  }
-  return null;
-}
-
-function compatibleActionIds(actionId: string | null | undefined): string[] {
-  if (!actionId) return [];
-  return [actionId, ...(ACTION_ID_ALIASES[actionId] ?? [])].filter((id, index, list) => list.indexOf(id) === index);
-}
-
 function invalidActionReason(actionId: string, enabledActions: BusinessActionConfig[]): PopupMissingActionReason {
-  return enabledActions.some((action) => action.actionId === actionId && !action.enabled) ? 'Business action disabled' : 'Unknown action id';
+  const action = enabledActions.find(item => item.actionId === actionId);
+  return !action ? 'Unknown action id' : !action.enabled ? 'Business action disabled' : 'Action incompatible with popup';
 }
 
 function defaultActionDebug(primaryActionReturned: string | null, expectedAction: boolean): PopupActionValidationDebug {
@@ -402,33 +321,6 @@ function logMissingActionFailure(popup: ValidatedPopupLanguage, enabledActions: 
     popupType: popup.popupType,
     actionDebug,
   }));
-}
-
-function hasUnsupportedSpecificClaim(text: string, knowledgeText: string): boolean {
-  return CLAIM_PATTERNS.some((pattern) => {
-    const match = text.match(pattern)?.[0];
-    return match ? !isSupported(match, knowledgeText) : false;
-  });
-}
-
-function hasUnsupportedFeatureClaim(text: string, knowledgeText: string): boolean {
-  const match = text.match(FEATURE_CLAIM_PATTERN)?.[0];
-  return match ? !isSupported(match, knowledgeText) : false;
-}
-
-function containsAnySupportedClaim(text: string, knowledgeText: string, pattern: RegExp): boolean {
-  const match = text.match(pattern)?.[0];
-  return match ? isSupported(match, knowledgeText) : false;
-}
-
-function isSupported(claim: string, knowledgeText: string): boolean {
-  const normalizedClaim = normalize(claim);
-  if (!normalizedClaim) return false;
-  return normalize(knowledgeText).includes(normalizedClaim);
-}
-
-function normalize(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

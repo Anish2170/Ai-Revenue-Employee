@@ -55,6 +55,8 @@ export type Surface = (typeof SURFACES)[number];
  * widget sends up; the backend never sees raw mouse/scroll/touch events.
  */
 export interface SemanticEvent {
+  /** Optional unique event ID; legacy widgets are deduplicated by exact content. */
+  id?: string;
   /** Semantic type, not a DOM event. */
   type: SemanticType;
   /** Semantic zone the event happened in. */
@@ -172,10 +174,13 @@ export type BrainAction = 'speak' | 'silent';
  * Sourced from the server-side session store (§3.5). Kept minimal for Sprint 4.1.
  */
 export interface PerceptionContext {
+  interruptionBlockedReason?: string;
   /** Interruptions already spent this session (drives fatigue, §7.3). */
   priorInterruptions: number;
   /** Monotonic ms of the last interruption, or null. Drives cooldown + fatigue decay. */
   lastInterruptionTs: number | null;
+  /** Independent server-wall-clock gate, supplied by ingest (not by visitors). */
+  cooldownRemainingMs?: number;
   /** Whether the visitor explicitly dismissed us this session (§7.4). */
   dismissed: boolean;
   /** Returning visitor (from the first-party token). Only READ by the goal layer. */

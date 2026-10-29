@@ -8,16 +8,22 @@
  * The old `vectorstore/index.ts` singleton is kept for the dev-fallback tenant
  * (no DB). Production paths use this registry exclusively.
  */
+import { join } from 'node:path';
+import { validateKnowledgeSnapshot } from '../knowledge/publication.js';
 import { config, hasDatabase } from '../config/index.js';
 import { MemoryVectorStore } from './memoryStore.js';
 import { loadSnapshotFile, websiteSnapshotPath } from './persistence.js';
-import { loadSnapshotArtifact, writeSnapshotArtifact, type StoredArtifact } from './snapshotStorage.js';
+import { loadLatestWebsiteSnapshot, loadSnapshotArtifact, writeSnapshotArtifact, type StoredArtifact } from './snapshotStorage.js';
 import { prisma } from '../db/prisma.js';
 import type { VectorStore } from './types.js';
 import type { KnowledgeSnapshot, PageType } from '../context/types.js';
 import type { SiteLink } from '../types.js';
 
 export interface LoadedMeta {
+  scopeApproval?: KnowledgeSnapshot['scopeApproval'];
+  activeVersion?: string;
+  publication?: KnowledgeSnapshot['publication'];
+  crawlManifest?: KnowledgeSnapshot['crawlManifest'];
   sourceUrl: string;
   siteLinks: SiteLink[];
   pages: Array<{ url: string; path: string; pageType: PageType; contentHash: string; lastCrawled: string }>;
@@ -67,7 +73,10 @@ function incompatibleReason(snap: KnowledgeSnapshot): string | null {
 
 /** Get or lazily load the store for a website. */
 export async function getWebsiteStore(websiteId: string): Promise<{ store: VectorStore; meta: LoadedMeta | null }> {
-  const latest = hasDatabase ? await prisma.knowledgeSnapshot.findFirst({ where: { websiteId, status: 'READY' }, orderBy: { createdAt: 'desc' } }).catch(() => null) : null;
+  const cached=stores.get(websiteId);
+  let latest;
+  try{latest=hasDatabase?await prisma.knowledgeSnapshot.findFirst({where:{websiteId,status:'READY'},orderBy:{createdAt:'desc'}}):null;}
+  catch(error){if(cached)return {store:cached.store,meta:cached.meta};throw error;}
   const identity = latest ? `${latest.id}:${latest.storageKey}` : null;
   const existing = stores.get(websiteId);
   if (existing && existing.snapshotIdentity === identity) {
@@ -87,6 +96,13 @@ export async function getWebsiteStore(websiteId: string): Promise<{ store: Vecto
   } else {
     snap = await loadSnapshotFile(websiteSnapshotPath(websiteId));
   }
+  if(snap){try{validateKnowledgeSnapshot(snap);if(latest&&snap.publication&&snap.publication.id!==latest.id)throw Error('Snapshot identity mismatch');if(snap.scopeApproval&&(snap.scopeApproval.websiteId!==websiteId||latest&&snap.scopeApproval.organizationId!==latest.organizationId))throw Error('Snapshot tenant mismatch');}catch{snap=null;}}
+  // A failed replacement read cannot evict a known-good cached index.
+  if(!snap && existing)return {store:existing.store,meta:existing.meta};
+  if(!snap && latest){
+    const loaded=await loadLatestWebsiteSnapshot(websiteId);snap=loaded.snapshot;
+    if(loaded.snapshotId && snap)latest={...latest,id:loaded.snapshotId,storageKey:loaded.storageKey??latest.storageKey};
+  }
   if (snap) {
     const reason = incompatibleReason(snap);
     if (reason) {
@@ -94,6 +110,7 @@ export async function getWebsiteStore(websiteId: string): Promise<{ store: Vecto
     } else {
       store.import(snap.documents);
       meta = {
+        activeVersion:snap.publication?.id??latest?.id??'legacy',publication:snap.publication,crawlManifest:snap.crawlManifest,scopeApproval:snap.scopeApproval,
         sourceUrl: snap.sourceUrl,
         siteLinks: snap.siteLinks,
         pages: snap.pages,
@@ -106,7 +123,7 @@ export async function getWebsiteStore(websiteId: string): Promise<{ store: Vecto
     }
   }
 
-  stores.set(websiteId, { store, meta, lastAccessed: Date.now(), snapshotIdentity: identity });
+  stores.set(websiteId, { store, meta, lastAccessed: Date.now(), snapshotIdentity: latest?`${latest.id}:${latest.storageKey}`:identity });
   return { store, meta };
 }
 
@@ -137,13 +154,7 @@ export async function persistWebsiteSnapshot(
     actionGraph: meta.actionGraph,
     documents,
   };
-  const artifact = await writeSnapshotArtifact({ organizationId, websiteId, snapshotId, snapshot, localKey: websiteSnapshotPath(websiteId) });
-
-  const entry = stores.get(websiteId);
-  if (entry) {
-    entry.meta = { ...meta, createdAt: snapshot.createdAt, embeddingModel: snapshot.embeddingModel };
-    entry.lastAccessed = Date.now();
-  }
+  const artifact = await writeSnapshotArtifact({ organizationId, websiteId, snapshotId, snapshot, localKey: join(websiteSnapshotPath(websiteId)+'.versions',snapshotId+'.json') });
 
   return artifact;
 }

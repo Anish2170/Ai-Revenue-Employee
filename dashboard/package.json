@@ -7,7 +7,7 @@
                     "build":  "next build",
     "start":  "next start",
     "lint":  "eslint",
-    "test": "node --experimental-strip-types --test src/lib/api.test.ts src/lib/knowledge-progress.test.ts",
+    "test": "node --experimental-strip-types --test src/lib/api.test.ts src/lib/knowledge-progress.test.ts src/lib/knowledge-state.test.ts",
     "typecheck":  "tsc -p tsconfig.json --noEmit"
                 },
     "dependencies":  {

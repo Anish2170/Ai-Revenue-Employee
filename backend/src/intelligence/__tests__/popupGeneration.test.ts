@@ -11,6 +11,8 @@ import { SCENARIOS } from './fixtures.js';
 import type { BusinessActionConfig } from '../../business-actions/action.types.js';
 import type { BusinessInstructions, RetrievedChunk } from '../../context/types.js';
 import type { BusinessObjective, SalesDecision } from '../types.js';
+import { createOpenAIProvider } from '../../llm/provider/openai.js';
+import { popupJsonSchema } from '../../validation/popupSchema.js';
 
 const instructions: BusinessInstructions = {
   businessName: 'Creovix AI',
@@ -23,6 +25,7 @@ const instructions: BusinessInstructions = {
 const knowledgeContent = 'Creovix offers custom pricing based on workflow scope and integrations.';
 
 const enabledActions: BusinessActionConfig[] = [
+  { actionId: 'learn_more', label: 'Learn More', destinationType: 'URL', destination: 'https://creovix.test/services', enabled: true },
   { actionId: 'pricing', label: 'View Pricing', destinationType: 'URL', destination: 'https://creovix.test/pricing', enabled: true },
   { actionId: 'book_demo', label: 'Book Demo', destinationType: 'URL', destination: 'https://creovix.test/demo', enabled: true },
 ];
@@ -157,6 +160,53 @@ test('popupPipeline: runs the full safe path and returns validated popup payload
   assert.deepEqual(result.trace.stages, ['strategy', 'knowledge', 'safety', 'prompt', 'llm', 'response_validation', 'popup_generation']);
   assert.equal(calls.length, 2);
   assert.equal(calls[1], 'llm');
+});
+
+for (const [name, actions] of [
+  ['primary action', { primaryAction: 'pricing', secondaryAction: '' }],
+  ['two actions', { primaryAction: 'pricing', secondaryAction: 'learn_more' }],
+  ['empty actions', { primaryAction: '', secondaryAction: '' }],
+] as const) {
+  test(`popupPipeline: production OpenAI request and parsed ${name} reach validated popup`, async (t) => {
+    const { decision, objective } = scenarioDecision();
+    const fetchMock = t.mock.method(globalThis, 'fetch', async (...[_url, init]: Parameters<typeof fetch>) => {
+      const format = JSON.parse(String(init?.body)).response_format;
+      assert.equal(format.type, 'json_schema');
+      assert.equal(format.json_schema.strict, true);
+      assert.deepEqual(format.json_schema.schema, popupJsonSchema);
+      return Response.json({ choices: [{ message: { content: JSON.stringify(rawPopup(actions)) } }] });
+    });
+    const result = await generateSafePopup(
+      { decision, objective, business: { name: 'Creovix AI' }, instructions, businessActions: enabledActions },
+      {
+        knowledge: { retrieveFn: async () => ({ chunks: [retrievedChunk()], scores: [0.91] }) },
+        llm: { available: () => true, generateStructured: createOpenAIProvider().generateStructured },
+      },
+    );
+    assert.equal(result.ok, true);
+    assert.equal(result.popup.popup.primaryAction, 'pricing');
+    assert.equal(result.popup.popup.secondaryAction, actions.secondaryAction || undefined);
+    assert.equal(result.trace.responseValidation?.actionDebug.fallbackApplied, name === 'empty actions');
+    assert.equal(fetchMock.mock.callCount(), 1);
+  });
+}
+
+test('popupPipeline: OpenAI HTTP 400 remains a provider error and suppresses popup', async (t) => {
+  const { decision, objective } = scenarioDecision();
+  t.mock.method(globalThis, 'fetch', async () => new Response('{}', { status: 400 }));
+  const result = await generateSafePopup(
+    { decision, objective, business: { name: 'Creovix AI' }, instructions, businessActions: enabledActions },
+    {
+      knowledge: { retrieveFn: async () => ({ chunks: [retrievedChunk()], scores: [0.91] }) },
+      llm: { available: () => true, generateStructured: createOpenAIProvider().generateStructured },
+    },
+  );
+  assert.equal(result.ok, false);
+  assert.equal(result.stoppedAt, 'llm');
+  assert.equal(result.reason, 'provider_error');
+  assert.equal(result.popup, null);
+  assert.equal(result.trace.llm?.ok, false);
+  assert.match(result.trace.llm.detail ?? '', /status 400/);
 });
 
 test('popupPipeline: stops before prompt and LLM when knowledge is missing', async () => {

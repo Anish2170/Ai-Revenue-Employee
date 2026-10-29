@@ -10,8 +10,9 @@ import { generateDecision, llmAvailable } from '../llm/index.js';
 import type { StructuredRequest } from '../llm/index.js';
 import type { BuiltPopupPrompt } from '../prompts/popupPromptBuilder.js';
 import type { PreLlmSafetyResult } from './safetyLayer.js';
+import { abortable, checkCancelled, deadlineScope } from '../llm/cancellation.js';
 
-export type PopupLlmRejectReason = 'safety_rejected' | 'provider_unavailable' | 'timeout' | 'provider_error';
+export type PopupLlmRejectReason = 'safety_rejected' | 'provider_unavailable' | 'timeout' | 'cancelled' | 'provider_error';
 
 export interface PopupLlmInput {
   prompt: BuiltPopupPrompt;
@@ -19,6 +20,8 @@ export interface PopupLlmInput {
 }
 
 export interface PopupLlmOptions {
+  signal?: AbortSignal;
+  deadlineAt?: number;
   /** Default keeps proactive popup generation snappy and fail-closed. */
   timeoutMs?: number;
   /** Test seam; production uses the provider-independent LLM facade. */
@@ -61,37 +64,26 @@ export async function generatePopupLanguage(
   }
 
   const generateStructured = opts.generateStructured ?? generateDecision;
+  const timeoutMs = Math.min(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS, opts.deadlineAt === undefined ? Infinity : opts.deadlineAt - Date.now());
+  const scope = deadlineScope(opts.signal, timeoutMs);
   const req: StructuredRequest = {
+    signal: scope.signal,
+    deadlineAt: Math.min(opts.deadlineAt ?? Infinity, Date.now() + timeoutMs),
     system: input.prompt.system,
     user: input.prompt.user,
     schema: input.prompt.schema,
   };
 
   try {
-    const raw = await withTimeout(generateStructured(req), opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    checkCancelled(scope.signal);
+    const raw = await abortable(generateStructured(req), scope.signal);
     return { ok: true, raw, promptVersion: input.prompt.version };
   } catch (err) {
-    if (err instanceof PopupLlmTimeoutError) {
+    if (scope.signal.aborted) {
+      if (opts.signal?.aborted) return { ok: false, reason: 'cancelled', promptVersion: input.prompt.version };
       return { ok: false, reason: 'timeout', promptVersion: input.prompt.version };
     }
     const detail = err instanceof Error ? err.message : 'Unknown provider error';
     return { ok: false, reason: 'provider_error', promptVersion: input.prompt.version, detail };
-  }
-}
-
-class PopupLlmTimeoutError extends Error {
-  constructor() {
-    super('Popup LLM generation timed out.');
-  }
-}
-
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new PopupLlmTimeoutError()), Math.max(0, timeoutMs));
-  });
-
-  return Promise.race([promise, timeout]).finally(() => {
-    if (timer) clearTimeout(timer);
-  });
+  } finally { scope.close(); }
 }
