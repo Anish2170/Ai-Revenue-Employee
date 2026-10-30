@@ -162,6 +162,29 @@ test('popupPipeline: runs the full safe path and returns validated popup payload
   assert.equal(calls[1], 'llm');
 });
 
+for (const body of ['Need help comparing pricing options?', 'All treatments cost $1.', 'Get a free consultation.']) {
+  test(`popupPipeline: whole legacy page preserves grounding for ${body}`, async () => {
+    const { decision, objective } = scenarioDecision();
+    const content = 'Clinic pricing table with conditions and mixed source blocks. '.repeat(36).slice(0, 2079);
+    assert.equal(content.length, 2079);
+    const result = await generateSafePopup(
+      { decision, objective, business: { name: 'Example' }, instructions, businessActions: enabledActions, pagePath: '/pricing' },
+      {
+        knowledge: { retrieveFn: async () => ({ chunks: [retrievedChunk(content)], scores: [0.91] }) },
+        llm: { available: () => true, generateStructured: async () => rawPopup({ title: 'Pricing help', body, primaryAction: 'pricing' }) },
+      },
+    );
+    assert.equal(result.trace.knowledge?.chunks[0]?.content, content);
+    const safeInvitation = body === 'Need help comparing pricing options?';
+    assert.equal(result.ok, safeInvitation);
+    if (result.ok) assert.deepEqual(result.trace.responseValidation?.ok && result.trace.responseValidation.evidence, []);
+    else {
+      assert.equal(result.stoppedAt, 'response_validation');
+      assert.match(result.reason, /unsupported_claim/);
+    }
+  });
+}
+
 for (const [name, actions] of [
   ['primary action', { primaryAction: 'pricing', secondaryAction: '' }],
   ['two actions', { primaryAction: 'pricing', secondaryAction: 'learn_more' }],

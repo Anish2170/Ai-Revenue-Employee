@@ -54,7 +54,10 @@ export interface StrategyKnowledgeOptions {
 }
 
 const DEFAULT_MAX_CHUNKS = 3;
-const DEFAULT_MAX_CHARS = 1800;
+// Legacy snapshots can contain one whole page per chunk (the Dental pricing
+// page is 2079 chars). Keep a bounded whole source rather than dropping it or
+// clipping away qualifiers. The separate copy plan still authorizes facts.
+const DEFAULT_MAX_CHARS = 3000;
 
 export async function retrieveStrategyKnowledge(
   strategy: ConversationStrategy,
@@ -71,7 +74,7 @@ export async function retrieveStrategyKnowledge(
     knowledgeAvailable: kept.length > 0,
     chunks: kept,
     scores: kept.map((c) => c.score),
-    unavailableReason: conflict?'conflicting_knowledge':kept.length > 0 ? null : 'no_relevant_knowledge',
+    unavailableReason: conflict?'conflicting_knowledge':kept.length > 0 ? null : chunks.some(chunk => chunk.content.trim()) ? 'no_knowledge_within_budget' : 'no_relevant_knowledge',
     diagnostics,
   };
 }

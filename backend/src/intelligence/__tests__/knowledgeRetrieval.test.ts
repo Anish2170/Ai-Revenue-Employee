@@ -106,6 +106,28 @@ test('knowledgeRetrieval: reports missing knowledge without throwing', async () 
   assert.equal(result.unavailableReason, 'no_relevant_knowledge');
 });
 
+test('knowledgeRetrieval: retains a whole legacy pricing page above 1800 characters', async () => {
+  // The retained Dental /pricing source is 2079 characters. It must remain
+  // whole; a prefix could lose price qualifiers or turn examples into claims.
+  const content = 'Pricing details and their full conditions. '.repeat(51).slice(0, 2079);
+  assert.equal(content.length, 2079);
+  const result = await retrieveStrategyKnowledge(priceStrategy(), {
+    retrieveFn: async () => ({ chunks: [chunk({ content })], scores: [0.82] }),
+  });
+  assert.equal(result.knowledgeAvailable, true);
+  assert.equal(result.chunks[0]?.content, content);
+  assert.equal(result.chunks[0]?.truncated, false);
+});
+
+test('knowledgeRetrieval: explains when whole sources cannot fit the budget', async () => {
+  const result = await retrieveStrategyKnowledge(priceStrategy(), {
+    maxChars: 1800,
+    retrieveFn: async () => ({ chunks: [chunk({ content: 'x'.repeat(2079) })], scores: [0.82] }),
+  });
+  assert.equal(result.knowledgeAvailable, false);
+  assert.equal(result.unavailableReason, 'no_knowledge_within_budget');
+});
+
 test('knowledgeRetrieval: output contains no raw event names', async () => {
   const strategy = priceStrategy();
   const result = await retrieveStrategyKnowledge(strategy, {
