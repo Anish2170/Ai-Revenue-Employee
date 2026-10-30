@@ -165,14 +165,17 @@ function resolvePopupActions(
   const primary = resolvePopupAction(enabledActions, popup.primaryAction, strategy, instructions, false, `${popup.title} ${popup.body}`, context);
   const secondary = resolvePopupAction(enabledActions, popup.secondaryAction, strategy, instructions, true, `${popup.title} ${popup.body}`, context);
   const invalidAction = Boolean((popup.primaryAction && !primary) || (popup.secondaryAction && !secondary));
+  // Resolve and validate both IDs first. A repeated action is safe but should
+  // render only once, including when the primary comes from the fallback.
+  const { secondaryAction: _secondaryAction, ...withoutSecondary } = popup;
 
   if (primary) {
     return {
       ok: true,
       popup: {
-        ...popup,
+        ...withoutSecondary,
         primaryAction: primary.actionId,
-        ...(secondary ? { secondaryAction: secondary.actionId } : {}),
+        ...(secondary && secondary.actionId !== primary.actionId ? { secondaryAction: secondary.actionId } : {}),
       },
       invalidAction,
       actionDebug: {
@@ -189,7 +192,7 @@ function resolvePopupActions(
   if (fallback) {
     return {
       ok: true,
-      popup: { ...popup, primaryAction: fallback.actionId, ...(secondary ? { secondaryAction: secondary.actionId } : {}) },
+      popup: { ...withoutSecondary, primaryAction: fallback.actionId, ...(secondary && secondary.actionId !== fallback.actionId ? { secondaryAction: secondary.actionId } : {}) },
       invalidAction,
       actionDebug: {
         expectedAction,

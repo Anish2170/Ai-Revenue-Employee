@@ -73,6 +73,41 @@ test('pricing navigation: omitted model action uses the same verified pricing fa
   }
 });
 
+for (const primaryAction of ['pricing', '']) {
+  test(`pricing navigation: duplicate secondary is omitted after resolving primary ${JSON.stringify(primaryAction)}`, () => {
+    const result = validatePopupResponse({
+      llm: { ok: true, promptVersion: 'popup-v1', raw: { title: 'Pricing help', body: 'Need help comparing pricing options?', primaryAction, secondaryAction: 'pricing', tone: strategy.tone, popupType: 'pricing' } },
+      strategy, knowledge: source, instructions, enabledActions: [pricing()], websiteId, groundingContext: { pagePath: '/pricing' },
+    });
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.popup.primaryAction, 'pricing');
+      assert.equal(result.popup.secondaryAction, undefined);
+    }
+  });
+}
+
+test('pricing navigation: a distinct compatible secondary action remains available', () => {
+  const action = pricing();
+  const secondary: BusinessActionConfig = { actionId: 'learn_more', label: 'Learn More', destinationType: 'URL', destination: origin + '/services', enabled: true,
+    authority: { source: 'owner', websiteId, actionId: 'learn_more', label: 'Learn More', destinationType: 'URL', destination: origin + '/services' } };
+  const result = validatePopupResponse({
+    llm: { ok: true, promptVersion: 'popup-v1', raw: { title: 'Pricing help', body: 'Need help comparing pricing options?', primaryAction: 'pricing', secondaryAction: 'learn_more', tone: strategy.tone, popupType: 'pricing' } },
+    strategy, knowledge: source, instructions, enabledActions: [action, secondary], websiteId, groundingContext: { pagePath: '/pricing' },
+  });
+  assert.equal(result.ok, true);
+  if (result.ok) assert.equal(result.popup.secondaryAction, 'learn_more');
+});
+
+test('pricing navigation: duplicate removal cannot hide an invalid secondary action', () => {
+  const result = validatePopupResponse({
+    llm: { ok: true, promptVersion: 'popup-v1', raw: { title: 'Pricing help', body: 'Need help comparing pricing options?', primaryAction: 'pricing', secondaryAction: 'invented_offer', tone: strategy.tone, popupType: 'pricing' } },
+    strategy, knowledge: source, instructions, enabledActions: [pricing()], websiteId, groundingContext: { pagePath: '/pricing' },
+  });
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.ok(result.reasons.includes('cta_not_allowed'));
+});
+
 for (const label of ['Pricing & Financing Guaranteed', 'Free Pricing & Financing', 'Pricing & Financing 0% APR', 'Pricing & Financing — Save 20%', 'Pricing & Financing today', 'Pricing & Financing offers', 'Pricing & Financing<script>', 'Pricing & Financing\nContact Support', 'Financing', 'Check Your Credit', 'Pricing & Financing no credit checks']) {
   test(`pricing navigation: rejects unsupported or unsafe label ${JSON.stringify(label)}`, () => {
     const action = pricing(label);
