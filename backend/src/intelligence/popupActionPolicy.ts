@@ -13,7 +13,10 @@ const ALLOWED: Record<ConversationStrategy['kind'], readonly PopupActionPurpose[
 const ALIASES: Record<string, string[]> = { support: ['contact_support'], contact_support: ['support'], contact: ['contact_sales'], contact_sales: ['contact'], learn_more: ['documentation'], documentation: ['learn_more'] };
 // CTA labels are visitor-visible copy too. Unknown promotional labels cannot
 // introduce a factual promise through an otherwise approved action ID.
-const SAFE_LABEL = /^(?:(?:view|see|check|compare|explore|browse|shop) (?:our |the )?(?:pricing|prices|plans|fees|collection|products|catalog|catalogue|services)|(?:book|schedule|request|arrange) (?:a |an )?(?:appointment|consultation|demo|site visit)|(?:contact|talk to) (?:us|sales|support|our team)|(?:get )?support|learn more|read more|documentation|(?:get )?help|buy now|shop now|get in touch|pricing|contact|appointment|book demo|call now|call us|email us|whatsapp)$/i;
+// "Pricing & Financing" names a navigation section; it promises no rates,
+// eligibility or offer. Accept only this exact additional label, with all
+// destination, provenance, tenant and material-claim checks still required.
+const SAFE_LABEL = /^(?:(?:view|see|check|compare|explore|browse|shop) (?:our |the )?(?:pricing|prices|plans|fees|collection|products|catalog|catalogue|services)|(?:book|schedule|request|arrange) (?:a |an )?(?:appointment|consultation|demo|site visit)|(?:contact|talk to) (?:us|sales|support|our team)|(?:get )?support|learn more|read more|documentation|(?:get )?help|buy now|shop now|get in touch|pricing(?: & financing)?|contact|appointment|book demo|call now|call us|email us|whatsapp)$/i;
 
 function purpose(text: string): PopupActionPurpose | null {
   const words = text.toLowerCase().replace(/[_/-]+/g, ' ');
