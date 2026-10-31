@@ -91,3 +91,15 @@ test('oversized draft is cancelled and replaced before output', async t => {
   const input = await setup(t, async function* (req) { signal = req.signal; yield 'x'.repeat(8001); });
   assert.equal((await collect(input)).text, fact); assert.equal(signal?.aborted, true);
 });
+test('production safety diagnostics correlate reasons without retaining private drafts or questions', async t => {
+  const { logger } = await import('../logging/logger.js');
+  const entries: unknown[] = [];
+  t.mock.method(logger, 'info', (message: string, detail?: unknown) => { if (message === '[chat] evidence decision') entries.push(detail); });
+  const input = await setup(t, async function* () { yield 'Private unsupported draft: free implants today.'; });
+  input.debug = { requestId: 'http-test-correlation' };
+  await collect(input);
+  assert.deepEqual(entries, [{ requestId: 'http-test-correlation', websiteId: input.tenant!.websiteId,
+    state: 'known_positive', reasons: ['unverified_claim_or_capability', 'missing_supported_answer'], modelUsed: true }]);
+  assert.ok(!JSON.stringify(entries).includes('Private unsupported draft'));
+  assert.ok(!JSON.stringify(entries).includes('Dental cleaning price?'));
+});

@@ -63,7 +63,7 @@ async function getWebsiteOrigins(): Promise<Set<string>> {
 
 export function isPublicWidgetRequest(path: string): boolean {
   return path === '/widget/session' || path === '/engage' || path === '/events' || path === '/chat' || path === '/ingest' || path === '/debug'
-    || path === '/analytics/events' || path === '/conversations' || path.startsWith('/conversations/') || path === '/widget.js';
+    || path === '/popup/lifecycle' || path === '/analytics/events' || path === '/conversations' || path.startsWith('/conversations/') || path === '/widget.js';
 }
 
 export function corsPolicyFor(

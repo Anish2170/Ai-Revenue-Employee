@@ -49,6 +49,15 @@ function chatTrace(input: ChatStreamInput, stage: string, detail?: unknown): voi
   logger.debug(`[chat:${id}] ${stage}`, detail);
 }
 
+function reportSafetyDecision(input: ChatStreamInput, decision: Parameters<NonNullable<ChatStreamInput['onSafetyDecision']>>[0]): void {
+  // Production diagnostics contain reason codes, never visitor text, sources,
+  // provider drafts or credentials. Correlate with the HTTP request ID.
+  logger.info('[chat] evidence decision', { requestId: input.debug?.requestId ?? null,
+    websiteId: input.tenant?.websiteId ?? null, state: decision.state,
+    reasons: decision.reasons, modelUsed: decision.modelUsed });
+  input.onSafetyDecision?.(decision);
+}
+
 function retrievedChunkIds(context: ResolvedContext): string[] {
   return context.chunks.map((chunk) => chunk.id);
 }
@@ -146,7 +155,7 @@ async function* guardedReply(input: ChatStreamInput, context: ResolvedContext, p
   }
   if (input.signal?.aborted) throw input.signal.reason ?? new Error('Chat cancelled');
   if (source && !reasons.length) reasons = validateChatDraft(draft, plan).reasons;
-  input.onSafetyDecision?.({ state: plan.state, draft, reasons, modelUsed });
+  reportSafetyDecision(input, { state: plan.state, draft, reasons, modelUsed });
   // Follow-up invitations are server-composed only, and never promise delivery.
   const directRendering = ['English', 'Hindi', 'Hinglish'].includes(plan.language.language);
   const answer = source && !reasons.length && !plan.leadOffer && !['booking', 'booking_link'].includes(plan.kind) && directRendering ? draft : composeSafeChatReply(plan);
@@ -210,7 +219,7 @@ export async function streamChatReply(input: ChatStreamInput): Promise<AsyncIter
   const plan = buildChatSafetyPlan(context, answerQuery(retrievalQuery,context.retrieval), language, input.leadCaptureAvailable === true);
   const coverage=!sourceRequest?composeEvidenceCoverage(context,retrievalQuery,language):null;
   if(coverage){
-    input.onSafetyDecision?.({state:coverage.complete?'known_positive':'partial',draft:'',reasons:coverage.parts.filter(part=>!part.state.startsWith('known')).map(part=>`${part.need}:${part.state}`),modelUsed:false});
+    reportSafetyDecision(input, {state:coverage.complete?'known_positive':'partial',draft:'',reasons:coverage.parts.filter(part=>!part.state.startsWith('known')).map(part=>`${part.need}:${part.state}`),modelUsed:false});
     return (async function*():AsyncIterable<ChatStreamEvent>{
       if(input.signal?.aborted)throw input.signal.reason;
       yield {type:'token',text:coverage.text};
@@ -238,7 +247,7 @@ export async function streamChatReply(input: ChatStreamInput): Promise<AsyncIter
   if (messages.some(message => /no thanks|not interested|do not contact|don't contact|nahi chahiye|नहीं चाहिए/iu.test(message.content))
     || messages.some(message => /[\w.+-]+@[\w.-]+\.[a-z]{2,}/iu.test(message.content))
     || messages.filter(message => message.role === 'assistant').some(message => /email address|ईमेल पता|email.*bata/iu.test(message.content))) plan.leadOffer = false;
-  if (plan.contactSubmission || plan.kind === 'conversation' || !plan.state.startsWith('known') || plan.excerpts.length) return guardedReply(input, context, plan);
+  if (plan.contactSubmission || ['conversation', 'demo'].includes(plan.kind) || !plan.state.startsWith('known') || plan.excerpts.length) return guardedReply(input, context, plan);
   const prompt = promptRegistry.chat.active.build(context, messages, summary, opener, input.conversation, plan);
   const leadInstructionIndex = prompt.system.indexOf('Intelligent lead capture:');
   const leadInstructionsPresent = leadInstructionIndex >= 0;

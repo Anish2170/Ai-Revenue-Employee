@@ -16,6 +16,7 @@ export interface ChatSafetyPlan {
   state: AnswerState; query: string; topic: string; kind: string; language: ChatLanguageState; businessName: string;
   facts: ChatFact[]; selected: ChatFact[]; excerpts: RetrievedChunk[];
   booking: BusinessActionConfig[]; contact: BusinessActionConfig[];
+  navigation: { pricing: BusinessActionConfig[]; services: BusinessActionConfig[] };
   leadCapture: boolean; leadOffer: boolean; contactSubmission: boolean;
 }
 const MONEY = String.raw`(?:[$₹€£¥]\s*\d[\d,.]*|(?:USD|INR|EUR|GBP|CAD|AUD)\s*\d[\d,.]*)`;
@@ -80,11 +81,18 @@ export function verifiedChatActions(context: ResolvedContext) {
   return {
     booking: actions.filter(action => action.destinationType === 'URL' && ['appointment', 'demo'].includes(actionPurpose(action, scope) ?? '')),
     contact: actions.filter(action => ['URL', 'EMAIL', 'PHONE', 'WHATSAPP'].includes(action.destinationType) && ['contact', 'support'].includes(actionPurpose(action, scope) ?? '')),
+    navigation: {
+      pricing: actions.filter(action => action.destinationType === 'URL' && actionPurpose(action, scope) === 'pricing'),
+      services: actions.filter(action => action.destinationType === 'URL' && ['product', 'learn'].includes(actionPurpose(action, scope) ?? '') && /\/services\/?(?:[?#]|$)/iu.test(action.destination)),
+    },
   };
 }
 function question(query: string) {
   const value = semantics(query);
   if (/^(?:hi|hello|hey|thanks|thank you|ok|okay|yes|no|नमस्ते|धन्यवाद|namaste|shukriya)[.!?।]*$/u.test(value)) return { kind: 'conversation', topic: 'your question' };
+  if (/^(?:contact(?: details| information)?|phone(?: number)?|email(?: address)?)[.!?]*$/u.test(value)) return { kind: 'contact', topic: 'contact details' };
+  if (/^(?:(?:your|all|available)\s+)?services(?: list)?[.!?]*$/u.test(value)) return { kind: 'service_overview', topic: 'services' };
+  if (/\b(?:book|request|schedule) (?:a )?demo\b/u.test(value)) return { kind: 'demo', topic: 'a product demo' };
   if (/\b(?:slots?|availability|available (?:consultation|appointment) times|appointment times|खाली समय|उपलब्ध समय)\b|कौन सा समय/u.test(value)) return { kind: 'live_slots', topic: 'appointment availability' };
   if (/checklist|guide|document|resource|चेकलिस्ट|गाइड|संसाधन/iu.test(value)) return { kind: 'resource', topic: 'the requested resource' };
   if (/\b(?:emailed|email me|send .*email|deliver|delivery)\b|ईमेल.*भेज/iu.test(value)) return { kind: 'delivery', topic: 'email delivery' };
@@ -129,12 +137,18 @@ export function buildChatSafetyPlan(context: ResolvedContext, query: string, lan
     && (target.kind==='refund'&&target.topic==='refund policy'||sameSubject(target.topic,conflict.subject)||target.kind==='general'&&terms(conflict.subject).some(word=>terms(query).includes(word)))));
   const opaqueRelated = opaque.some(text => [target.topic, ...selected.map(fact => fact.subject)].some(subject => { const relevant = terms(subject); return relevant.length > 0 && relevant.every(word => semantics(text).includes(word)); }));
   const actions = verifiedChatActions(context);
+  // A dental appointment must not fulfill a product-demo request. Preserve
+  // valid demo navigation for businesses that actually configured it.
+  if (target.kind === 'demo') actions.booking = actions.booking.filter(action => actionPurpose(action, { websiteId: context.websiteId, websiteUrl: context.instructions.websiteUrl, businessName: context.business.name }) === 'demo');
   let state: AnswerState = conflicting||retrievalConflict ? 'contradictory' : selected.length && !opaqueRelated ? selected.every(fact => fact.negative) ? 'known_negative' : 'known_positive' : 'unknown';
   if (target.kind === 'relative_hours' || target.kind === 'price' && !selected.length && /^(treatment price|lagega)$/u.test(target.topic) || /^(?:it|this|that)$/u.test(target.topic)) state = 'ambiguous';
-  const excerpts = target.kind === 'general' && !retrievalConflict && !conflicting ? context.chunks.filter(chunk => chunk.content.length <= 2000 && !('truncated' in chunk && chunk.truncated) && !UNSAFE_SOURCE.test(chunk.content) && terms(query).length > 0 && terms(query).every(word => semantics(chunk.content).includes(word))).slice(0, 2) : [];
+  // Keep the entire qualification boundary; never shorten a page by cutting
+  // off conditions. Long pages need a targeted answer or verified navigation.
+  const excerpts = target.kind === 'general' && !retrievalConflict && !conflicting ? context.chunks.filter(chunk => chunk.content.length <= 600 && !('truncated' in chunk && chunk.truncated) && !UNSAFE_SOURCE.test(chunk.content) && terms(query).length > 0 && terms(query).every(word => semantics(chunk.content).includes(word))).slice(0, 1) : [];
   if (excerpts.length) state = 'known_positive';
   if (target.kind === 'booking_link' && actions.booking.length) state = selected.some(fact => fact.negative) || conflicting ? 'contradictory' : 'known_positive';
   if (target.kind === 'conversation') state = 'known_positive';
+  if (target.kind === 'demo' && actions.booking.length) state = facts.some(fact => fact.kind === 'service' && fact.negative && /\bdemo\b/iu.test(fact.subject)) ? 'contradictory' : 'known_positive';
   return { state, query, topic: target.topic, kind: target.kind, language, businessName: context.business.name, facts, selected, excerpts,
     ...actions, leadCapture, leadOffer: leadCapture && ['price', 'booking', 'booking_link', 'service'].includes(target.kind) && state.startsWith('known') && (selected.some(f => !f.negative) || actions.booking.length > 0),
     contactSubmission: /^[^\n]*[\w.+-]+@[\w.-]+\.[a-z]{2,}[^\n]*$/iu.test(query) };
@@ -170,6 +184,13 @@ export function composeSafeChatReply(plan: ChatSafetyPlan): string {
   if (plan.contactSubmission) return plan.leadCapture
     ? local(plan, 'Thank you for sharing your email for follow-up. Saving contact details does not send email or complete a booking.', 'फ़ॉलो-अप के लिए email साझा करने के लिए धन्यवाद। संपर्क जानकारी दर्ज करने से ईमेल नहीं भेजा जाता और बुकिंग पूरी नहीं होती।', 'Follow-up ke liye email share karne ke liye shukriya. Contact details save karne se email nahi bheja jata aur booking complete nahi hoti.')
     : local(plan, 'Contact capture is unavailable here. Please use a verified business contact route.', 'यहाँ संपर्क जानकारी दर्ज करने की सुविधा उपलब्ध नहीं है। कृपया व्यवसाय के सत्यापित संपर्क माध्यम का उपयोग करें।', 'Yahan contact details save karne ki suvidha available nahi hai. Business ka verified contact route use karein.');
+  if (plan.kind === 'contact' && plan.contact[0]) return `${local(plan, 'You can contact the business here:', 'व्यवसाय से यहाँ संपर्क कर सकते हैं:', 'Business se yahan contact kar sakte hain:')} ${plan.contact[0].destination}`;
+  if (plan.kind === 'demo' && plan.state === 'known_positive' && plan.booking[0]) return `${local(plan, 'You can request a demo here:', 'डेमो का अनुरोध यहाँ कर सकते हैं:', 'Demo yahan request kar sakte hain:')} ${plan.booking[0].destination}`;
+  if (plan.state !== 'contradictory' && (plan.kind === 'service_overview' || plan.kind === 'price' && !plan.selected.length)) {
+    const action = (plan.kind === 'price' ? plan.navigation.pricing : plan.navigation.services)[0];
+    if (action) return `${local(plan, plan.kind === 'price' ? 'You can view pricing here:' : 'You can explore services here:', plan.kind === 'price' ? 'कीमतों की जानकारी यहाँ देखें:' : 'सेवाओं की जानकारी यहाँ देखें:', plan.kind === 'price' ? 'Pricing yahan dekh sakte hain:' : 'Services yahan dekh sakte hain:')} ${action.destination}\n${local(plan, 'Which treatment or service are you interested in?', 'आप किस उपचार या सेवा के बारे में जानना चाहते हैं?', 'Aap kis treatment ya service ke baare mein jaanna chahte hain?')}`;
+    if (plan.kind === 'service_overview') return local(plan, 'Which treatment or service would you like to know about?', 'आप किस उपचार या सेवा के बारे में जानना चाहते हैं?', 'Aap kis treatment ya service ke baare mein jaanna chahte hain?');
+  }
   let text: string;
   if (plan.state === 'contradictory') text = local(plan, `The retrieved information about ${plan.topic} conflicts. Please confirm the current policy with the business.`, `${plan.topic} की मिली जानकारी में विरोध है। कृपया वर्तमान नीति की पुष्टि करें।`, `${plan.topic} ki mili jaankari mein conflict hai. Current policy business se confirm karna behtar hoga.`);
   else if (plan.state === 'ambiguous') text = local(plan, plan.kind === 'relative_hours' ? 'Which date do you mean? I can share the published weekly hours, but cannot confirm live availability.' : 'Which treatment or service do you mean? Prices depend on the specific service.', plan.kind === 'relative_hours' ? 'आप किस तारीख के बारे में पूछ रहे हैं? साप्ताहिक समय बता सकता हूँ, लेकिन लाइव उपलब्धता की पुष्टि नहीं कर सकता।' : 'आप किस उपचार या सेवा की कीमत पूछ रहे हैं?', plan.kind === 'relative_hours' ? 'Aap kis date ki baat kar rahe hain? Weekly hours bata sakta hoon, lekin live availability confirm nahi kar sakta.' : 'Aap kis treatment ya service ki price pooch rahe hain?');

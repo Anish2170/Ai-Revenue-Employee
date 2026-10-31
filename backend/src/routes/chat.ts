@@ -46,7 +46,7 @@ function chatTrace(requestId: string, stage: string, detail?: unknown): void {
 }
 
 chatRouter.post('/chat', chatLimiter, validateBody(chatRequestSchema), async (req, res) => {
-  const requestId = randomUUID().slice(0, 8);
+  const requestId = req.requestId ?? randomUUID().slice(0, 8);
   chatTrace(requestId, 'entered /chat');
 
   const body = req.body as ChatRequest;

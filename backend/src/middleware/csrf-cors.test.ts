@@ -39,10 +39,18 @@ test('dashboard CORS rejects non-dashboard origins', () => {
   assert.equal(policy.credentials, false);
 });
 
-test('widget chat and event requests allow a registered customer origin without credentials', () => {
-  for (const path of ['/chat', '/events']) {
+test('widget chat, events and popup lifecycle allow a registered customer origin without credentials', () => {
+  for (const path of ['/chat', '/events', '/popup/lifecycle']) {
     const policy = corsPolicyFor(path, widgetOrigin, new Set([dashboardOrigin]), new Set([widgetOrigin]));
     assert.equal(policy.origin, true);
+    assert.equal(policy.credentials, false);
+  }
+});
+
+test('popup lifecycle keeps unregistered origins and dashboard-only origins blocked', () => {
+  for (const origin of ['https://attacker.example', dashboardOrigin]) {
+    const policy = corsPolicyFor('/popup/lifecycle', origin, new Set([dashboardOrigin]), new Set([widgetOrigin]));
+    assert.equal(policy.origin, false);
     assert.equal(policy.credentials, false);
   }
 });

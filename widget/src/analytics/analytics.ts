@@ -47,6 +47,7 @@ export class AnalyticsTracker {
   private readonly sessionStartedAt = Date.now();
   private pageStartedAt = Date.now();
   private pageKey = this.currentPageKey();
+  private lastPageContext = this.pageContext();
   private buffer: AnalyticsEvent[] = [];
   private flushing = false;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -108,7 +109,7 @@ export class AnalyticsTracker {
   }
 
   private trackPageEnd(): void {
-    this.track('PAGE', 'page_exited', { durationMs: Date.now() - this.pageStartedAt, flush: true });
+    this.track('PAGE', 'page_exited', { ...this.lastPageContext, durationMs: Date.now() - this.pageStartedAt, flush: true });
   }
 
   private endSession = (): void => {
@@ -123,7 +124,8 @@ export class AnalyticsTracker {
   };
 
   private onVisibility = (): void => {
-    if (document.visibilityState === 'hidden') this.endSession();
+    // Switching tabs is not the end of this signed visit or page view.
+    if (document.visibilityState === 'hidden') this.flush(true);
   };
 
   private onNavigation = (): void => {
@@ -133,6 +135,7 @@ export class AnalyticsTracker {
       this.trackPageEnd();
       this.pageStartedAt = Date.now();
       this.pageKey = next;
+      this.lastPageContext = this.pageContext();
       this.track('PAGE', 'page_viewed', { flush: true });
     }, 0);
   };

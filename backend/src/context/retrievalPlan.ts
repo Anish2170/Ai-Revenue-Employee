@@ -118,6 +118,10 @@ function labels(chunks: RetrievedChunk[]): Array<{
             catch { }
         }
         for (const name of names) {
+            // Legacy whole-page chunks sometimes end with a navigation CTA.
+            // A button label is not a product/service subject for follow-ups.
+            if (/\bbook\s+(?:a\s+|an\s+)?(?:visit|exam|consultation|appointment)\b|sign\s*up|read bio|credentials\s*→/iu.test(name))
+                continue;
             if (name.length > 100 || /public contact|footer|navigation|privacy|terms|contact|refund|cancellation|opening hours|policy|faq|^about$/iu.test(name))
                 continue;
             const tokens = topicTerms(name);
@@ -149,7 +153,8 @@ export function planRetrieval(query: string, chunks: RetrievedChunk[], options: 
 } = {}): QueryPlan {
     const known = labels(chunks), pageUrl = pageIdentity(options.page, options.sourceUrl), needs = requestedNeeds(query);
     let subjects = matchingLabels(query, known), topicSource: QueryPlan['topicSource'] = subjects.length ? 'explicit' : 'none';
-    const reference = /\b(?:it|its|this|that|these|those|this service|this item|the process)\b|इस|इसका|इसके|ये/iu.test(query) || topicTerms(query).length === 0 || options.purpose === 'popup';
+    const broadTopic = options.purpose !== 'popup' && /^(?:(?:your|all|available)\s+)?(?:pricing|prices|price list|services|service list)[.!?]*$/iu.test(query.trim());
+    const reference = !broadTopic && (/\b(?:it|its|this|that|these|those|this service|this item|the process)\b|इस|इसका|इसके|ये/iu.test(query) || topicTerms(query).length === 0 || options.purpose === 'popup');
     // Unmatched concrete words may name an unknown product/service. A deictic
     // word alone must not replace that question with a familiar page topic.
     if (!subjects.length && reference && (topicTerms(query).length === 0 || options.purpose === 'popup')) {
@@ -179,6 +184,8 @@ export function planRetrieval(query: string, chunks: RetrievedChunk[], options: 
 /** Resolve only an implicit topic. This changes the safety question, not facts;
  * the full visitor message remains in the prompt/history and diagnostics. */
 export function answerQuery(query: string, diagnostics?: RetrievalDiagnostics): string {
+    if (/^(?:(?:your|all|available)\s+)?(?:pricing|prices|price list|services|service list)[.!?]*$/iu.test(query.trim()))
+        return query;
     if (!diagnostics || diagnostics.topicSource === 'explicit' || diagnostics.subjects.length !== 1)
         return query;
     const subject = diagnostics.subjects[0], needs = diagnostics.coverage.map(row => row.need);
