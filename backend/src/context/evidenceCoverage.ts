@@ -4,14 +4,14 @@ import { buildChatSafetyPlan, composeSafeChatReply } from '../language/chatSafet
 import type { ChatLanguageState } from '../language/chatLanguage.js';
 import { chunkNeeds, type EvidenceNeed } from './retrievalPlan.js';
 import type { ResolvedContext, RetrievedChunk } from './types.js';
-const names: Record<EvidenceNeed, [
+const names: Record<Exclude<EvidenceNeed, 'contact'>, [
     string,
     string,
     string
 ]> = { price: ['Price', 'कीमत', 'Price'], features: ['Features', 'शामिल सुविधाएँ', 'Features'], refund: ['Refund policy', 'रिफंड नीति', 'Refund policy'], cancellation: ['Cancellation', 'रद्द करने की नीति', 'Cancellation'], hours: ['Opening hours', 'खुलने का समय', 'Opening hours'], process: ['Process', 'प्रक्रिया', 'Process'], booking: ['Booking', 'बुकिंग', 'Booking'], service: ['Service', 'सेवा', 'Service'] };
 export function composeEvidenceCoverage(context: ResolvedContext, query: string, language: ChatLanguageState) {
     const diagnostics = context.retrieval, needs = diagnostics?.coverage.map(row => row.need) ?? [];
-    if (!diagnostics || needs.length < 2 || diagnostics.subjects.length > 1)
+    if (!diagnostics || needs.length < 2 || diagnostics.subjects.length > 1 || needs.includes('contact'))
         return null;
     const guard = buildChatSafetyPlan(context, query, language);
     if (['resource', 'delivery', 'live_slots', 'relative_hours', 'conversation'].includes(guard.kind) || /\bfree\b|मुफ्त|निःशुल्क/iu.test(query))
@@ -25,6 +25,7 @@ export function composeEvidenceCoverage(context: ResolvedContext, query: string,
     }> = [];
     let remaining = 7800;
     for (const need of needs) {
+        if (need === 'contact') continue; // Channel questions retain their original subject.
         const chunks = context.chunks.filter(chunk => chunkNeeds(chunk).includes(need));
         const conflicts = diagnostics.conflicts.filter(conflict => conflict.kind === need || chunks.some(chunk => conflict.sourceIds.includes(chunk.id)));
         const partContext = { ...context, chunks, retrieval: { ...diagnostics, conflicts } };

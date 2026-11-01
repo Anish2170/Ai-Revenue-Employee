@@ -1,5 +1,6 @@
 import { prisma } from '../db/prisma.js';
 import { localizedFollowUpOffer } from '../language/chatLanguage.js';
+import { requestsContactCapture, voluntarilySharesContact } from './contactIntent.js';
 import type { ChatMessage } from '../validation/requestSchemas.js';
 import type { VisitorBehaviour } from '../types.js';
 
@@ -219,10 +220,10 @@ function inferIntent(messages: ChatMessage[], behaviour?: VisitorBehaviour): Int
     shouldCapture: !hasStrongRejection && label !== 'LOW',
   };
 }
-/** Reuse the existing intent assessment; persistence availability is a separate
- * server capability and does not by itself authorize a sales interruption. */
+/** Sales-interest scoring is for lead prioritization. Only visitor workflow
+ * intent authorizes an invitation; persistence is a separate server capability. */
 export function shouldOfferContactCapture(messages: ChatMessage[], behaviour?: VisitorBehaviour): boolean {
-  return inferIntent(messages, behaviour).shouldCapture;
+  return requestsContactCapture(latestUserMessage(messages));
 }
 function formatLeadReasons(reasons: string[]): string {
   if (reasons.length === 0) return 'Visitor shared validated contact details after a contextually qualified conversation.';
@@ -241,7 +242,11 @@ function suggestedNextAction(intent: string, hasPhone: boolean): string {
 }
 
 export async function captureLeadFromConversation(input: LeadCaptureInput): Promise<boolean> {
-  const contact = extractContact(input.messages);
+  const latest = latestUserMessage(input.messages);
+  const priorAssistant = [...input.messages].reverse().find(message => message.role === 'assistant')?.content ?? '';
+  if (!voluntarilySharesContact(latest, /email address|contact details|ईमेल पता|email.*bata/iu.test(priorAssistant))) return false;
+  // A number/email mentioned in a factual question or an old turn is not a lead.
+  const contact = extractContact([{ role: 'user', content: latest }]);
   const intent = inferIntent(input.messages, input.behaviour);
   const assistantOfferedValue = /send|email|call|book|schedule|quote|proposal|comparison|guide|checklist|summary|times/i.test(input.assistantReply) || localizedFollowUpOffer(input.assistantReply);
   const invalidAttempts = invalidContactAttempts(input.messages);

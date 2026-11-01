@@ -159,6 +159,7 @@ async function* guardedReply(input: ChatStreamInput, context: ResolvedContext, p
   const useDraft = Boolean(source && !reasons.length && !plan.leadOffer && !['booking', 'booking_link'].includes(plan.kind) && directRendering);
   reportSafetyDecision(input, { state: plan.state, draft, reasons, modelUsed });
   logger.info('[chat] response outcome', { requestId: input.debug?.requestId ?? null, websiteId: input.tenant?.websiteId ?? null,
+    kind: plan.kind, answerLanguage: plan.language.language, leadInvitationAllowed: plan.leadOffer,
     evidenceStatus: plan.evidenceStatus, route: useDraft ? 'validated_provider' : 'deterministic',
     providerStatus: source ? reasons.includes('provider_failure_or_limit') ? 'failed' : 'attempted' : llmAvailable() ? 'not_needed' : 'unavailable',
     selectedSourceIds: [...new Set(plan.selected.map(f => f.chunk.id))], reasonCodes: reasons });
@@ -259,7 +260,7 @@ export async function streamChatReply(input: ChatStreamInput): Promise<AsyncIter
     || messages.filter(message => message.role === 'assistant').some(message => /email address|ईमेल पता|email.*bata/iu.test(message.content))) plan.leadOffer = false;
   // Source composition is enough for concise facts. Generation adds value for
   // requested explanations/rephrasing, and remains subject to the same contract.
-  const wantsGeneration = /explain|detail|rephrase|summari[sz]e|samjhao/iu.test(query);
+  const wantsGeneration = /\b(?:explain|rephrase|summari[sz]e|samjhao|in detail|detailed explanation)\b/iu.test(query);
   if (!llmAvailable() || !wantsGeneration || plan.contactSubmission || ['conversation', 'demo'].includes(plan.kind) || !plan.state.startsWith('known')) return guardedReply(input, context, plan);
   const prompt = promptRegistry.chat.active.build(context, messages, summary, opener, input.conversation, plan);
   const leadInstructionIndex = prompt.system.indexOf('Intelligent lead capture:');

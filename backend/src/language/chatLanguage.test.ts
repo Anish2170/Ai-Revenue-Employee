@@ -4,7 +4,7 @@ import { chatFailureMessage, chatRetrievalQuery, explicitChatLanguage, parseChat
 const users = (...texts: string[]) => texts.map(content => ({ role: 'user' as const, content }));
 
 for (const [text, language] of [
-  ['What is your pricing?', 'English'], ['आपकी सर्विस की कीमत क्या है?', 'Hindi'],
+  ['What is your pricing?', 'English'], ['Explain teeth whitening price?', 'English'], ['Describe annual plan features', 'English'], ['आपकी सर्विस की कीमत क्या है?', 'Hindi'],
   ['Aapki service ki pricing kya hai?', 'Hinglish'], ['Basic plan kitne ka hai?', 'Hinglish'],
   ['Can you explain your plans in Hindi?', 'Hindi'], ['Please reply in English from now on.', 'English'],
   ['Hindi mein batao', 'Hindi'], ['हिंदी में बताइए', 'Hindi'], ['Please reply in Roman Hindi', 'Hinglish'],

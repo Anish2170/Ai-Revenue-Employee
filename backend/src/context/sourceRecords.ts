@@ -1,11 +1,56 @@
 /** Source-bound structural records. No model output or owner instructions enter here.
  * Legacy flat cards are supported without rewriting the published snapshot. */
 import type { RetrievedChunk } from './types.js';
+import { contactRequest, factTopicTerms } from './factQuery.js';
 export const sourceUnsafe = /ignore|system prompt|instruction|pretend|hypothetical|for example|used to|previously|expired|outdated|historical|<script|override/iu;
 export const moneyPattern = String.raw`(?:[$₹€£¥]\s*\d[\d,]*(?:\.\d+)?|(?:USD|INR|EUR|GBP|CAD|AUD)\s*\d[\d,]*(?:\.\d+)?)`;
 const amountPattern = `${moneyPattern}(?:\\s*[-–—]\\s*(?:${moneyPattern}|\\d[\\d,]*(?:\\.\\d+)?))?`;
 const amountLine = new RegExp(`^(?:Price|Cost|Fee)?\\s*:?\\s*(${amountPattern})((?:\\s*\\/(?:mo|month|yr|year|night|visit|session|item|tooth))?)$`, 'iu');
 export interface PriceRecord { subject: string; amount: string; qualification: string; text: string; raw: string; chunk: RetrievedChunk }
+export interface ContactRecord { subject: string; channel: 'phone' | 'email'; value: string; text: string; chunk: RetrievedChunk }
+const emailPattern = /[\w.+-]+@[\w.-]+\.[a-z]{2,}/iu;
+const phonePattern = /(?:\+1\s*)?\(\d{3}\)\s*\d{3}-\d{4}|\+\d{1,3}(?:[ .-]\d{2,5}){2,3}|(?:\(\d{2,4}\)|\d{2,5})[ .-]+\d{3,5}[ .-]+\d{3,5}/u;
+export function contactRecords(chunk: RetrievedChunk): ContactRecord[] {
+  if (sourceUnsafe.test(chunk.content) || ('truncated' in chunk && chunk.truncated)) return [];
+  const result: ContactRecord[] = [];
+  for (const block of chunk.content.split(/\n\s*\n/u)) {
+    const lines = block.replace(/(?<=[a-z])(?=[A-Z][a-z])/gu, ' ').replace(/([A-Z]{2,})(?=[a-z][\w.+-]*@)/gu, '$1 ').split('\n').map(s => s.trim()).filter(Boolean);
+    const channelLines = lines.filter(line => emailPattern.test(line) || phonePattern.test(line)).length;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i], email = line.match(emailPattern), phone = line.match(phonePattern);
+      if (!email && !phone) continue;
+      const value = email?.[0] ?? phone![0], channel = email ? 'email' as const : 'phone' as const;
+      if (channel === 'phone' && (value.replace(/\D/gu, '').length < 7 || value.replace(/\D/gu, '').length > 15)) continue;
+      const label = line.slice(0, line.indexOf(value)).trim() || (i > 0 && lines[i - 1].length < 100 && !emailPattern.test(lines[i - 1]) && !phonePattern.test(lines[i - 1]) ? lines[i - 1] : chunk.heading);
+      // A standalone channel owns its whole block, including every qualification.
+      // In compact multi-channel directories each complete line owns one channel.
+      const text = (channelLines === 1 ? lines.join(' ').replace(value, ` ${value} — `)
+        : [line.startsWith(value) ? label : '', line.replace(value, ` ${value} — `)].filter(Boolean).join(' ')).replace(/\s+/gu, ' ').trim();
+      if (text.length <= 400) result.push({ subject: label, channel, value, text, chunk });
+    }
+  }
+  return result;
+}
+export function matchesContact(query: string, record: ContactRecord): boolean {
+  const request = contactRequest(query);
+  // Scope belongs to the field label. Nearby prose mentioning an emergency
+  // must not relabel an ordinary branch or billing number as an urgent hotline.
+  const terms = factTopicTerms(record.subject);
+  return Boolean(request && (request.channel === 'any' || request.channel === record.channel) && request.topics.every(term => terms.includes(term)));
+}
+/** Complete small source blocks preserve conditions/exclusions. A matched heading
+ * is a description to quote, never authority for booking/live-availability claims. */
+export function serviceDescriptions(chunk: RetrievedChunk, query: string): string[] {
+  if (sourceUnsafe.test(chunk.content) || ('truncated' in chunk && chunk.truncated)) return [];
+  const terms = factTopicTerms(query);
+  if (!terms.length) return [];
+  return chunk.content.replace(/(?<=[a-z])(?=[A-Z][a-z])/gu, ' ').split(/\n\s*\n/u).map(s => s.trim()).filter(block => {
+    if (block.length > 600 || !/[.!?।]$/u.test(block) || phonePattern.test(block) || emailPattern.test(block)) return false;
+    const first = block.split('\n')[0], heading = first.length < 140 ? first : chunk.heading;
+    const headingTerms = factTopicTerms(heading), bodyTerms = factTopicTerms(block);
+    return terms.every(term => headingTerms.includes(term)) && terms.every(term => bodyTerms.includes(term)) && block.includes('\n');
+  });
+}
 export function priceRecords(chunk: RetrievedChunk): PriceRecord[] {
   if (sourceUnsafe.test(chunk.content) || ('truncated' in chunk && chunk.truncated)) return [];
   const records: PriceRecord[] = [];

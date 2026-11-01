@@ -111,9 +111,9 @@ for (const mutate of ['disabled', 'cross-tenant', 'changed-url', 'unsafe-url', '
 });
 test('contact capture invitation is distinct from outbound delivery and requires actual persistence', () => {
   const ctx = context(), language = { language: 'English', explicit: false } as const;
-  const available = buildChatSafetyPlan(ctx, 'Dental cleaning price?', language, true);
+  const available = buildChatSafetyPlan(ctx, 'I want to book an appointment', language, true);
   assert.match(composeSafeChatReply(available), /email address/);
-  const unavailable = buildChatSafetyPlan(ctx, 'Dental cleaning price?', language, false);
+  const unavailable = buildChatSafetyPlan(ctx, 'I want to book an appointment', language, false);
   assert.ok(!composeSafeChatReply(unavailable).includes('email address'));
   const prompt = chatPromptBuilder.build(ctx, [{ role: 'user', content: 'Dental cleaning price?' }]);
   assert.match(prompt.system, /No live appointment availability/); assert.ok(!prompt.system.includes('Email available consultation times'));

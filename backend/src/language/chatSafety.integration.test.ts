@@ -66,7 +66,8 @@ test('booking configuration is re-read after generation; stale authority cannot 
   const result = await collect(input); assert.ok(!result.text.includes('https://example.test/appointments')); assert.match(result.text, /verified booking link/);
 });
 test('qualified contact offer is voluntary and is not repeated or treated as resource delivery', async t => {
-  const input = await setup(t, async function* () { yield fact; });
+  const input = await setup(t, async function* () { yield fact; }, ['Online booking is available.', fact]);
+  input.messages = [{ role: 'user', content: 'I want to book an appointment' }];
   input.leadCaptureAvailable = true; input.allowLeadInvitation = true;
   const first = await collect(input); assert.match(first.text, /email address/); assert.ok(!first.text.includes('send it'));
   input.messages = [...input.messages, { role: 'assistant', content: first.text }, { role: 'user', content: 'Dental cleaning price?' }];

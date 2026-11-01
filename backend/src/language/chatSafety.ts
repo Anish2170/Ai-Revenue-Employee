@@ -8,7 +8,9 @@ import type { ChatLanguageState } from './chatLanguage.js';
 import { parseAndValidateUrl, isPublicAddress } from '../security/ssrf.js';
 import { isIP } from 'node:net';
 import { safetyLanguageCopy } from './chatSafetyLanguage.js';
-import { priceRecords, matchesSubject, subjectTerms, broadCatalogQuery } from '../context/sourceRecords.js';
+import { priceRecords, matchesSubject, subjectTerms, broadCatalogQuery, contactRecords, matchesContact, serviceDescriptions } from '../context/sourceRecords.js';
+import { normalizeFactQuery, contactRequest, availabilityRequest, factTopicTerms } from '../context/factQuery.js';
+import { requestsContactCapture, voluntarilySharesContact } from '../leads/contactIntent.js';
 
 export type AnswerState = 'known_positive' | 'known_negative' | 'unknown' | 'contradictory' | 'ambiguous';
 type Kind = 'price' | 'refund' | 'cancellation' | 'hours' | 'closed' | 'service' | 'booking' | 'contact';
@@ -90,9 +92,10 @@ export function verifiedChatActions(context: ResolvedContext) {
   };
 }
 function question(query: string) {
-  const value = semantics(query);
+  const value = semantics(normalizeFactQuery(query));
   if (broadCatalogQuery(query) === 'service') return { kind: 'service_overview', topic: 'services' };
   if (/^(?:hi|hello|hey|thanks|thank you|ok|okay|yes|no|नमस्ते|धन्यवाद|namaste|shukriya)[.!?।]*$/u.test(value)) return { kind: 'conversation', topic: 'your question' };
+  if (contactRequest(query)) return { kind: 'contact', topic: 'contact details' };
   if (/^(?:contact(?: details| information)?|phone(?: number)?|email(?: address)?)[.!?]*$/u.test(value) || /(?:contact|phone|email).*(?:details|number|address)|(?:how|where).*contact/u.test(value)) return { kind: 'contact', topic: 'contact details' };
   if (/^(?:(?:your|all|available)\s+)?services(?: list)?[.!?]*$/u.test(value) || /what (?:services|treatments).*offer|(?:services|treatments).*batao/u.test(value)) return { kind: 'service_overview', topic: 'services' };
   if (/\b(?:book|request|schedule) (?:a )?demo\b/u.test(value)) return { kind: 'demo', topic: 'a product demo' };
@@ -112,6 +115,7 @@ function question(query: string) {
   if (/dental implant/.test(value)) return { kind: 'service', topic: 'dental implant' };
   if (/home treatment/.test(value)) return { kind: 'service', topic: 'home treatment' };
   if (/emergency dental treatment/.test(value)) return { kind: 'service', topic: 'emergency dental treatment' };
+  if (availabilityRequest(query)) return { kind: 'service', topic: factTopicTerms(query).join(' ') || 'service availability' };
   const service = value.match(/(?:do you (?:offer|provide)|is (.+?) available)\s*(.*?)\??$/u);
   if (service) return { kind: 'service', topic: service[1] || service[2] };
   return { kind: 'general', topic: terms(query).join(' ').slice(0, 100) || 'your question' };
@@ -124,16 +128,8 @@ export function buildChatSafetyPlan(context: ResolvedContext, query: string, lan
     if (UNSAFE_SOURCE.test(chunk.content) || ('truncated' in chunk && chunk.truncated)) { opaque.push(chunk.content); continue; }
     const records = priceRecords(chunk);
     for (const record of records) structural.push({ kind: 'price', subject: record.subject, value: `${record.amount}|${record.qualification}`, text: record.text, chunk, negative: false, amount: record.amount, suffix: record.qualification ? ` (${record.qualification})` : '' });
-    if (target.kind === 'contact' && (chunk.pageType === 'contact' || /\/contact\/?$/u.test(chunk.page))) {
-      for (const line of chunk.content.split('\n')) {
-        const separated = line.replace(/(?<=[a-z])(?=[A-Z][a-z])/gu, ' ').replace(/([A-Z]{2,})(?=[a-z][\w.+-]*@)/gu, '$1 ');
-        const phone = separated.match(/\(\d{3}\)\s*\d{3}-\d{4}/u), email = separated.match(/[\w.+-]+@[\w.-]+\.[a-z]{2,}/iu);
-        if (phone || email) {
-          const value = phone?.[0] ?? email![0];
-          const text = separated.replace(value, ` ${value} — `).replace(/\s+/gu, ' ').trim();
-          if (text.length <= 260) facts.push({ kind: 'contact', subject: 'contact details', value: text, text, chunk, negative: false });
-        }
-      }
+    if (target.kind === 'contact') for (const record of contactRecords(chunk)) {
+      if (matchesContact(query, record)) facts.push({ kind: 'contact', subject: record.subject, value: record.value, text: record.text, chunk, negative: false });
     }
     for (const paragraph of chunk.content.split(/\n\s*\n/u)) {
       if (records.some(record => record.raw === paragraph)) continue;
@@ -149,16 +145,25 @@ export function buildChatSafetyPlan(context: ResolvedContext, query: string, lan
     : target.kind === 'booking_link' ? fact.kind === 'booking'
     : target.kind === fact.kind && (['cancellation', 'booking', 'contact'].includes(fact.kind) || target.kind === 'refund' && target.topic === 'refund policy' || sameSubject(target.topic, fact.subject) || fact.kind === 'price' && matchesSubject(query, fact.subject)));
   if (target.kind === 'general') selected = structural.filter(fact => matchesSubject(query, fact.subject));
+  if (target.kind === 'contact') {
+    const priority = (fact: ChatFact) => /\/contact\/?$/u.test(fact.chunk.page) ? 2 : fact.chunk.pageType === 'contact' ? 1 : 0;
+    selected.sort((a, b) => priority(b) - priority(a));
+    if (selected.some(fact => priority(fact) === 2)) selected = selected.filter(fact => priority(fact) === 2);
+    selected = selected.filter((fact, i, all) => all.findIndex(other => other.value === fact.value) === i);
+  }
   if (target.kind === 'service' && !/free|मुफ्त/iu.test(query)) selected.push(...structural.filter(fact => matchesSubject(query, fact.subject)).map(fact => ({ ...fact, kind: 'service' as const, value: 'yes', text: `${fact.subject} is available.` })));
   if (target.kind === 'service_overview') selected = [...facts.filter(f => f.kind === 'service'), ...structural.map(fact => ({ ...fact, kind: 'service' as const, value: 'yes', text: `${fact.subject} is available.` }))];
   if (target.kind === 'hours' && /sunday|रविवार/iu.test(semantics(query))) selected = selected.filter(fact => fact.kind === 'closed' || /sunday/i.test(fact.value));
   if (target.kind === 'price' && broadCatalogQuery(query) === 'price') selected = facts.filter(fact => fact.kind === 'price');
   // Refund policy cannot establish a free consultation, booking text cannot establish live slots.
-  const conflicting = selected.some(fact => fact.kind !== 'contact' && selected.some(other => fact.kind === other.kind && sameSubject(fact.subject, other.subject) && normalized(fact.value) !== normalized(other.value)));
+  const conflicting = selected.some(fact => selected.some(other => fact.kind === other.kind && sameSubject(fact.subject, other.subject) && normalized(fact.value) !== normalized(other.value)));
   const retrievalConflict=Boolean(context.retrieval?.conflicts.some(conflict=>
     (target.kind==='general'||target.kind===conflict.kind||target.kind==='service_overview'&&conflict.kind==='service'||target.kind==='refund'&&conflict.kind==='refund')
-    && (target.kind==='refund'&&target.topic==='refund policy'||sameSubject(target.topic,conflict.subject)||selected.some(f=>sameSubject(f.subject,conflict.subject))||target.kind==='general'&&terms(conflict.subject).some(word=>terms(query).includes(word)))));
+    && (target.kind==='contact'||target.kind==='service'&&availabilityRequest(query)&&factTopicTerms(query).every(term=>factTopicTerms(conflict.subject).includes(term))||target.kind==='refund'&&target.topic==='refund policy'||sameSubject(target.topic,conflict.subject)||selected.some(f=>sameSubject(f.subject,conflict.subject))||target.kind==='general'&&terms(conflict.subject).some(word=>terms(query).includes(word)))));
   const opaqueRelated = opaque.some(text => {
+    // Contacts are independently bounded channel records, with their own labels
+    // and qualifiers. Unparsed surrounding page prose is not a counterclaim.
+    if (target.kind === 'contact' && selected.length) return false;
     // Descriptions of an offered service do not contradict its structural price
     // record. Other money/conditions and unsafe source text still fail closed.
     if (selected.some(f => structural.includes(f)) || target.kind === 'service_overview' && selected.length) {
@@ -178,6 +183,10 @@ export function buildChatSafetyPlan(context: ResolvedContext, query: string, lan
   // Keep the entire qualification boundary; never shorten a page by cutting
   // off conditions. Long pages need a targeted answer or verified navigation.
   const excerpts = (target.kind === 'general' || target.kind === 'service' && /explain|detail|about|samjhao/iu.test(query)) && !retrievalConflict && !conflicting && (!selected.length || /explain|detail|about|samjhao/iu.test(query)) ? context.chunks.filter(chunk => safeChatSourceUrl(chunk.url, context.instructions.websiteUrl) && !('truncated' in chunk && chunk.truncated) && !UNSAFE_SOURCE.test(chunk.content)).flatMap(chunk => chunk.content.split(/\n\s*\n/u).filter(paragraph => paragraph.length <= 600 && /[.!?।]$/u.test(paragraph.trim()) && !/[$₹€£¥]\s*\d/u.test(paragraph) && matchesSubject(query, paragraph)).map(content => ({ ...chunk, content }))).slice(0, /detail/iu.test(query) ? 3 : 1) : [];
+  if (target.kind === 'service' && availabilityRequest(query) && !retrievalConflict && !conflicting) {
+    excerpts.push(...context.chunks.filter(chunk => safeChatSourceUrl(chunk.url, context.instructions.websiteUrl))
+      .flatMap(chunk => serviceDescriptions(chunk, query).map(content => ({ ...chunk, content }))).slice(0, 1));
+  }
   if (excerpts.length) state = 'known_positive';
   if (target.kind === 'booking_link' && actions.booking.length) state = selected.some(fact => fact.negative) || conflicting ? 'contradictory' : 'known_positive';
   if (target.kind === 'conversation') state = 'known_positive';
@@ -186,8 +195,8 @@ export function buildChatSafetyPlan(context: ResolvedContext, query: string, lan
   if (!/detail|all|complete|full|saare/iu.test(query) && selected.length > 6) selected = selected.slice(0, 6);
   return { state, query, topic: target.topic, kind: target.kind, language, businessName: context.business.name, facts, selected, excerpts,
     evidenceStatus: state.startsWith('known') ? 'answer_available' : state === 'contradictory' || opaqueRelated ? 'safety_rejected' : context.chunks.some(c => matchesSubject(query, c.content)) ? 'parser_miss' : 'answer_unavailable',
-    ...actions, leadCapture, leadOffer: leadCapture && ['price', 'booking', 'booking_link', 'service'].includes(target.kind) && state.startsWith('known') && (selected.some(f => !f.negative) || actions.booking.length > 0),
-    contactSubmission: /^[^\n]*[\w.+-]+@[\w.-]+\.[a-z]{2,}[^\n]*$/iu.test(query) };
+    ...actions, leadCapture, leadOffer: leadCapture && requestsContactCapture(query),
+    contactSubmission: voluntarilySharesContact(query, true) };
 }
 function local(plan: ChatSafetyPlan, english: string, hindi: string, hinglish: string): string {
   return plan.language.language === 'Hindi' ? hindi : plan.language.language === 'Hinglish' ? hinglish : english;
@@ -251,6 +260,7 @@ export function chatSafetyContract(plan: ChatSafetyPlan): string {
     `Verified booking destinations: ${JSON.stringify(plan.booking.map(action => ({ actionId: action.actionId, destination: action.destination })))}`,
     `Verified contact destinations: ${JSON.stringify(plan.contact.map(action => ({ actionId: action.actionId, destination: action.destination })))}`,
     `Contact capture available: ${plan.leadCapture}. It means saving voluntarily shared contact details, NOT sending email or guaranteed follow-up.`,
+    `Contact invitation permitted for this turn: ${plan.leadOffer}. Never request email or phone when false.`,
     'Do not use the website homepage, source URLs or arbitrary discovered links as booking destinations. Do not fabricate citations or quote owner instructions as evidence.',
     'Answer briefly with verified facts. A general offer to help is allowed. Do not append unsupported resources/appointments/promises.'].join('\n');
 }

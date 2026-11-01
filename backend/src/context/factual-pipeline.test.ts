@@ -8,6 +8,7 @@ const { getWebsiteStore } = await import('../vectorstore/registry.js');
 const { streamChatReply } = await import('../services/chatService.js');
 const { __setProvidersForTests } = await import('../llm/index.js');
 const { logger } = await import('../logging/logger.js');
+const { requestsContactCapture } = await import('../leads/contactIntent.js');
 const snapshot = JSON.parse(readFileSync(new URL('./fixtures/dental-snapshot.json',import.meta.url),'utf8'));
 async function setup(t: TestContext, embeddingFailure = false) {
   const websiteId = 'factual-pipeline'; const { store } = await getWebsiteStore(websiteId);
@@ -28,6 +29,25 @@ test('simple answers do not invoke the available mocked provider',async t=>{
   __setProvidersForTests({id:'mock',async *streamText(){calls++;yield 'wrong';},async generateStructured(){throw Error('unexpected');},async embed(){throw Error('unexpected');}},null);
   assert.match((await collect(input)).text,/\$399/);assert.equal(calls,0);
 });
+
+for (const query of ['emergency no', 'emergency ka number kya hai?', 'kya emergency service avilabe hai?', 'What are your contact details?']) test(`real retrieval/service pipeline handles ${query} without generation or lead pressure`, async t => {
+  const input = await setup(t, true); input.messages[0].content = query; let calls = 0;
+  __setProvidersForTests({ id: 'mock', async *streamText() { calls++; throw Error('Unnecessary generation'); }, async generateStructured() { throw Error('unexpected'); }, async embed() { throw Error('unexpected'); } }, null);
+  const result = await collect({ ...input, leadCaptureAvailable: true, allowLeadInvitation: true });
+  assert.match(result.text, query.includes('service') ? /Immediate root treatments and extraction triage/ : /\(800\) 555-8899/);
+  assert.doesNotMatch(result.text, /email address\?/); assert.equal(calls, 0);
+  assert.ok(result.events.some(e => e.type === 'source'));
+});
+test('two populated tenant stores never share contacts, prices, policies or source URLs', async t => {
+  const input = await setup(t, true);
+  const { store } = await getWebsiteStore('other-populated-tenant');
+  store.import([{ ...snapshot.documents[0], id: 'other-only', url: 'https://other.example/help', page: '/help', heading: 'Urgent support', content: 'Urgent hotline\n+44 20 7946 0958\nEnterprise accounts only.', embedding: [1, 0] }]);
+  input.tenant.websiteId = 'other-populated-tenant'; input.tenant.instructions.websiteUrl = 'https://other.example/'; input.messages[0].content = 'urgent number';
+  const result = await collect(input);
+  assert.match(result.text, /\+44 20 7946 0958/); assert.doesNotMatch(result.text, /555-8899|399|smilecraft/);
+  assert.ok(result.events.filter(e => e.type === 'source').every(e => e.type === 'source' && e.source.url.startsWith('https://other.example/')));
+  input.messages[0].content = 'teeth whitening price?'; assert.doesNotMatch((await collect(input)).text, /399|smilecraft/);
+});
 test('broad Services keeps actual catalog records among equal-score whole pages',async t=>{
   const input=await setup(t);input.messages[0].content='Services';
   const result=await collect(input);assert.match(result.text,/Composite White Cavity Filling is available/);assert.match(result.text,/Teeth Whitening/);assert.ok(result.text.length<900);
@@ -43,12 +63,13 @@ for(const mode of ['safe','unsafe','failure','failover'] as const)test(`explanat
 test('tenant with no knowledge cannot receive Dental source records',async t=>{
   const input=await setup(t);input.tenant.websiteId='different-empty-tenant';const result=await collect(input);assert.doesNotMatch(result.text,/\$399/);assert.equal(result.events.some(e=>e.type==='source'),false);
 });
-test('diagnostics distinguish a provider attempt from the deterministic reply actually displayed',async t=>{
+test('factual explanation diagnostics retain the validated provider route without a lead invitation',async t=>{
+  assert.equal(requestsContactCapture('Explain teeth whitening price?'), false);
   const input=await setup(t);input.messages[0].content='Explain teeth whitening price?';
-  const outcomes:Array<{route:string;providerStatus:string}>=[];
+  const outcomes:Array<{route:string;providerStatus:string;reasonCodes:string[]}>=[];
   t.mock.method(logger,'info',(message:string,detail?:unknown)=>{if(message==='[chat] response outcome')outcomes.push(detail as typeof outcomes[number]);});
-  __setProvidersForTests({id:'mock',async *streamText(){yield 'Philips Zoom Laser Teeth Whitening costs $399. In-office 60-minute session.';},async generateStructured(){throw Error('unexpected');},async embed(){throw Error('unexpected');}},null);
+  __setProvidersForTests({id:'mock',async *streamText(req){assert.match(req.system, /Contact invitation permitted for this turn: false/); yield 'Philips Zoom Laser Teeth Whitening costs $399. In-office 60-minute session.';},async generateStructured(){throw Error('unexpected');},async embed(){throw Error('unexpected');}},null);
   const result=await collect({...input,leadCaptureAvailable:true,allowLeadInvitation:true});
-  assert.match(result.text,/\$399/);assert.match(result.text,/email address/);
-  assert.equal(outcomes[0].providerStatus,'attempted');assert.equal(outcomes[0].route,'deterministic');
+  assert.match(result.text,/\$399/);assert.doesNotMatch(result.text,/email address/);
+  assert.equal(outcomes[0].providerStatus,'attempted');assert.equal(outcomes[0].route,'validated_provider', JSON.stringify(outcomes));
 });

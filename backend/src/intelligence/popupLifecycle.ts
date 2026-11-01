@@ -3,11 +3,14 @@ import type { VisitorSession } from './session/visitorSession.js';
 import { sessionStore } from './session/visitorSession.js';
 import { SALES_POLICY } from './config/salesPolicy.config.js';
 import { sessionCooldownRemainingMs } from './popupTrace.js';
+import { popupFingerprint, repeatsPopup, type PopupContent, type PopupFingerprint } from './popupRepetition.js';
 
 export const POPUP_LIFECYCLE = { generationMs: 12_000, candidateMs: 15_000, claimMs: 3_000, maxAttempts: 6, minAttemptGapMs: 5_000 } as const;
 export interface PopupContext { pageInstanceId: string; pageStartedAt: number; version: number; blockedReason?: string | null; formStalled?: boolean }
 export interface PopupDeliveryMetadata { version: 2; popupId: string; decisionId: string; pageInstanceId: string; contextVersion: number; expiresAt: number; formAssistance: boolean }
 export interface PopupCandidate {
+  content?: PopupFingerprint;
+  rejectionReason?: 'duplicate_content';
   id: string;
   pageInstanceId: string;
   contextVersion: number;
@@ -84,11 +87,20 @@ export function reservePopup(session: VisitorSession, context: PopupContext, dec
   return { candidate };
 }
 
-export function completePopup(session: VisitorSession, candidate: PopupCandidate): boolean {
+export function completePopup(session: VisitorSession, candidate: PopupCandidate, copy?: PopupContent): boolean {
   const life = session.popupLifecycle;
   if (!life) return false;
   expire(life);
   if (candidate.status !== 'generating' || candidate.controller.signal.aborted || life.context.blockedReason || life.context.pageInstanceId !== candidate.pageInstanceId || life.context.version !== candidate.contextVersion) return false;
+  if (copy) {
+    candidate.content = popupFingerprint(copy);
+    if (life.candidates.some(prior => prior !== candidate && (prior.status === 'displayed' || prior.unconfirmedClaim)
+      && prior.content && repeatsPopup(prior.content, candidate.content!))) {
+      candidate.status = 'released'; candidate.rejectionReason = 'duplicate_content';
+      candidate.controller.abort(new Error('Repeated popup content'));
+      return false;
+    }
+  }
   candidate.status = 'pending';
   candidate.expiresAt = Date.now() + POPUP_LIFECYCLE.candidateMs;
   life.failures = 0;

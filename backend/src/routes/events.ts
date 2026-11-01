@@ -349,7 +349,20 @@ eventsRouter.post('/events', eventsLimiter, async (req, res) => {
           }, { signal: candidate.controller.signal, ...(websiteId ? { refreshActions: () => getEnabledBusinessActions(websiteId!, { skipSeed: true }) } : {}) });
 
           if (sprint42.ok && sprint42.popup.ok) {
-            if (!completePopup(visitorSession, candidate)) return res.json({ status: result.status, reason: 'candidate_obsolete' });
+            const copy = sprint42.popup.popup;
+            const resolvedActions = sprint42.actions;
+            const actionKey = [copy.primaryAction, copy.secondaryAction].filter(Boolean).map(id => {
+              const action = resolvedActions.find(a => a.actionId === id);
+              return action ? `${action.destinationType}:${action.destination}` : id;
+            }).sort().join('|');
+            if (!completePopup(visitorSession, candidate, { title: copy.title, body: copy.body, actionKey })) {
+              const reason = candidate.rejectionReason ?? 'candidate_obsolete';
+              if (candidate.rejectionReason) {
+                enqueueAnalyticsEvent(analyticsTenant, analyticsContext, { category: 'POPUP', eventName: 'popup_suppressed', reason, eventId: `${candidate.id}:duplicate_content`, decisionId: candidate.id });
+                enqueuePopupDecisionLog(analyticsTenant, analyticsContext, result.shadowDecision, { decisionId: candidate.id, decision: 'Suppressed', reason, popupSuppressed: true, suppressionReason: reason, finalOutcome: 'Suppressed', pipeline: sprint42 });
+              }
+              return res.json({ status: result.status, reason });
+            }
             popupArtifact = { ...publicPopup(sprint42.popup.popup, sprint42.actions),
               delivery: { version: 2 as const, popupId: candidate.id, decisionId: candidate.id, pageInstanceId: candidate.pageInstanceId, contextVersion: candidate.contextVersion, expiresAt: candidate.expiresAt, formAssistance: Boolean(popupContext.formStalled) } };
             popupTrace(body.sessionId, '8_popup_generation', {

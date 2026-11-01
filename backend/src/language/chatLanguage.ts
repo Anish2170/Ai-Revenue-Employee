@@ -49,7 +49,8 @@ export function detectedChatLanguage(text: string): ChatLanguage | null {
   if (count('hola cuánto cuesta precio planes quiero gracias puedes usted') >= 2) return 'Spanish';
   if (count('hallo wie kostet ihre bitte danke können sie preise') >= 2) return 'German';
   if (count('olá quanto custa você obrigado preços gostaria') >= 2) return 'Portuguese';
-  if (count('what how where when why can could would please explain tell your you our the is are does do want need thanks thank') >= 2) return 'English';
+  if (count('what how where when why can could would please explain tell your you our the is are does do want need thanks thank') >= 2
+    || /^(?:please\s+)?(?:explain|describe|summari[sz]e|tell me|what|how|where|when|why|do you|is there)\b/u.test(value)) return 'English';
   // Short labels, acknowledgements, numbers, contact details inherit context.
   if (words.length <= 3) return null;
   return 'Other';

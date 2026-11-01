@@ -3,7 +3,8 @@
 import { normalizeUrl } from '../crawler/links.js';
 import type { RetrievedChunk } from './types.js';
 import { priceRecords, broadCatalogQuery } from './sourceRecords.js';
-export type EvidenceNeed = 'price' | 'features' | 'refund' | 'cancellation' | 'hours' | 'process' | 'booking' | 'service';
+import { contactRequest, availabilityRequest, normalizeFactQuery } from './factQuery.js';
+export type EvidenceNeed = 'price' | 'features' | 'refund' | 'cancellation' | 'hours' | 'process' | 'booking' | 'service' | 'contact';
 export interface RetrievalPage {
     url?: string;
     path?: string;
@@ -19,7 +20,7 @@ export interface QueryPlan {
     ambiguous: boolean;
 }
 export interface EvidenceConflict {
-    kind: 'price' | 'service' | 'refund';
+    kind: 'price' | 'service' | 'refund' | 'contact';
     subject: string;
     sourceIds: string[];
     urls: string[];
@@ -71,12 +72,14 @@ export function normalizedTerms(text: string): string[] {
 STOP.delete('medium');
 export function topicTerms(text: string): string[] { return normalizedTerms(text).filter(word => !STOP.has(word) && !/^\d+$/.test(word)); }
 export function requestedNeeds(query: string): EvidenceNeed[] {
+    query = normalizeFactQuery(query);
     const rules: Array<[
         EvidenceNeed,
         RegExp
     ]> = [['price', /price|pricing|cost|how much|kitn|daam|lagega|कीमत|कितन|रुपये/iu], ['features', /feature|include|included|comes with|comparison|compare|क्या मिलता|शामिल|kya milta/iu], ['refund', /refund|return policy|refundable|wapas|वापस|रिफंड/iu], ['cancellation', /cancel|cancellation|radd|रद्द/iu], ['hours', /hours|opens?|closed|timing|khul|band|खुल|समय|बंद/iu], ['process', /process|how .*work|steps|kaise|कैसे/iu], ['booking', /book(?:ing)?|appointment|बुकिंग/iu]];
     const needs = rules.filter(([, rule]) => rule.test(query)).map(([need]) => need);
-    if (!needs.includes('booking') && /do you (?:offer|provide)|\bis .*available|milta hai|उपलब्ध|देते हैं/iu.test(query))
+    if (contactRequest(query)) needs.push('contact');
+    if (!needs.includes('booking') && availabilityRequest(query))
         needs.push('service');
     return needs.slice(0, 4);
 }
@@ -90,6 +93,7 @@ export function chunkNeeds(chunk: Pick<RetrievedChunk, 'heading' | 'content' | '
         needs.push('process');
     if (/(?:not )?(?:offered|provided|available)\b/iu.test(text))
         needs.push('service');
+    if (/\b(?:returns?|refunds?)\b.*\b(?:accepted|offered|available|refundable)\b/iu.test(text)) needs.push('refund');
     return [...new Set(needs)];
 }
 export function pageIdentity(page: RetrievalPage | undefined, sourceUrl: string | undefined): string | null {

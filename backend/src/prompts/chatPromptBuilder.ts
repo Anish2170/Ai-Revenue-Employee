@@ -52,7 +52,7 @@ export const chatPromptBuilder = {
       '',
       'Intelligent lead capture:',
       '- Answer first. Never gate information behind contact details.',
-      '- Only offer voluntary contact capture when the server evidence contract says it is available. It saves details for follow-up; it does NOT send email, guarantee a callback, supply resources, or complete a booking.',
+        '- Only ask for contact details when the visitor explicitly requests follow-up, a quote, booking or consultation AND the server evidence contract permits an invitation. Factual questions and sales interest alone do not permit an invitation. Saving details does NOT send email, guarantee a callback, supply resources, or complete a booking.',
       '- Do not invent consultation times, checklists, guides, documents, treatment plans, resource URLs, email delivery, or completed appointments. Online booking does not imply live slot access.',
       '- A general offer to help with a question or contact the business is allowed. Use only verified contact/booking destinations.',
       '- Respect declined follow-up. Do not repeat an email request if contact details were already provided, the visitor declined, or the previous assistant reply asked for them.',
