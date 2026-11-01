@@ -48,7 +48,7 @@ test('missing evidence and contradictory evidence short-circuit model generation
   const input = await setup(t, async function* () { calls++; yield 'Wrong'; }, [fact, 'Dental cleaning starts at ₹999.']);
   assert.match((await collect(input)).text, /conflict/);
   input.messages = [{ role: 'user', content: 'Do you offer dental implants?' }];
-  assert.match((await collect(input)).text, /confirmed information about dental implant/); assert.equal(calls, 0);
+  assert.match((await collect(input)).text, /details about dental implant/); assert.equal(calls, 0);
 });
 test('client cancellation prevents late ignored-abort tokens and follow-on fallback', async t => {
   let started!: () => void, release!: () => void;
@@ -85,7 +85,7 @@ test('an exact English model fact cannot bypass an explicit French source-wrappe
 test('unknown answer source follow-up cannot cite a related source as proof', async t => {
   const input = await setup(t, async function* () { throw Error('Unknown must not generate'); });
   input.messages = [{ role: 'user', content: 'Do you offer dental implants?' }, { role: 'assistant', content: 'Information is unconfirmed.' }, { role: 'user', content: 'What is your source?' }];
-  const result = await collect(input); assert.match(result.text, /confirmed information about dental implant/); assert.equal(result.events.some(e => e.type === 'source'), false);
+  const result = await collect(input); assert.match(result.text, /details about dental implant/); assert.equal(result.events.some(e => e.type === 'source'), false);
 });
 test('oversized draft is cancelled and replaced before output', async t => {
   let signal: AbortSignal | undefined;

@@ -11,6 +11,7 @@ import type { PromptConversationContext } from '../conversations/conversation.se
 import { renderInstructions, renderKnowledge } from './shared.js';
 import { buildChatSafetyPlan, chatSafetyContract, type ChatSafetyPlan } from '../language/chatSafety.js';
 import { chatLanguagePolicy, resolveChatLanguage } from '../language/chatLanguage.js';
+import { conversationalContract, understandChat } from '../language/chatConversation.js';
 
 export interface BuiltChatPrompt {
   system: string;
@@ -60,6 +61,7 @@ export const chatPromptBuilder = {
       chatSafetyContract(safety ?? buildChatSafetyPlan(context, messages.filter(message => message.role === 'user').at(-1)?.content ?? '', resolveChatLanguage(messages, context.instructions.language, conversation?.language))),
       summary ? `\nContext on what this visitor was doing before chatting: ${summary}` : '',
       chatLanguagePolicy(resolveChatLanguage(messages, context.instructions.language, conversation?.language)),
+      conversationalContract(safety?.conversation ?? understandChat(messages), context, safety?.language ?? resolveChatLanguage(messages, context.instructions.language, conversation?.language)),
     ]
       .filter(Boolean)
       .join('\n');

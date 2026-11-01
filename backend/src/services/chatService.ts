@@ -19,6 +19,7 @@ import { buildChatSafetyPlan, composeSafeChatReply, safeChatSourceUrl, validateC
 import { chatFailureMessage, chatRetrievalQuery, resolveChatLanguage, type ChatLanguageState } from '../language/chatLanguage.js';
 import {answerQuery} from '../context/retrievalPlan.js';
 import {composeEvidenceCoverage} from '../context/evidenceCoverage.js';
+import { understandChat, chatBusinessStyle } from '../language/chatConversation.js';
 
 export interface ChatStreamInput {
   messages: ChatMessage[];
@@ -109,7 +110,7 @@ export function buildSourceAttributionReply(context: ResolvedContext, query: str
   return {
     answer: language.language === 'Hindi' ? `यह जानकारी जाँचने के लिए मिला संदर्भ: ${title}।`
       : language.language === 'Hinglish' ? `Yeh jaankari check karne ke liye mila reference: ${title}.`
-      : `Retrieved reference for ${subject}: ${title}.`,
+      : `You can check ${subject} here: ${title}.`,
     source: { title, url: chunk.url },
     chunkId: chunk.id,
     first100: chunk.content.replace(/\s+/g, ' ').slice(0, 100),
@@ -150,7 +151,7 @@ async function* guardedReply(input: ChatStreamInput, context: ResolvedContext, p
     const leadOffer = plan.leadOffer;
     try { context.businessActions = await input.refreshActions(); }
     catch { context.businessActions = []; }
-    plan = buildChatSafetyPlan(context, plan.query, plan.language, plan.leadCapture);
+    plan = buildChatSafetyPlan(context, plan.query, plan.language, plan.leadCapture, plan.conversation);
     plan.leadOffer &&= leadOffer;
   }
   if (input.signal?.aborted) throw input.signal.reason ?? new Error('Chat cancelled');
@@ -162,11 +163,13 @@ async function* guardedReply(input: ChatStreamInput, context: ResolvedContext, p
     kind: plan.kind, answerLanguage: plan.language.language, leadInvitationAllowed: plan.leadOffer,
     evidenceStatus: plan.evidenceStatus, route: useDraft ? 'validated_provider' : 'deterministic',
     providerStatus: source ? reasons.includes('provider_failure_or_limit') ? 'failed' : 'attempted' : llmAvailable() ? 'not_needed' : 'unavailable',
-    selectedSourceIds: [...new Set(plan.selected.map(f => f.chunk.id))], reasonCodes: reasons });
+    intent: plan.conversation?.kind, contextualFollowUp: plan.conversation?.contextual,
+    toneBasis: chatBusinessStyle(context).basis,
+    selectedSourceIds: plan.conversation?.needsFacts === false ? [] : [...new Set(plan.selected.map(f => f.chunk.id))], reasonCodes: reasons });
   // Follow-up invitations are server-composed only, and never promise delivery.
   const answer = useDraft ? draft : composeSafeChatReply(plan);
   yield { type: 'token', text: answer || chatFailureMessage(plan.language) };
-  const cited = plan.state.startsWith('known') ? [...plan.selected.map(fact => fact.chunk), ...plan.excerpts] : [];
+  const cited = plan.conversation?.needsFacts !== false && plan.state.startsWith('known') ? [...plan.selected.map(fact => fact.chunk), ...plan.excerpts] : [];
   const seen = new Set<string>();
   for (const chunk of cited) {
     const url = safeChatSourceUrl(chunk.url, context.instructions.websiteUrl);
@@ -201,8 +204,10 @@ export async function streamChatReply(input: ChatStreamInput): Promise<AsyncIter
   const lastUser = userMessages[userMessages.length - 1];
   const previousUser = userMessages.length > 1 ? userMessages[userMessages.length - 2] : undefined;
   const query = lastUser || opener || '';
+  const intent = understandChat(messages);
   const sourceRequest = lastUser ? isSourceAttributionRequest(lastUser) : false;
-  const retrievalQuery = sourceRequest && previousUser ? previousUser : chatRetrievalQuery(messages) || query;
+  const retrievalQuery = sourceRequest && previousUser ? previousUser
+    : intent.needsFacts && intent.factQuery !== query ? intent.factQuery : chatRetrievalQuery(messages) || query;
   chatTrace(input, 'retrieval:start', {
     sourceRequest,
     previousUserUsed: sourceRequest && Boolean(previousUser),
@@ -222,13 +227,14 @@ export async function streamChatReply(input: ChatStreamInput): Promise<AsyncIter
   if (context.source === 'fallback') console.warn(`[chat:${input.debug?.requestId ?? 'no-request-id'}] using static fallback context (dev request without tenant only).`);
 
   const language = resolveChatLanguage(messages, context.instructions.language, input.conversation?.language);
-  const plan = buildChatSafetyPlan(context, answerQuery(retrievalQuery,context.retrieval), language, input.leadCaptureAvailable === true);
+  const safetyQuery = answerQuery(retrievalQuery, context.retrieval);
+  const plan = buildChatSafetyPlan(context, safetyQuery, language, input.leadCaptureAvailable === true, intent);
   logger.info('[chat] retrieval evidence', { requestId: input.debug?.requestId ?? null, websiteId: input.tenant?.websiteId ?? null,
     kind: plan.kind, state: plan.state, evidenceStatus: plan.evidenceStatus, retrievalMode: context.retrieval?.mode ?? 'no_index',
     retrievalFailure: context.retrieval?.failure ?? null, topicSource: context.retrieval?.topicSource ?? 'none',
     sourceIds: context.chunks.map(c => c.id), scores: context.scores, selectedFacts: plan.selected.length,
     omittedReasons: [...new Set(context.retrieval?.omitted.map(o => o.reason) ?? [])] });
-  const coverage=!sourceRequest?composeEvidenceCoverage(context,retrievalQuery,language):null;
+  const coverage=!sourceRequest && intent.kind === 'factual' ? composeEvidenceCoverage(context,retrievalQuery,language):null;
   if(coverage){
     reportSafetyDecision(input, {state:coverage.complete?'known_positive':'partial',draft:'',reasons:coverage.parts.filter(part=>!part.state.startsWith('known')).map(part=>`${part.need}:${part.state}`),modelUsed:false});
     return (async function*():AsyncIterable<ChatStreamEvent>{
@@ -239,7 +245,7 @@ export async function streamChatReply(input: ChatStreamInput): Promise<AsyncIter
   }
   // An unrelated retrieved page is not a citation proving the previous answer.
   const sourceChunks = [...new Map([...plan.selected.map(fact => fact.chunk), ...plan.excerpts].map(chunk => [chunk.id, chunk])).values()];
-  const sourceReply = plan.state.startsWith('known') ? buildSourceAttributionReply({ ...context, chunks: sourceChunks }, query, language) : null;
+  const sourceReply = intent.needsFacts && plan.state.startsWith('known') ? buildSourceAttributionReply({ ...context, chunks: sourceChunks }, query, language) : null;
   if (sourceReply) {
     chatTrace(input, 'source_attribution_reply', {
       llm_used: false,
@@ -260,8 +266,10 @@ export async function streamChatReply(input: ChatStreamInput): Promise<AsyncIter
     || messages.filter(message => message.role === 'assistant').some(message => /email address|ईमेल पता|email.*bata/iu.test(message.content))) plan.leadOffer = false;
   // Source composition is enough for concise facts. Generation adds value for
   // requested explanations/rephrasing, and remains subject to the same contract.
-  const wantsGeneration = /\b(?:explain|rephrase|summari[sz]e|samjhao|in detail|detailed explanation)\b/iu.test(query);
-  if (!llmAvailable() || !wantsGeneration || plan.contactSubmission || ['conversation', 'demo'].includes(plan.kind) || !plan.state.startsWith('known')) return guardedReply(input, context, plan);
+  const wantsGeneration = ['fear', 'hesitation', 'frustration', 'confusion', 'advice', 'explanation', 'clarification'].includes(intent.kind);
+  const usefulWithoutFacts = ['fear', 'hesitation', 'frustration', 'confusion', 'advice', 'clarification'].includes(intent.kind);
+  if (!llmAvailable() || !wantsGeneration || plan.contactSubmission || plan.kind === 'demo'
+    || !plan.state.startsWith('known') && !usefulWithoutFacts) return guardedReply(input, context, plan);
   const prompt = promptRegistry.chat.active.build(context, messages, summary, opener, input.conversation, plan);
   const leadInstructionIndex = prompt.system.indexOf('Intelligent lead capture:');
   const leadInstructionsPresent = leadInstructionIndex >= 0;

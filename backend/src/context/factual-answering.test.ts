@@ -36,7 +36,7 @@ test('specific unsupported price is unknown, not an unrelated treatment price', 
   for (const q of ['take home whitening kit price?', 'invisible braces price?', 'spaceship repair price?']) assert.doesNotMatch(reply(q), /costs \$|starts at \$/);
 });
 test('empty knowledge and foreign origin fail closed', () => {
-  assert.match(reply('teeth whitening price?', []), /confirmed information/);
+  assert.match(reply('teeth whitening price?', []), /details about teeth whitening/);
   assert.doesNotMatch(reply('teeth whitening price?', [{ ...pricing, url: 'https://foreign.example/pricing' }]), /\$399/);
 });
 test('conflicting structural records block certainty including low-cosine contradictory source', () => {

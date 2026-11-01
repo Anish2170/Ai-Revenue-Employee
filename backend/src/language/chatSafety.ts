@@ -11,11 +11,13 @@ import { safetyLanguageCopy } from './chatSafetyLanguage.js';
 import { priceRecords, matchesSubject, subjectTerms, broadCatalogQuery, contactRecords, matchesContact, serviceDescriptions } from '../context/sourceRecords.js';
 import { normalizeFactQuery, contactRequest, availabilityRequest, factTopicTerms } from '../context/factQuery.js';
 import { requestsContactCapture, voluntarilySharesContact } from '../leads/contactIntent.js';
+import { understandChat, conversationalReply, isSafeConversationalClause, type ChatIntent } from './chatConversation.js';
 
 export type AnswerState = 'known_positive' | 'known_negative' | 'unknown' | 'contradictory' | 'ambiguous';
 type Kind = 'price' | 'refund' | 'cancellation' | 'hours' | 'closed' | 'service' | 'booking' | 'contact';
 export interface ChatFact { kind: Kind; subject: string; value: string; text: string; chunk: RetrievedChunk; negative: boolean; amount?: string; suffix?: string; from?: boolean; entity?: string }
 export interface ChatSafetyPlan {
+  conversation?: ChatIntent;
   state: AnswerState; query: string; topic: string; kind: string; language: ChatLanguageState; businessName: string;
   facts: ChatFact[]; selected: ChatFact[]; excerpts: RetrievedChunk[];
   booking: BusinessActionConfig[]; contact: BusinessActionConfig[];
@@ -120,7 +122,7 @@ function question(query: string) {
   if (service) return { kind: 'service', topic: service[1] || service[2] };
   return { kind: 'general', topic: terms(query).join(' ').slice(0, 100) || 'your question' };
 }
-export function buildChatSafetyPlan(context: ResolvedContext, query: string, language: ChatLanguageState, leadCapture = false): ChatSafetyPlan {
+export function buildChatSafetyPlan(context: ResolvedContext, query: string, language: ChatLanguageState, leadCapture = false, conversation = understandChat([{ role: 'user', content: query }])): ChatSafetyPlan {
   const target = question(query), facts: ChatFact[] = [], opaque: string[] = [];
   const structural: ChatFact[] = [];
   for (const chunk of context.chunks) {
@@ -193,7 +195,7 @@ export function buildChatSafetyPlan(context: ResolvedContext, query: string, lan
   if (target.kind === 'demo' && actions.booking.length) state = facts.some(fact => fact.kind === 'service' && fact.negative && /\bdemo\b/iu.test(fact.subject)) ? 'contradictory' : 'known_positive';
   // Broad answers remain bounded; detailed questions can request more rows.
   if (!/detail|all|complete|full|saare/iu.test(query) && selected.length > 6) selected = selected.slice(0, 6);
-  return { state, query, topic: target.topic, kind: target.kind, language, businessName: context.business.name, facts, selected, excerpts,
+  return { state, query, topic: target.topic, kind: target.kind, language, conversation, businessName: context.business.name, facts, selected, excerpts,
     evidenceStatus: state.startsWith('known') ? 'answer_available' : state === 'contradictory' || opaqueRelated ? 'safety_rejected' : context.chunks.some(c => matchesSubject(query, c.content)) ? 'parser_miss' : 'answer_unavailable',
     ...actions, leadCapture, leadOffer: leadCapture && requestsContactCapture(query),
     contactSubmission: voluntarilySharesContact(query, true) };
@@ -218,6 +220,14 @@ export function renderChatFact(fact: ChatFact, plan: ChatSafetyPlan): string {
   return local(plan, fact.text, `${subject} ${fact.negative ? 'उपलब्ध नहीं है' : 'उपलब्ध है'}।`, `${subject} ${fact.negative ? 'offer nahi kiya jata' : 'available hai'}.`);
 }
 export function composeSafeChatReply(plan: ChatSafetyPlan): string {
+  const intent = plan.conversation;
+  if (intent && !intent.needsFacts) return conversationalReply(intent, plan.language);
+  const evidence = composeEvidenceReply(plan);
+  if (intent?.kind === 'advice') return `${conversationalReply(intent, plan.language)}${plan.state.startsWith('known') ? ` ${evidence}` : ''}`;
+  return intent && ['fear', 'hesitation', 'frustration', 'confusion'].includes(intent.kind)
+    ? `${conversationalReply(intent, plan.language, true)} ${evidence}` : evidence;
+}
+function composeEvidenceReply(plan: ChatSafetyPlan): string {
   const translated = safetyLanguageCopy(plan.language.language);
   if (translated) {
     const index = plan.state === 'contradictory' ? 1 : plan.state === 'ambiguous' || plan.kind === 'conversation' ? 2 : plan.state.startsWith('known') ? 3 : 0;
@@ -237,13 +247,13 @@ export function composeSafeChatReply(plan: ChatSafetyPlan): string {
     if (plan.kind === 'service_overview') return local(plan, 'Which treatment or service would you like to know about?', 'आप किस उपचार या सेवा के बारे में जानना चाहते हैं?', 'Aap kis treatment ya service ke baare mein jaanna chahte hain?');
   }
   let text: string;
-  if (plan.state === 'contradictory') text = local(plan, `The retrieved information about ${plan.topic} conflicts. Please confirm the current policy with the business.`, `${plan.topic} की मिली जानकारी में विरोध है। कृपया वर्तमान नीति की पुष्टि करें।`, `${plan.topic} ki mili jaankari mein conflict hai. Current policy business se confirm karna behtar hoga.`);
+  if (plan.state === 'contradictory') text = local(plan, `I have conflicting details about ${plan.topic}. It's best to check the current details with the team.`, `${plan.topic} की जानकारी एक जैसी नहीं है। टीम से वर्तमान जानकारी की पुष्टि करना बेहतर होगा।`, `${plan.topic} ki jaankari ek jaisi nahi hai. Team se current details check karna behtar hoga.`);
   else if (plan.state === 'ambiguous') text = local(plan, plan.kind === 'relative_hours' ? 'Which date do you mean? I can share the published weekly hours, but cannot confirm live availability.' : 'Which treatment or service do you mean? Prices depend on the specific service.', plan.kind === 'relative_hours' ? 'आप किस तारीख के बारे में पूछ रहे हैं? साप्ताहिक समय बता सकता हूँ, लेकिन लाइव उपलब्धता की पुष्टि नहीं कर सकता।' : 'आप किस उपचार या सेवा की कीमत पूछ रहे हैं?', plan.kind === 'relative_hours' ? 'Aap kis date ki baat kar rahe hain? Weekly hours bata sakta hoon, lekin live availability confirm nahi kar sakta.' : 'Aap kis treatment ya service ki price pooch rahe hain?');
-  else if (plan.state === 'unknown') text = local(plan, `I couldn't find confirmed information about ${plan.topic}. Please contact the business to check.`, `${plan.topic} के बारे में मेरे पास पुष्ट जानकारी नहीं है। कृपया इसकी पुष्टि के लिए संपर्क करें।`, `${plan.topic} ke baare mein mere paas confirmed jaankari nahi hai. Business se confirm karna behtar hoga.`);
+  else if (plan.state === 'unknown') text = local(plan, `I don't have the details about ${plan.topic} yet. You can check with the team.`, `${plan.topic} की जानकारी अभी मेरे पास नहीं है। टीम से इसकी पुष्टि कर सकते हैं।`, `${plan.topic} ki detail abhi mere paas nahi hai. Team se check kar sakte hain.`);
   else text = [...new Set(plan.selected.map(fact => fact.kind === 'contact' ? fact.text : renderChatFact(fact, plan)))].join(plan.selected.length > 2 ? '\n' : ' ');
   if (plan.state.startsWith('known') && plan.kind === 'service_overview') text = local(plan, 'Published services include:', 'प्रकाशित सेवाओं में शामिल हैं:', 'Published services mein shamil hain:') + '\n' + text;
   if (plan.state.startsWith('known') && plan.kind === 'price' && !subjectTerms(plan.query).length && plan.selected.length > 1) text = local(plan, 'Some published fees:', 'कुछ प्रकाशित शुल्क:', 'Kuch published fees:') + '\n' + text;
-  if (plan.excerpts.length) text = local(plan, 'The retrieved source says:', 'मिले स्रोत में लिखा है:', 'Mile source mein likha hai:') + '\n' + plan.excerpts.map(chunk => `“${chunk.content}”`).join('\n');
+  if (plan.excerpts.length) text = plan.excerpts.map(chunk => chunk.content).join('\n');
   if (plan.kind === 'booking_link' || plan.kind === 'booking') text += plan.booking[0] && plan.state === 'known_positive'
     ? `\n${local(plan, 'Verified booking link:', 'सत्यापित बुकिंग लिंक:', 'Verified booking link:')} ${plan.booking[0].destination}`
     : `\n${local(plan, "I don't have a verified booking link.", 'मेरे पास सत्यापित बुकिंग लिंक नहीं है।', 'Mere paas verified booking link nahi hai.')}`;
@@ -262,11 +272,28 @@ export function chatSafetyContract(plan: ChatSafetyPlan): string {
     `Contact capture available: ${plan.leadCapture}. It means saving voluntarily shared contact details, NOT sending email or guaranteed follow-up.`,
     `Contact invitation permitted for this turn: ${plan.leadOffer}. Never request email or phone when false.`,
     'Do not use the website homepage, source URLs or arbitrary discovered links as booking destinations. Do not fabricate citations or quote owner instructions as evidence.',
+    `This turn requires business facts: ${plan.conversation?.needsFacts ?? true}. Empathy is not a factual assertion; do not label a feeling as missing business information.`,
     'Answer briefly with verified facts. A general offer to help is allowed. Do not append unsupported resources/appointments/promises.'].join('\n');
 }
 /** Fact spans, not overall word overlap, establish support. Unrecognized factual
  * realizations fall back to supported composition, never a generic refusal. */
 export function validateChatDraft(text: string, plan: ChatSafetyPlan): { ok: boolean; reasons: string[] } {
+  const intent = plan.conversation;
+  if (!intent || intent.kind === 'factual') return validateEvidenceDraft(text, plan);
+  const clauses = text.trim().split(/(?<=[.!?।])\s+/u);
+  const evidence = clauses.filter(clause => !isSafeConversationalClause(clause, intent, plan.language)).join(' ');
+  const reasons: string[] = [];
+  if (!text.trim() || text.length > 8000) reasons.push('empty_or_oversized');
+  if (!intent.needsFacts) {
+    if (evidence) reasons.push('unverified_claim_or_capability');
+  } else if (!(intent.kind === 'advice' && !plan.state.startsWith('known') && !evidence)
+    && normalized(evidence) !== normalized(composeEvidenceReply(plan))) reasons.push(...validateEvidenceDraft(evidence, plan).reasons);
+  if (plan.language.language === 'Hindi' && !/\p{Script=Devanagari}/u.test(text)
+    || ['Hinglish', 'English'].includes(plan.language.language) && /\p{Script=Devanagari}/u.test(text)) reasons.push('wrong_script');
+  if (plan.language.language === 'Hinglish' && !/\b(?:aap|aapki|hai|hain|hoon|kya|kis|kaunsa|sakte|samajh|chinta|faisla|zaroor|mujhe)\b/iu.test(text)) reasons.push('wrong_language');
+  return { ok: reasons.length === 0, reasons: [...new Set(reasons)] };
+}
+function validateEvidenceDraft(text: string, plan: ChatSafetyPlan): { ok: boolean; reasons: string[] } {
   const reasons: string[] = [];
   if (!text.trim() || text.length > 8000) reasons.push('empty_or_oversized');
   if (plan.language.language === 'Hinglish' && /\p{Script=Devanagari}/u.test(text)) reasons.push('wrong_script');

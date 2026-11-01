@@ -43,13 +43,13 @@ export function detectedChatLanguage(text: string): ChatLanguage | null {
   // These paired markers disambiguate short Roman Hindi without classifying
   // English "open today?", "booking?", "ok" or an email as a language switch.
   if (/\b(?:kal|aaj)\s+(?:khul\w*|open)\b|\b(?:khula|khuli|band|milega|milegi)\s+(?:hai|hain|kya)\b|\bho\s+(?:jayeg[ai]|jaayeg[ai])\b/u.test(value)) return 'Hinglish';
-  if (count('aap aapki aapka aapke apni apna mujhe hum hume hamari mera meri kya kitne kitna kaise chahiye batao bataiye hai hain nahi nahin mein karna karte kar sakte kyun kahan') >= 2
+  if (count('aap aapki aapka aapke apni apna mujhe hum hume hamari mera meri kya kitne kitna kaise chahiye batao bataiye hai hain nahi nahin mein karna karte kar sakte kyun kahan dar darr lagta lagti dard ghabrahat chinta pareshan samajh lag raha rahi main') >= 2
     || /\b(?:kitne|kitna|batao|bataiye|chahiye)\b/u.test(value)) return 'Hinglish';
   if (count('bonjour combien votre vos prix pouvez vous merci voudrais quel quelle') >= 2) return 'French';
   if (count('hola cuánto cuesta precio planes quiero gracias puedes usted') >= 2) return 'Spanish';
   if (count('hallo wie kostet ihre bitte danke können sie preise') >= 2) return 'German';
   if (count('olá quanto custa você obrigado preços gostaria') >= 2) return 'Portuguese';
-  if (count('what how where when why can could would please explain tell your you our the is are does do want need thanks thank') >= 2
+  if (count('what how where when why can could would please explain tell your you our the is are does do want need thanks thank i im am have feel understand scared afraid nervous anxious anxiety worry worried unsure confused confusing frustrated frustrating angry upset') >= 2
     || /^(?:please\s+)?(?:explain|describe|summari[sz]e|tell me|what|how|where|when|why|do you|is there)\b/u.test(value)) return 'English';
   // Short labels, acknowledgements, numbers, contact details inherit context.
   if (words.length <= 3) return null;
