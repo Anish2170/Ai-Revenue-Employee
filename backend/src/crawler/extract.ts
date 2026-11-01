@@ -78,14 +78,31 @@ export function extract(html: string, pageUrl: string): ExtractedPage {
             const rows: string[][] = [];
             $(node).find('tr').each((_i, row) => { rows.push($(row).children('th,td').map((_j, cell) => normalizeText($(cell).clone().find('p,div,li,br').append('\n').end().text())).get()); });
             const notes = normalizeText($(node).find('caption').text() + ' ' + $(node).next('[role=note],.footnote,.disclaimer,[id*=footnote]').text());
-            if (rows.length > 1 && rows[0].length > 1 && $(node).find('thead th').length > 1) {
+            const rowPrices = rows[0]?.slice(1).some(cell => /^(?:price|cost|fee|rate)(?:\s|$)/iu.test(cell));
+            if (rows.length > 1 && rows[0].length > 1 && $(node).find('thead th').length > 1 && !rowPrices) {
                 // Transpose comparison tables: each product keeps prices AND billing/footnotes.
                 for (let col = 1; col < rows[0].length; col++)
                     sections.push({ heading: rows[0][col], text: [rows[0][col], ...rows.slice(1).map(row => row[col] !== undefined ? `${row[0]}: ${row[col]}` : row[0]), ...(notes ? [notes] : [])].join('\n\n') });
             }
-            else
+            else if (rowPrices) {
+                for (const row of rows.slice(1)) sections.push({ heading: row[0], text: [...row, ...(notes ? [notes] : [])].join('\n') });
+            } else
                 pieces.push(rows.map(row => row.join(' | ')).join('\n'));
             return;
+        }
+        // Keep the smallest complete price card as one source unit. Joining
+        // inline .text() loses the service/qualification boundary in span cards.
+        if (['div', 'section', 'article'].includes(tag)) {
+            const textNodes: string[] = [];
+            const collect = (part: any) => { if (part.type === 'text') { const value = normalizeText(part.data ?? ''); if (value) textNodes.push(value); } else $(part).contents().toArray().forEach(collect); };
+            collect(node);
+            const money = textNodes.filter(text => /^(?:[$₹€£¥]|USD|INR|EUR|GBP|CAD|AUD)\s*\d/u.test(text));
+            const text = textNodes.join('\n');
+            if (money.length === 1 && textNodes.length >= 2 && text.length < 700 && !$(node).find('a,button,table').length && textNodes[0] !== money[0]) {
+                flush();
+                sections.push({ heading: textNodes[0], text });
+                return;
+            }
         }
         if (['p', 'li', 'address', 'summary', 'dt', 'dd'].includes(tag)) {
             const text = normalizeText($(node).text());

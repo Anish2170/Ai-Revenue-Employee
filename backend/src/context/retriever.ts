@@ -53,11 +53,22 @@ export async function retrieve(query: string, websiteId?: string, options?: Retr
   const metadata=store.export().slice(0,1000).map(({embedding,...chunk})=>({...chunk,score:0}));
   const sourceUrl=options?.sourceUrl??resolved.sourceUrl??metadata.find(chunk=>/^https?:\/\//.test(chunk.url))?.url;
   const plan=planRetrieval(query,metadata,{...options,sourceUrl});
-  const queryVec = await embedQuery(plan.searchQuery, options);
-  checkCancelled(options?.signal);
-  const hits = await abortable(store.search(queryVec,Math.min(1000,Math.max(retrievalConfig.topK,store.size()))), options?.signal);
+  let hits: RetrievedChunk[], failed = false;
+  try {
+    const queryVec = await embedQuery(plan.searchQuery, options);
+    checkCancelled(options?.signal);
+    hits = await abortable(store.search(queryVec,Math.min(1000,Math.max(retrievalConfig.topK,store.size()))), options?.signal);
+  } catch (error) {
+    checkCancelled(options?.signal);
+    if (options?.deadlineAt && Date.now() >= options.deadlineAt) throw error;
+    failed = true;
+    hits = metadata;
+    logger.warn('[retrieval] semantic retrieval failed; scoped lexical recovery', { websiteId: websiteId ?? null });
+  }
   const selected=selectRetrieval(hits,plan,{topK:retrievalConfig.topK,threshold:retrievalConfig.similarityThreshold,maxChars:retrievalConfig.maxContextChars,sourceUrl,activeVersion:options?.activeVersion??resolved.activeVersion});
   const kept=selected.chunks;
+  selected.diagnostics.mode = failed ? 'lexical_fallback' : 'semantic';
+  if (failed) selected.diagnostics.failure = 'embedding_or_search_failure';
 
   const allScores = hits.map((h) => Number(h.score.toFixed(3)));
   const keptScores = kept.map((h) => Number(h.score.toFixed(3)));

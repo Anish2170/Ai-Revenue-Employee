@@ -2,6 +2,7 @@
  * relevance hints only: no fact values, authority or capabilities are inferred. */
 import { normalizeUrl } from '../crawler/links.js';
 import type { RetrievedChunk } from './types.js';
+import { priceRecords, broadCatalogQuery } from './sourceRecords.js';
 export type EvidenceNeed = 'price' | 'features' | 'refund' | 'cancellation' | 'hours' | 'process' | 'booking' | 'service';
 export interface RetrievalPage {
     url?: string;
@@ -24,6 +25,8 @@ export interface EvidenceConflict {
     urls: string[];
 }
 export interface RetrievalDiagnostics {
+    mode?: 'semantic' | 'lexical_fallback';
+    failure?: 'embedding_or_search_failure';
     originalQuery: string;
     searchQuery: string;
     topicSource: QueryPlan['topicSource'];
@@ -79,7 +82,7 @@ export function requestedNeeds(query: string): EvidenceNeed[] {
 }
 export function chunkNeeds(chunk: Pick<RetrievedChunk, 'heading' | 'content' | 'page'>): EvidenceNeed[] {
     const text = chunk.heading + ' ' + chunk.content, needs = requestedNeeds(text);
-    if (/[$₹€£¥]\s*\d|\b(?:USD|INR|EUR|GBP)\s*\d/iu.test(text) && !needs.includes('price'))
+    if (/[$₹€£¥]\s*\d|\b(?:USD|INR|EUR|GBP|CAD|AUD)\s*\d/iu.test(text) && !needs.includes('price'))
         needs.push('price');
     if (/includes?|features?|comes with/iu.test(text) && !needs.includes('features'))
         needs.push('features');
@@ -109,7 +112,7 @@ function labels(chunks: RetrievedChunk[]): Array<{
         tokens: string[];
     }>();
     for (const chunk of chunks) {
-        const names = [chunk.heading];
+        const names = [chunk.heading, ...priceRecords(chunk).map(record => record.subject)];
         // Titles and path labels can give a subject when the local section is generic.
         if (!topicTerms(chunk.heading).length) {
             try {
@@ -153,7 +156,7 @@ export function planRetrieval(query: string, chunks: RetrievedChunk[], options: 
 } = {}): QueryPlan {
     const known = labels(chunks), pageUrl = pageIdentity(options.page, options.sourceUrl), needs = requestedNeeds(query);
     let subjects = matchingLabels(query, known), topicSource: QueryPlan['topicSource'] = subjects.length ? 'explicit' : 'none';
-    const broadTopic = options.purpose !== 'popup' && /^(?:(?:your|all|available)\s+)?(?:pricing|prices|price list|services|service list)[.!?]*$/iu.test(query.trim());
+    const broadTopic = options.purpose !== 'popup' && Boolean(broadCatalogQuery(query));
     const reference = !broadTopic && (/\b(?:it|its|this|that|these|those|this service|this item|the process)\b|इस|इसका|इसके|ये/iu.test(query) || topicTerms(query).length === 0 || options.purpose === 'popup');
     // Unmatched concrete words may name an unknown product/service. A deictic
     // word alone must not replace that question with a familiar page topic.
@@ -184,7 +187,7 @@ export function planRetrieval(query: string, chunks: RetrievedChunk[], options: 
 /** Resolve only an implicit topic. This changes the safety question, not facts;
  * the full visitor message remains in the prompt/history and diagnostics. */
 export function answerQuery(query: string, diagnostics?: RetrievalDiagnostics): string {
-    if (/^(?:(?:your|all|available)\s+)?(?:pricing|prices|price list|services|service list)[.!?]*$/iu.test(query.trim()))
+    if (broadCatalogQuery(query))
         return query;
     if (!diagnostics || diagnostics.topicSource === 'explicit' || diagnostics.subjects.length !== 1)
         return query;

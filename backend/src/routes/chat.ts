@@ -8,7 +8,6 @@ import { Router } from 'express';
 import { validateBody } from '../middleware/validate.js';
 import { clientIp, hours, minutes, rateLimit, siteIdFromRequest, visitorKeyFromRequest } from '../middleware/rateLimit.js';
 import { chatRequestSchema } from '../validation/requestSchemas.js';
-import { llmAvailable } from '../llm/index.js';
 import { streamChatReply } from '../services/chatService.js';
 import { config, hasDatabase } from '../config/index.js';
 import { resolveTenant, TenantNotFoundError, TenantDisabledError } from '../tenant/tenant.resolver.js';
@@ -68,12 +67,6 @@ chatRouter.post('/chat', chatLimiter, validateBody(chatRequestSchema), async (re
     res.end();
   };
 
-  if (!llmAvailable()) {
-    chatTrace(requestId, 'LLM unavailable', { reason: 'no supported generation provider configured' });
-    send({ error: chatFailureMessage(language) });
-    return done();
-  }
-
   try {
     const { siteId, conversationId, visitorId, sessionId, messages, behaviour } = body;
     chatTrace(requestId, 'request parsed', {
@@ -115,7 +108,7 @@ chatRouter.post('/chat', chatLimiter, validateBody(chatRequestSchema), async (re
           chatTrace(requestId, 'tenant_resolve:failed_closed', {
             reason: 'tenant database unavailable and no unique origin-matched tenant snapshot found',
           });
-          send({ error: 'Tenant context unavailable. Please try again shortly.' });
+          send({ error: chatFailureMessage(language), code: 'TENANT_CONTEXT_UNAVAILABLE' });
           return done();
         }
 
@@ -153,7 +146,7 @@ chatRouter.post('/chat', chatLimiter, validateBody(chatRequestSchema), async (re
 
     if (!tenant) {
       chatTrace(requestId, 'tenant_resolve:failed_closed', { reason: 'siteId request has no tenant context' });
-      send({ error: 'Tenant context unavailable. Please try again shortly.' });
+      send({ error: chatFailureMessage(language), code: 'TENANT_CONTEXT_UNAVAILABLE' });
       return done();
     }
 

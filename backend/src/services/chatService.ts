@@ -7,7 +7,7 @@
 import { getBusinessContext } from '../context/provider.js';
 import { summarize } from '../behaviour/summarizer.js';
 import { promptRegistry } from '../prompts/registry.js';
-import { streamChat } from '../llm/index.js';
+import { streamChat, llmAvailable } from '../llm/index.js';
 import { config } from '../config/index.js';
 import type { ChatMessage, VisitorBehaviour } from '../types.js';
 import type { BusinessInstructions, ResolvedContext } from '../context/types.js';
@@ -155,10 +155,15 @@ async function* guardedReply(input: ChatStreamInput, context: ResolvedContext, p
   }
   if (input.signal?.aborted) throw input.signal.reason ?? new Error('Chat cancelled');
   if (source && !reasons.length) reasons = validateChatDraft(draft, plan).reasons;
-  reportSafetyDecision(input, { state: plan.state, draft, reasons, modelUsed });
-  // Follow-up invitations are server-composed only, and never promise delivery.
   const directRendering = ['English', 'Hindi', 'Hinglish'].includes(plan.language.language);
-  const answer = source && !reasons.length && !plan.leadOffer && !['booking', 'booking_link'].includes(plan.kind) && directRendering ? draft : composeSafeChatReply(plan);
+  const useDraft = Boolean(source && !reasons.length && !plan.leadOffer && !['booking', 'booking_link'].includes(plan.kind) && directRendering);
+  reportSafetyDecision(input, { state: plan.state, draft, reasons, modelUsed });
+  logger.info('[chat] response outcome', { requestId: input.debug?.requestId ?? null, websiteId: input.tenant?.websiteId ?? null,
+    evidenceStatus: plan.evidenceStatus, route: useDraft ? 'validated_provider' : 'deterministic',
+    providerStatus: source ? reasons.includes('provider_failure_or_limit') ? 'failed' : 'attempted' : llmAvailable() ? 'not_needed' : 'unavailable',
+    selectedSourceIds: [...new Set(plan.selected.map(f => f.chunk.id))], reasonCodes: reasons });
+  // Follow-up invitations are server-composed only, and never promise delivery.
+  const answer = useDraft ? draft : composeSafeChatReply(plan);
   yield { type: 'token', text: answer || chatFailureMessage(plan.language) };
   const cited = plan.state.startsWith('known') ? [...plan.selected.map(fact => fact.chunk), ...plan.excerpts] : [];
   const seen = new Set<string>();
@@ -217,6 +222,11 @@ export async function streamChatReply(input: ChatStreamInput): Promise<AsyncIter
 
   const language = resolveChatLanguage(messages, context.instructions.language, input.conversation?.language);
   const plan = buildChatSafetyPlan(context, answerQuery(retrievalQuery,context.retrieval), language, input.leadCaptureAvailable === true);
+  logger.info('[chat] retrieval evidence', { requestId: input.debug?.requestId ?? null, websiteId: input.tenant?.websiteId ?? null,
+    kind: plan.kind, state: plan.state, evidenceStatus: plan.evidenceStatus, retrievalMode: context.retrieval?.mode ?? 'no_index',
+    retrievalFailure: context.retrieval?.failure ?? null, topicSource: context.retrieval?.topicSource ?? 'none',
+    sourceIds: context.chunks.map(c => c.id), scores: context.scores, selectedFacts: plan.selected.length,
+    omittedReasons: [...new Set(context.retrieval?.omitted.map(o => o.reason) ?? [])] });
   const coverage=!sourceRequest?composeEvidenceCoverage(context,retrievalQuery,language):null;
   if(coverage){
     reportSafetyDecision(input, {state:coverage.complete?'known_positive':'partial',draft:'',reasons:coverage.parts.filter(part=>!part.state.startsWith('known')).map(part=>`${part.need}:${part.state}`),modelUsed:false});
@@ -247,7 +257,10 @@ export async function streamChatReply(input: ChatStreamInput): Promise<AsyncIter
   if (messages.some(message => /no thanks|not interested|do not contact|don't contact|nahi chahiye|नहीं चाहिए/iu.test(message.content))
     || messages.some(message => /[\w.+-]+@[\w.-]+\.[a-z]{2,}/iu.test(message.content))
     || messages.filter(message => message.role === 'assistant').some(message => /email address|ईमेल पता|email.*bata/iu.test(message.content))) plan.leadOffer = false;
-  if (plan.contactSubmission || ['conversation', 'demo'].includes(plan.kind) || !plan.state.startsWith('known') || plan.excerpts.length) return guardedReply(input, context, plan);
+  // Source composition is enough for concise facts. Generation adds value for
+  // requested explanations/rephrasing, and remains subject to the same contract.
+  const wantsGeneration = /explain|detail|rephrase|summari[sz]e|samjhao/iu.test(query);
+  if (!llmAvailable() || !wantsGeneration || plan.contactSubmission || ['conversation', 'demo'].includes(plan.kind) || !plan.state.startsWith('known')) return guardedReply(input, context, plan);
   const prompt = promptRegistry.chat.active.build(context, messages, summary, opener, input.conversation, plan);
   const leadInstructionIndex = prompt.system.indexOf('Intelligent lead capture:');
   const leadInstructionsPresent = leadInstructionIndex >= 0;

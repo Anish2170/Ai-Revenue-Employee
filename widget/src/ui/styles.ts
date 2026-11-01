@@ -287,26 +287,6 @@ button { cursor: pointer; border: none; background: none; }
   animation: aire-shimmer 1.2s ease-in-out infinite;
 }
 .aire-skeleton-row--user .aire-skeleton-bubble { width: 52%; background: linear-gradient(90deg, rgba(24,69,59,.10), rgba(24,69,59,.04), rgba(24,69,59,.10)); background-size: 220% 100%; }
-.aire-suggestions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  padding-left: 40px;
-  margin-top: -4px;
-  animation: aire-msg-in .24s ease;
-}
-.aire-suggestion-chip {
-  min-height: 34px;
-  padding: 8px 12px;
-  border-radius: 999px;
-  border: 1px solid var(--aire-soft-border);
-  background: #fff;
-  color: var(--aire-text);
-  font-size: 13px;
-  font-weight: 650;
-  transition: border-color .15s ease, color .15s ease, transform .15s ease, background .15s ease;
-}
-.aire-suggestion-chip:hover { border-color: var(--aire-accent); color: var(--aire-accent); background: var(--aire-surface); transform: translateY(-1px); }
 
 .aire-source {
   align-self: flex-start;
@@ -514,8 +494,7 @@ button { cursor: pointer; border: none; background: none; }
   .aire-message-row,
   .aire-lead-card,
   .aire-skeleton-row,
-  .aire-skeleton-bubble,
-  .aire-suggestions {
+  .aire-skeleton-bubble {
     animation: none !important;
     transition: none !important;
   }

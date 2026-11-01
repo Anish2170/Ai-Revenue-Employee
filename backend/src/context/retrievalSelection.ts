@@ -3,6 +3,7 @@
 import { normalizeUrl } from '../crawler/links.js';
 import { chunkNeeds, normalizedTerms, topicTerms, type EvidenceConflict, type QueryPlan, type RetrievalDiagnostics } from './retrievalPlan.js';
 import type { RetrievedChunk } from './types.js';
+import { priceRecords, matchesSubject, broadCatalogQuery } from './sourceRecords.js';
 const normalize = (text: string) => text.normalize('NFKC').toLowerCase().replace(/[’‘]/g, "'").replace(/\s+/g, ' ').trim();
 const tainted = (text: string) => /ignore (?:previous|all|the)|system prompt|override .*instructions|pretend (?:you|to)|<script/iu.test(text);
 interface Material {
@@ -33,9 +34,9 @@ function conflicts(all: RetrievedChunk[], plan: QueryPlan): EvidenceConflict[] {
     for (const chunk of all) {
         if (tainted(chunk.content) || /\b(?:previously|historical|hypothetical|for example|outdated)\b/iu.test(chunk.content))
             continue;
-        for (const fact of material(chunk.content)) {
+        for (const fact of [...material(chunk.content), ...priceRecords(chunk).map(record => ({ kind: 'price' as const, subject: record.subject, value: normalize(record.amount + '|' + record.qualification) }))]) {
             const terms = topicTerms(fact.subject);
-            const relevant = terms.length > 0 && (subjectTokens.length ? terms.every(t => subjectTokens.includes(t)) : terms.some(t => queryTokens.includes(t))) || fact.kind === 'refund' && plan.needs.includes('refund');
+            const relevant = terms.length > 0 && (subjectTokens.length ? terms.every(t => subjectTokens.includes(t)) : terms.some(t => queryTokens.includes(t)) || !queryTokens.length && plan.needs.includes('price')) || fact.kind === 'refund' && plan.needs.includes('refund');
             if (!relevant || plan.needs.length && !plan.needs.includes(fact.kind) && !(fact.kind === 'service' && plan.needs.includes('booking')))
                 continue;
             const key = fact.kind + ':' + terms.slice().sort().join(' '), rows = groups.get(key) ?? [];
@@ -74,7 +75,13 @@ export function selectRetrieval(all: RetrievedChunk[], plan: QueryPlan, options:
             omitted.push({ id: chunk.id, reason: 'source_instruction_text' });
             continue;
         }
-        if (!Number.isFinite(chunk.score) || chunk.score < options.threshold) {
+        const records = priceRecords(chunk);
+        const broad = Boolean(broadCatalogQuery(plan.originalQuery));
+        const exactRecord = records.some(record => matchesSubject(plan.originalQuery, record.subject) || plan.subjects.some(subject => matchesSubject(subject, record.subject)));
+        const contact = /^(?:contact(?: details| information)?|phone(?: number)?|email(?: address)?)[.!?]*$/iu.test(plan.originalQuery.trim()) && chunk.pageType === 'contact';
+        // A source-bound lexical match can recover a weak semantic hit. It
+        // changes relevance only; evidence and origin guards still run below.
+        if (!Number.isFinite(chunk.score) || chunk.score < options.threshold && !exactRecord && !(broad && records.length) && !contact) {
             omitted.push({ id: chunk.id, reason: 'below_cosine_threshold' });
             continue;
         }
@@ -101,15 +108,23 @@ export function selectRetrieval(all: RetrievedChunk[], plan: QueryPlan, options:
     }
     const knownSubjects = unique.map(chunk => topicTerms(chunk.heading)).filter(terms => terms.length > 0);
     const candidates = unique.map(chunk => {
+        const records = priceRecords(chunk);
         const metadata = normalizedTerms(chunk.heading + ' ' + chunk.title + ' ' + chunk.page), body = normalizedTerms(chunk.content), needs = chunkNeeds(chunk), reasons: string[] = [];
+        const recordMatch = records.some(record => matchesSubject(plan.originalQuery, record.subject) || plan.subjects.some(subject => matchesSubject(subject, record.subject)));
+        if (recordMatch || /contact/i.test(plan.originalQuery) && chunk.pageType === 'contact') reasons.push('source_lexical_match');
+        if (plan.needs.includes('service') && records.length) needs.push('service');
         const contentSubjects = material(chunk.content).filter(f => f.kind === 'price').map(f => topicTerms(f.subject));
         const subjectMatches = subjects.map(terms => terms.length > 0 && terms.every(t => metadata.includes(t) || body.includes(t)));
         const bodyMismatch = subjects.length && contentSubjects.length && !contentSubjects.some(terms => subjects.some(subject => subject.every(t => terms.includes(t)) && !knownSubjects.some(other => other.length > subject.length && subject.every(t => other.includes(t)) && other.every(t => terms.includes(t)))));
-        const entity = subjectMatches.some(Boolean) && !bodyMismatch;
+        const entity = (recordMatch || subjectMatches.some(Boolean)) && !bodyMismatch;
         const lexical = queryTerms.length ? queryTerms.filter(t => body.includes(t) || metadata.includes(t)).length / queryTerms.length : 0;
         const facet = plan.needs.filter(n => needs.includes(n)).length;
         const exactPage = Boolean(plan.pageUrl && normalizeUrl(chunk.url) === plan.pageUrl && !/public contact|footer|navigation/iu.test(chunk.heading));
         let rankScore = chunk.score + lexical * .2 + (entity ? .3 : 0) + (facet ? Math.min(.12, .06 * facet) : 0);
+        if (broadCatalogQuery(plan.originalQuery) && records.length) {
+            rankScore += .4;
+            reasons.push('published_catalog_records');
+        }
         if (entity)
             reasons.push('subject_match');
         if (lexical)

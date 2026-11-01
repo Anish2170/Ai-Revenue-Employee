@@ -26,7 +26,6 @@ const SOURCE_SVG =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>';
 const EMAIL_RE = /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i;
 const CONVERSATION_ID_KEY = 'aire_conversation_id';
-const SUGGESTED_QUESTIONS = ['Pricing', 'Book Demo', 'Services', 'Enterprise'];
 
 function readConversationId(): string | null {
   try { return sessionStorage.getItem(CONVERSATION_ID_KEY); } catch { return null; }
@@ -87,7 +86,6 @@ export class ChatWindow {
     if (transition) this.seedOpener(transition, true);
     if (this.history.length === 0) {
       this.seedOpener('Hi! I can help answer your questions. What would you like to know?', false);
-      this.appendSuggestedQuestions();
     }
 
     requestAnimationFrame(() => this.input?.focus());
@@ -226,7 +224,6 @@ export class ChatWindow {
     if (response) this.applyConversationResponse(response);
     if (this.history.length === 0) {
       this.seedOpener('Hi! I can help answer your questions. What would you like to know?', false);
-      this.appendSuggestedQuestions();
     }
     requestAnimationFrame(() => this.input?.focus());
   }
@@ -282,23 +279,6 @@ export class ChatWindow {
       row.appendChild(bubble);
       this.messagesEl.appendChild(row);
     }
-  }
-  private appendSuggestedQuestions(): void {
-    if (!this.messagesEl || this.messagesEl.querySelector('.aire-suggestions')) return;
-    const wrap = el('div', 'aire-suggestions');
-    for (const question of SUGGESTED_QUESTIONS) {
-      const chip = el('button', 'aire-suggestion-chip', question) as HTMLButtonElement;
-      chip.type = 'button';
-      chip.addEventListener('click', () => {
-        if (!this.input || this.streaming) return;
-        this.input.value = question;
-        this.autoGrow();
-        this.submit();
-      });
-      wrap.appendChild(chip);
-    }
-    this.messagesEl.appendChild(wrap);
-    this.scrollToBottom();
   }
   private streamReply(userText: string): void {
     this.setStreaming(true);

@@ -8,9 +8,10 @@ import type { ChatLanguageState } from './chatLanguage.js';
 import { parseAndValidateUrl, isPublicAddress } from '../security/ssrf.js';
 import { isIP } from 'node:net';
 import { safetyLanguageCopy } from './chatSafetyLanguage.js';
+import { priceRecords, matchesSubject, subjectTerms, broadCatalogQuery } from '../context/sourceRecords.js';
 
 export type AnswerState = 'known_positive' | 'known_negative' | 'unknown' | 'contradictory' | 'ambiguous';
-type Kind = 'price' | 'refund' | 'cancellation' | 'hours' | 'closed' | 'service' | 'booking';
+type Kind = 'price' | 'refund' | 'cancellation' | 'hours' | 'closed' | 'service' | 'booking' | 'contact';
 export interface ChatFact { kind: Kind; subject: string; value: string; text: string; chunk: RetrievedChunk; negative: boolean; amount?: string; suffix?: string; from?: boolean; entity?: string }
 export interface ChatSafetyPlan {
   state: AnswerState; query: string; topic: string; kind: string; language: ChatLanguageState; businessName: string;
@@ -18,6 +19,7 @@ export interface ChatSafetyPlan {
   booking: BusinessActionConfig[]; contact: BusinessActionConfig[];
   navigation: { pricing: BusinessActionConfig[]; services: BusinessActionConfig[] };
   leadCapture: boolean; leadOffer: boolean; contactSubmission: boolean;
+  evidenceStatus?: 'answer_available' | 'answer_unavailable' | 'parser_miss' | 'safety_rejected';
 }
 const MONEY = String.raw`(?:[$₹€£¥]\s*\d[\d,.]*|(?:USD|INR|EUR|GBP|CAD|AUD)\s*\d[\d,.]*)`;
 const PRICE = new RegExp(String.raw`^(.{1,80}?) (starts? at|costs?|is priced at) (${MONEY})((?:(?:\s*\/(?:mo|month|yr|year))|(?:\s+(?:per|a) (?:month|year|visit|session|item))|(?:,?\s+(?:billed (?:annually|monthly)|(?:including|excluding) (?:tax|VAT)|for (?:new|existing) customers)))*)\.$`, 'iu');
@@ -67,7 +69,7 @@ function parseFact(text: string, chunk: RetrievedChunk): ChatFact | null {
   return null;
 }
 export function safeChatSourceUrl(raw: string, websiteUrl?: string): string | null {
-  try { const url = parseAndValidateUrl(new URL(raw, websiteUrl).href); const host = url.hostname.replace(/^\[|\]$/g, '');
+  try { const url = parseAndValidateUrl(new URL(raw, websiteUrl || undefined).href); const host = url.hostname.replace(/^\[|\]$/g, '');
     if (isIP(host) && !isPublicAddress(host)) return null;
     if (websiteUrl && new URL(websiteUrl).origin !== url.origin) return null;
     return url.href;
@@ -89,9 +91,10 @@ export function verifiedChatActions(context: ResolvedContext) {
 }
 function question(query: string) {
   const value = semantics(query);
+  if (broadCatalogQuery(query) === 'service') return { kind: 'service_overview', topic: 'services' };
   if (/^(?:hi|hello|hey|thanks|thank you|ok|okay|yes|no|नमस्ते|धन्यवाद|namaste|shukriya)[.!?।]*$/u.test(value)) return { kind: 'conversation', topic: 'your question' };
-  if (/^(?:contact(?: details| information)?|phone(?: number)?|email(?: address)?)[.!?]*$/u.test(value)) return { kind: 'contact', topic: 'contact details' };
-  if (/^(?:(?:your|all|available)\s+)?services(?: list)?[.!?]*$/u.test(value)) return { kind: 'service_overview', topic: 'services' };
+  if (/^(?:contact(?: details| information)?|phone(?: number)?|email(?: address)?)[.!?]*$/u.test(value) || /(?:contact|phone|email).*(?:details|number|address)|(?:how|where).*contact/u.test(value)) return { kind: 'contact', topic: 'contact details' };
+  if (/^(?:(?:your|all|available)\s+)?services(?: list)?[.!?]*$/u.test(value) || /what (?:services|treatments).*offer|(?:services|treatments).*batao/u.test(value)) return { kind: 'service_overview', topic: 'services' };
   if (/\b(?:book|request|schedule) (?:a )?demo\b/u.test(value)) return { kind: 'demo', topic: 'a product demo' };
   if (/\b(?:slots?|availability|available (?:consultation|appointment) times|appointment times|खाली समय|उपलब्ध समय)\b|कौन सा समय/u.test(value)) return { kind: 'live_slots', topic: 'appointment availability' };
   if (/checklist|guide|document|resource|चेकलिस्ट|गाइड|संसाधन/iu.test(value)) return { kind: 'resource', topic: 'the requested resource' };
@@ -102,7 +105,7 @@ function question(query: string) {
   if (/\b(?:where|link|url)\b.*\bbook|\bbook.*\b(?:link|url)\b|बुकिंग लिंक/iu.test(value)) return { kind: 'booking_link', topic: 'booking link' };
   if (/\bbook(?:ing)?\b|बुकिंग/iu.test(value)) return { kind: 'booking', topic: 'online booking' };
   if (/open|hours|closed|khul|band|खुल|बंद|समय/iu.test(value)) return { kind: /\b(?:kal|aaj|today|tomorrow)\b|आज|कल/u.test(value) ? 'relative_hours' : 'hours', topic: 'opening hours' };
-  if (/price|pricing|cost|kitn|rupay|rupee|कीमत|रुपये|सफाई.*शुरू|कितन/iu.test(value)) {
+  if (/price|pricing|cost|how much|kitn|daam|rupay|rupee|कीमत|रुपये|सफाई.*शुरू|कितन/iu.test(value)) {
     const subject = /dental cleaning/.test(value) ? 'dental cleaning' : /root canal/.test(value) ? 'root canal treatment' : terms(value).join(' ');
     return { kind: 'price', topic: subject || 'treatment price' };
   }
@@ -115,9 +118,25 @@ function question(query: string) {
 }
 export function buildChatSafetyPlan(context: ResolvedContext, query: string, language: ChatLanguageState, leadCapture = false): ChatSafetyPlan {
   const target = question(query), facts: ChatFact[] = [], opaque: string[] = [];
+  const structural: ChatFact[] = [];
   for (const chunk of context.chunks) {
+    if (!safeChatSourceUrl(chunk.url, context.instructions.websiteUrl)) continue;
     if (UNSAFE_SOURCE.test(chunk.content) || ('truncated' in chunk && chunk.truncated)) { opaque.push(chunk.content); continue; }
+    const records = priceRecords(chunk);
+    for (const record of records) structural.push({ kind: 'price', subject: record.subject, value: `${record.amount}|${record.qualification}`, text: record.text, chunk, negative: false, amount: record.amount, suffix: record.qualification ? ` (${record.qualification})` : '' });
+    if (target.kind === 'contact' && (chunk.pageType === 'contact' || /\/contact\/?$/u.test(chunk.page))) {
+      for (const line of chunk.content.split('\n')) {
+        const separated = line.replace(/(?<=[a-z])(?=[A-Z][a-z])/gu, ' ').replace(/([A-Z]{2,})(?=[a-z][\w.+-]*@)/gu, '$1 ');
+        const phone = separated.match(/\(\d{3}\)\s*\d{3}-\d{4}/u), email = separated.match(/[\w.+-]+@[\w.-]+\.[a-z]{2,}/iu);
+        if (phone || email) {
+          const value = phone?.[0] ?? email![0];
+          const text = separated.replace(value, ` ${value} — `).replace(/\s+/gu, ' ').trim();
+          if (text.length <= 260) facts.push({ kind: 'contact', subject: 'contact details', value: text, text, chunk, negative: false });
+        }
+      }
+    }
     for (const paragraph of chunk.content.split(/\n\s*\n/u)) {
+      if (records.some(record => record.raw === paragraph)) continue;
       const sentences = paragraph.trim().split(/(?<=[.!?।])\s+(?=[\p{L}])/u);
       const parsed = sentences.map(text => parseFact(text, chunk));
       // Entire paragraph is the qualification boundary; opaque related text never promotes certainty.
@@ -125,31 +144,48 @@ export function buildChatSafetyPlan(context: ResolvedContext, query: string, lan
       else facts.push(...parsed.filter((fact): fact is ChatFact => Boolean(fact)));
     }
   }
+  facts.push(...structural);
   let selected = facts.filter(fact => target.kind === 'hours' || target.kind === 'relative_hours' ? ['hours', 'closed'].includes(fact.kind)
     : target.kind === 'booking_link' ? fact.kind === 'booking'
-    : target.kind === fact.kind && (['cancellation', 'booking'].includes(fact.kind) || target.kind === 'refund' && target.topic === 'refund policy' || sameSubject(target.topic, fact.subject)));
+    : target.kind === fact.kind && (['cancellation', 'booking', 'contact'].includes(fact.kind) || target.kind === 'refund' && target.topic === 'refund policy' || sameSubject(target.topic, fact.subject) || fact.kind === 'price' && matchesSubject(query, fact.subject)));
+  if (target.kind === 'general') selected = structural.filter(fact => matchesSubject(query, fact.subject));
+  if (target.kind === 'service' && !/free|मुफ्त/iu.test(query)) selected.push(...structural.filter(fact => matchesSubject(query, fact.subject)).map(fact => ({ ...fact, kind: 'service' as const, value: 'yes', text: `${fact.subject} is available.` })));
+  if (target.kind === 'service_overview') selected = [...facts.filter(f => f.kind === 'service'), ...structural.map(fact => ({ ...fact, kind: 'service' as const, value: 'yes', text: `${fact.subject} is available.` }))];
   if (target.kind === 'hours' && /sunday|रविवार/iu.test(semantics(query))) selected = selected.filter(fact => fact.kind === 'closed' || /sunday/i.test(fact.value));
-  if (target.kind === 'price' && target.topic === 'treatment price' && /\b(?:pricing|prices|price list)\b/iu.test(query)) selected = facts.filter(fact => fact.kind === 'price');
+  if (target.kind === 'price' && broadCatalogQuery(query) === 'price') selected = facts.filter(fact => fact.kind === 'price');
   // Refund policy cannot establish a free consultation, booking text cannot establish live slots.
-  const conflicting = selected.some(fact => selected.some(other => fact.kind === other.kind && sameSubject(fact.subject, other.subject) && normalized(fact.value) !== normalized(other.value)));
+  const conflicting = selected.some(fact => fact.kind !== 'contact' && selected.some(other => fact.kind === other.kind && sameSubject(fact.subject, other.subject) && normalized(fact.value) !== normalized(other.value)));
   const retrievalConflict=Boolean(context.retrieval?.conflicts.some(conflict=>
-    (target.kind==='general'||target.kind===conflict.kind||target.kind==='refund'&&conflict.kind==='refund')
-    && (target.kind==='refund'&&target.topic==='refund policy'||sameSubject(target.topic,conflict.subject)||target.kind==='general'&&terms(conflict.subject).some(word=>terms(query).includes(word)))));
-  const opaqueRelated = opaque.some(text => [target.topic, ...selected.map(fact => fact.subject)].some(subject => { const relevant = terms(subject); return relevant.length > 0 && relevant.every(word => semantics(text).includes(word)); }));
+    (target.kind==='general'||target.kind===conflict.kind||target.kind==='service_overview'&&conflict.kind==='service'||target.kind==='refund'&&conflict.kind==='refund')
+    && (target.kind==='refund'&&target.topic==='refund policy'||sameSubject(target.topic,conflict.subject)||selected.some(f=>sameSubject(f.subject,conflict.subject))||target.kind==='general'&&terms(conflict.subject).some(word=>terms(query).includes(word)))));
+  const opaqueRelated = opaque.some(text => {
+    // Descriptions of an offered service do not contradict its structural price
+    // record. Other money/conditions and unsafe source text still fail closed.
+    if (selected.some(f => structural.includes(f)) || target.kind === 'service_overview' && selected.length) {
+      if (!/[$₹€£¥]\s*\d|\b(?:USD|INR|EUR|GBP|CAD|AUD)\s*\d/iu.test(text) && !selected.some(f => f.chunk.content.includes(text))) return false;
+      if (!/[$₹€£¥]\s*\d|\b(?:USD|INR|EUR|GBP|CAD|AUD)\s*\d|\bonly\b|subject to|excluding|conditions apply|not (?:available|offered)/iu.test(text)) return false;
+    }
+    const subjects = selected.length ? selected.map(fact => fact.subject) : [target.topic];
+    return subjects.some(subject => { const relevant = terms(subject); return relevant.length > 0 && relevant.every(word => semantics(text).includes(word)); });
+  });
   const actions = verifiedChatActions(context);
   // A dental appointment must not fulfill a product-demo request. Preserve
   // valid demo navigation for businesses that actually configured it.
   if (target.kind === 'demo') actions.booking = actions.booking.filter(action => actionPurpose(action, { websiteId: context.websiteId, websiteUrl: context.instructions.websiteUrl, businessName: context.business.name }) === 'demo');
   let state: AnswerState = conflicting||retrievalConflict ? 'contradictory' : selected.length && !opaqueRelated ? selected.every(fact => fact.negative) ? 'known_negative' : 'known_positive' : 'unknown';
+  if (target.kind === 'price' && selected.length > 1 && subjectTerms(query).length && new Set(selected.map(f => normalized(f.subject))).size > 1) state = 'ambiguous';
   if (target.kind === 'relative_hours' || target.kind === 'price' && !selected.length && /^(treatment price|lagega)$/u.test(target.topic) || /^(?:it|this|that)$/u.test(target.topic)) state = 'ambiguous';
   // Keep the entire qualification boundary; never shorten a page by cutting
   // off conditions. Long pages need a targeted answer or verified navigation.
-  const excerpts = target.kind === 'general' && !retrievalConflict && !conflicting ? context.chunks.filter(chunk => chunk.content.length <= 600 && !('truncated' in chunk && chunk.truncated) && !UNSAFE_SOURCE.test(chunk.content) && terms(query).length > 0 && terms(query).every(word => semantics(chunk.content).includes(word))).slice(0, 1) : [];
+  const excerpts = (target.kind === 'general' || target.kind === 'service' && /explain|detail|about|samjhao/iu.test(query)) && !retrievalConflict && !conflicting && (!selected.length || /explain|detail|about|samjhao/iu.test(query)) ? context.chunks.filter(chunk => safeChatSourceUrl(chunk.url, context.instructions.websiteUrl) && !('truncated' in chunk && chunk.truncated) && !UNSAFE_SOURCE.test(chunk.content)).flatMap(chunk => chunk.content.split(/\n\s*\n/u).filter(paragraph => paragraph.length <= 600 && /[.!?।]$/u.test(paragraph.trim()) && !/[$₹€£¥]\s*\d/u.test(paragraph) && matchesSubject(query, paragraph)).map(content => ({ ...chunk, content }))).slice(0, /detail/iu.test(query) ? 3 : 1) : [];
   if (excerpts.length) state = 'known_positive';
   if (target.kind === 'booking_link' && actions.booking.length) state = selected.some(fact => fact.negative) || conflicting ? 'contradictory' : 'known_positive';
   if (target.kind === 'conversation') state = 'known_positive';
   if (target.kind === 'demo' && actions.booking.length) state = facts.some(fact => fact.kind === 'service' && fact.negative && /\bdemo\b/iu.test(fact.subject)) ? 'contradictory' : 'known_positive';
+  // Broad answers remain bounded; detailed questions can request more rows.
+  if (!/detail|all|complete|full|saare/iu.test(query) && selected.length > 6) selected = selected.slice(0, 6);
   return { state, query, topic: target.topic, kind: target.kind, language, businessName: context.business.name, facts, selected, excerpts,
+    evidenceStatus: state.startsWith('known') ? 'answer_available' : state === 'contradictory' || opaqueRelated ? 'safety_rejected' : context.chunks.some(c => matchesSubject(query, c.content)) ? 'parser_miss' : 'answer_unavailable',
     ...actions, leadCapture, leadOffer: leadCapture && ['price', 'booking', 'booking_link', 'service'].includes(target.kind) && state.startsWith('known') && (selected.some(f => !f.negative) || actions.booking.length > 0),
     contactSubmission: /^[^\n]*[\w.+-]+@[\w.-]+\.[a-z]{2,}[^\n]*$/iu.test(query) };
 }
@@ -184,23 +220,25 @@ export function composeSafeChatReply(plan: ChatSafetyPlan): string {
   if (plan.contactSubmission) return plan.leadCapture
     ? local(plan, 'Thank you for sharing your email for follow-up. Saving contact details does not send email or complete a booking.', 'फ़ॉलो-अप के लिए email साझा करने के लिए धन्यवाद। संपर्क जानकारी दर्ज करने से ईमेल नहीं भेजा जाता और बुकिंग पूरी नहीं होती।', 'Follow-up ke liye email share karne ke liye shukriya. Contact details save karne se email nahi bheja jata aur booking complete nahi hoti.')
     : local(plan, 'Contact capture is unavailable here. Please use a verified business contact route.', 'यहाँ संपर्क जानकारी दर्ज करने की सुविधा उपलब्ध नहीं है। कृपया व्यवसाय के सत्यापित संपर्क माध्यम का उपयोग करें।', 'Yahan contact details save karne ki suvidha available nahi hai. Business ka verified contact route use karein.');
-  if (plan.kind === 'contact' && plan.contact[0]) return `${local(plan, 'You can contact the business here:', 'व्यवसाय से यहाँ संपर्क कर सकते हैं:', 'Business se yahan contact kar sakte hain:')} ${plan.contact[0].destination}`;
+  if (plan.kind === 'contact' && !plan.selected.length && plan.contact[0]) return `${local(plan, 'You can contact the business here:', 'व्यवसाय से यहाँ संपर्क कर सकते हैं:', 'Business se yahan contact kar sakte hain:')} ${plan.contact[0].destination}`;
   if (plan.kind === 'demo' && plan.state === 'known_positive' && plan.booking[0]) return `${local(plan, 'You can request a demo here:', 'डेमो का अनुरोध यहाँ कर सकते हैं:', 'Demo yahan request kar sakte hain:')} ${plan.booking[0].destination}`;
-  if (plan.state !== 'contradictory' && (plan.kind === 'service_overview' || plan.kind === 'price' && !plan.selected.length)) {
+  if (plan.state !== 'contradictory' && !plan.selected.length && (plan.kind === 'service_overview' || plan.kind === 'price')) {
     const action = (plan.kind === 'price' ? plan.navigation.pricing : plan.navigation.services)[0];
-    if (action) return `${local(plan, plan.kind === 'price' ? 'You can view pricing here:' : 'You can explore services here:', plan.kind === 'price' ? 'कीमतों की जानकारी यहाँ देखें:' : 'सेवाओं की जानकारी यहाँ देखें:', plan.kind === 'price' ? 'Pricing yahan dekh sakte hain:' : 'Services yahan dekh sakte hain:')} ${action.destination}\n${local(plan, 'Which treatment or service are you interested in?', 'आप किस उपचार या सेवा के बारे में जानना चाहते हैं?', 'Aap kis treatment ya service ke baare mein jaanna chahte hain?')}`;
+    if (action && !subjectTerms(plan.query).length) return `${local(plan, plan.kind === 'price' ? 'You can view pricing here:' : 'You can explore services here:', plan.kind === 'price' ? 'कीमतों की जानकारी यहाँ देखें:' : 'सेवाओं की जानकारी यहाँ देखें:', plan.kind === 'price' ? 'Pricing yahan dekh sakte hain:' : 'Services yahan dekh sakte hain:')} ${action.destination}\n${local(plan, 'Which treatment or service are you interested in?', 'आप किस उपचार या सेवा के बारे में जानना चाहते हैं?', 'Aap kis treatment ya service ke baare mein jaanna chahte hain?')}`;
     if (plan.kind === 'service_overview') return local(plan, 'Which treatment or service would you like to know about?', 'आप किस उपचार या सेवा के बारे में जानना चाहते हैं?', 'Aap kis treatment ya service ke baare mein jaanna chahte hain?');
   }
   let text: string;
   if (plan.state === 'contradictory') text = local(plan, `The retrieved information about ${plan.topic} conflicts. Please confirm the current policy with the business.`, `${plan.topic} की मिली जानकारी में विरोध है। कृपया वर्तमान नीति की पुष्टि करें।`, `${plan.topic} ki mili jaankari mein conflict hai. Current policy business se confirm karna behtar hoga.`);
   else if (plan.state === 'ambiguous') text = local(plan, plan.kind === 'relative_hours' ? 'Which date do you mean? I can share the published weekly hours, but cannot confirm live availability.' : 'Which treatment or service do you mean? Prices depend on the specific service.', plan.kind === 'relative_hours' ? 'आप किस तारीख के बारे में पूछ रहे हैं? साप्ताहिक समय बता सकता हूँ, लेकिन लाइव उपलब्धता की पुष्टि नहीं कर सकता।' : 'आप किस उपचार या सेवा की कीमत पूछ रहे हैं?', plan.kind === 'relative_hours' ? 'Aap kis date ki baat kar rahe hain? Weekly hours bata sakta hoon, lekin live availability confirm nahi kar sakta.' : 'Aap kis treatment ya service ki price pooch rahe hain?');
   else if (plan.state === 'unknown') text = local(plan, `I couldn't find confirmed information about ${plan.topic}. Please contact the business to check.`, `${plan.topic} के बारे में मेरे पास पुष्ट जानकारी नहीं है। कृपया इसकी पुष्टि के लिए संपर्क करें।`, `${plan.topic} ke baare mein mere paas confirmed jaankari nahi hai. Business se confirm karna behtar hoga.`);
-  else text = [...new Set(plan.selected.map(fact => renderChatFact(fact, plan)))].join(' ');
+  else text = [...new Set(plan.selected.map(fact => fact.kind === 'contact' ? fact.text : renderChatFact(fact, plan)))].join(plan.selected.length > 2 ? '\n' : ' ');
+  if (plan.state.startsWith('known') && plan.kind === 'service_overview') text = local(plan, 'Published services include:', 'प्रकाशित सेवाओं में शामिल हैं:', 'Published services mein shamil hain:') + '\n' + text;
+  if (plan.state.startsWith('known') && plan.kind === 'price' && !subjectTerms(plan.query).length && plan.selected.length > 1) text = local(plan, 'Some published fees:', 'कुछ प्रकाशित शुल्क:', 'Kuch published fees:') + '\n' + text;
   if (plan.excerpts.length) text = local(plan, 'The retrieved source says:', 'मिले स्रोत में लिखा है:', 'Mile source mein likha hai:') + '\n' + plan.excerpts.map(chunk => `“${chunk.content}”`).join('\n');
   if (plan.kind === 'booking_link' || plan.kind === 'booking') text += plan.booking[0] && plan.state === 'known_positive'
     ? `\n${local(plan, 'Verified booking link:', 'सत्यापित बुकिंग लिंक:', 'Verified booking link:')} ${plan.booking[0].destination}`
     : `\n${local(plan, "I don't have a verified booking link.", 'मेरे पास सत्यापित बुकिंग लिंक नहीं है।', 'Mere paas verified booking link nahi hai.')}`;
-  if (plan.contact[0]) { const action = plan.contact[0]; text += `\n${local(plan, 'Verified contact:', 'सत्यापित संपर्क:', 'Verified contact:')} ${action.destination}`; }
+  if (plan.contact[0] && (plan.kind === 'contact' || !plan.state.startsWith('known'))) { const action = plan.contact[0]; text += `\n${local(plan, 'Verified contact:', 'सत्यापित संपर्क:', 'Verified contact:')} ${action.destination}`; }
   if (plan.leadOffer) text += '\n' + local(plan, "If you'd like to leave contact details for follow-up, what's your email address?", 'अगर आप फ़ॉलो-अप के लिए संपर्क जानकारी देना चाहें, तो अपना ईमेल पता बताएँ।', 'Agar aap follow-up ke liye contact details dena chahein, toh apna email address bataiye.');
   return text.trim();
 }
@@ -208,6 +246,7 @@ export function chatSafetyContract(plan: ChatSafetyPlan): string {
   return ['CHAT EVIDENCE CONTRACT:', `Question topic: ${JSON.stringify(plan.topic)}; answerability: ${plan.state}.`,
     'Only the following source-bound facts authorize material assertions. Missing evidence is UNKNOWN, never a negative business fact.',
     ...plan.selected.map(fact => JSON.stringify({ kind: fact.kind, sourceId: fact.chunk.id, exactSource: fact.text, safeRendering: renderChatFact(fact, plan) })),
+    ...plan.excerpts.map(chunk => JSON.stringify({ kind: 'description', sourceId: chunk.id, exactSource: chunk.content })),
     'No live appointment availability, existing resource/document inventory, outbound email delivery or booking-completion integration is connected. Never promise those capabilities.',
     `Verified booking destinations: ${JSON.stringify(plan.booking.map(action => ({ actionId: action.actionId, destination: action.destination })))}`,
     `Verified contact destinations: ${JSON.stringify(plan.contact.map(action => ({ actionId: action.actionId, destination: action.destination })))}`,
@@ -224,13 +263,15 @@ export function validateChatDraft(text: string, plan: ChatSafetyPlan): { ok: boo
   if (plan.language.language === 'English' && /\p{Script=Devanagari}/u.test(text)) reasons.push('wrong_script');
   if (plan.language.language === 'Hindi' && !/\p{Script=Devanagari}/u.test(text)) reasons.push('wrong_script');
   if (/\[\d+\]/u.test(text)) reasons.push('unverified_citation');
-  const allowed = new Set(plan.facts.flatMap(fact => [fact.text, renderChatFact(fact, plan)]).map(normalized));
+  const allowed = new Set(plan.selected.flatMap(fact => [fact.text, renderChatFact(fact, plan)]).map(normalized));
+  if (plan.excerpts.some(c => normalized(text) === normalized(c.content))) return { ok: reasons.length === 0, reasons };
+  if (plan.selected.some(f => normalized(text) === normalized(f.text) || normalized(text) === normalized(renderChatFact(f, plan))) && plan.selected.length === 1) return { ok: reasons.length === 0, reasons };
   const clauses = text.trim().split(/(?<=[.!?।])\s+(?=[\p{L}])/u);
   for (const clause of clauses) {
     // Do not discard yes/no: an inconsistent polarity prefix can change meaning.
     const trimmed = clause.trim();
     const parsed = parseFact(trimmed, {} as RetrievedChunk);
-    const sourceMatch = parsed && plan.facts.some(fact => fact.kind === parsed.kind && sameSubject(fact.subject, parsed.subject) && normalized(fact.value) === normalized(parsed.value));
+    const sourceMatch = parsed && plan.selected.some(fact => fact.kind === parsed.kind && sameSubject(fact.subject, parsed.subject) && normalized(fact.value) === normalized(parsed.value));
     const safeHelp = /^(?:Would you like help contacting (?:the business|the clinic|our team)\?|How can I help\?|Can I help with another question\?|क्या आप संपर्क करने में मदद चाहेंगे\?|Kya aap contact karne mein help chahenge\?)$/iu.test(trimmed);
     if (!allowed.has(normalized(trimmed)) && !sourceMatch && !safeHelp) reasons.push('unverified_claim_or_capability');
   }

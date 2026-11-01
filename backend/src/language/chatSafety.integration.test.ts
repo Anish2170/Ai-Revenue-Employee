@@ -17,7 +17,7 @@ async function setup(t: TestContext, generate: (req: StreamRequest) => AsyncIter
   t.after(() => { (config.gemini as { apiKey: string }).apiKey = key; __setProvidersForTests(null, null); });
   t.mock.method(globalThis, 'fetch', async () => Response.json({ embeddings: [{ values: [1, 0] }] }));
   __setProvidersForTests({ id: 'synthetic-adversarial-draft', streamText: generate, async generateStructured() { throw Error('unexpected'); }, async embed() { throw Error('unexpected'); } }, null);
-  return { messages: [{ role: 'user', content: 'Dental cleaning price?' }], tenant: { websiteId, instructions } } as Input;
+  return { messages: [{ role: 'user', content: 'Explain dental cleaning price?' }], tenant: { websiteId, instructions } } as Input;
 }
 async function collect(input: Input) { const events = []; for await (const event of await streamChatReply(input)) events.push(event); return { events, text: events.filter(e => e.type === 'token').map(e => e.text).join('') }; }
 

@@ -30,7 +30,22 @@ function logFailover(req: StreamRequest | StructuredRequest, values: Record<stri
   logger.warn('[llm] generation failover metadata', { requestId: 'debug' in req ? req.debug?.requestId ?? null : null, primaryProvider: config.llm.primary.provider, primaryModel: config.llm.primary.model, fallbackProvider: config.llm.fallback.provider, fallbackModel: config.llm.fallback.model, ...values });
 }
 
-export function llmAvailable(): boolean { return hasLLM; }
+export function llmAvailable(): boolean { return hasLLM || Boolean(primary || fallback); }
+
+/** Correlated attempt lifecycle, including failed and unconfigured-primary
+ * fallback paths. No prompt, source text, generated draft or credentials. */
+async function* observedStream(provider: LLMProvider, req: StreamRequest, attempt: number, fallbackUsed: boolean): AsyncIterable<string> {
+  const meta = { requestId: req.debug?.requestId ?? null, provider: provider.id, retryCount: attempt, fallbackUsed };
+  logger.info('[llm] generation attempt started', meta);
+  const started = Date.now();
+  try {
+    yield* provider.streamText(req);
+    logger.info('[llm] generation attempt completed', { ...meta, latencyMs: Date.now() - started });
+  } catch (error) {
+    logger.warn('[llm] generation attempt failed', { ...meta, failureCategory: failureCategory(error), latencyMs: Date.now() - started });
+    throw error;
+  }
+}
 
 // A missing credential is configuration state, not a retryable provider outage.
 // Keep the configured primary first whenever it is present. Test overrides keep
@@ -84,7 +99,7 @@ export async function* streamChat(req: StreamRequest): AsyncIterable<string> {
   checkCancelled(req.signal);
   if (primaryUnconfigured()) {
     logFailover(req, { fallbackUsed: true, failureCategory: 'primary_unconfigured', retryCount: 0 });
-    for await (const chunk of fallbackProvider().streamText(req)) { checkCancelled(req.signal); yield chunk; }
+    for await (const chunk of observedStream(fallbackProvider(), req, 0, true)) { checkCancelled(req.signal); yield chunk; }
     return;
   }
   let last: unknown;
@@ -93,7 +108,7 @@ export async function* streamChat(req: StreamRequest): AsyncIterable<string> {
     let emitted = false;
     const started = Date.now();
     try {
-      for await (const chunk of primaryProvider().streamText(req)) { checkCancelled(req.signal); if (chunk) emitted = true; yield chunk; }
+      for await (const chunk of observedStream(primaryProvider(), req, attempt, false)) { checkCancelled(req.signal); if (chunk) emitted = true; yield chunk; }
       logger.info('[llm] generation completed', { requestId: req.debug?.requestId ?? null, finalProvider: config.llm.primary.provider, finalModel: config.llm.primary.model, fallbackUsed: false, latencyMs: Date.now() - started, retryCount: attempt });
       return;
     } catch (error) {
@@ -108,7 +123,7 @@ export async function* streamChat(req: StreamRequest): AsyncIterable<string> {
   checkCancelled(req.signal);
   const started = Date.now();
   logFailover(req, { fallbackUsed: true, failureCategory: failureCategory(last), retryCount: config.llm.primaryRetries });
-  for await (const chunk of fallbackProvider().streamText(req)) { checkCancelled(req.signal); yield chunk; }
+  for await (const chunk of observedStream(fallbackProvider(), req, 0, true)) { checkCancelled(req.signal); yield chunk; }
   logger.info('[llm] generation completed', { requestId: req.debug?.requestId ?? null, finalProvider: config.llm.fallback.provider, finalModel: config.llm.fallback.model, fallbackUsed: true, latencyMs: Date.now() - started, retryCount: config.llm.primaryRetries });
 }
 

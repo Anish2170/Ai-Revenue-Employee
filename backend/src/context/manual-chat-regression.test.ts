@@ -76,7 +76,7 @@ test('a real configured demo action remains usable; an appointment cannot substi
   context.businessActions = [ownerAction('book_demo', 'Book Demo', '/demo')];
   const reply = composeSafeChatReply(buildChatSafetyPlan(context, 'Book Demo', { language: 'English', explicit: false }));
   assert.equal(reply, 'You can request a demo here: https://example.test/demo');
-  context.chunks = [doc('/demo', 'Demo', 'Product demo is not offered.')];
+  context.chunks = [{ ...doc('/demo', 'Demo', 'Product demo is not offered.'), url: 'https://example.test/demo' }];
   assert.equal(buildChatSafetyPlan(context, 'Book Demo', { language: 'English', explicit: false }).state, 'contradictory');
   context.chunks = [];
   context.businessActions = [ownerAction('book_appointment', 'Book Appointment', '/appointments')];
