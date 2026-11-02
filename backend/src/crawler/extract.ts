@@ -1,7 +1,7 @@
 /** DOM-aware text extraction. Source wording remains data, not instructions. */
 import * as cheerio from 'cheerio';
 import type { ContentSection } from '../context/types.js';
-import { usefulBusinessText } from './contentPolicy.js';
+import { hasLoadingPlaceholder, usefulBusinessText } from './contentPolicy.js';
 const STRIP_SELECTORS = 'script,style,noscript,svg,nav,[role="navigation"],form,iframe,template,[aria-hidden="true"],[hidden],[id*="cookie" i],[class*="cookie" i],[id*="consent" i],[class*="consent" i],[class*="advert" i],[id*="newsletter" i]';
 export interface ExtractedPage {
     title: string;
@@ -129,8 +129,8 @@ export function extract(html: string, pageUrl: string): ExtractedPage {
     cleaning.afterLength = text.length;
     // Long loading shells are not considered complete merely because nav/prose is long.
     const incomplete = $('[aria-busy="true"],[class*="skeleton" i],[data-loading]').length > 0 || /pricing|plans|products/i.test(new URL(pageUrl).pathname) && !/[$₹€£¥]\s*\d/.test(text);
-    const placeholder = /(?:loading|please wait|preparing your|enable javascript|prices load|content loads)/i.test(text);
-    const meaningfulChars = sections.filter(section => usefulBusinessText(section.text) && !/please wait|loading|preparing your/i.test(section.text)).reduce((n, section) => n + section.text.length, 0);
+    const placeholder = hasLoadingPlaceholder(text);
+    const meaningfulChars = sections.filter(section => usefulBusinessText(section.text)).reduce((n, section) => n + section.text.length, 0);
     // A hydrated short policy/price remains valid business content even when an
     // app root/script survives in the DOM. Explicit loading/busy signals still
     // win; length alone cannot invalidate an otherwise authoritative short fact.

@@ -1,9 +1,10 @@
 'use client';
 
-import { FormEvent, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { FormEvent, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { api, errorMessage, type KnowledgeBuildHandle } from '@/lib/api';
+import { api, errorMessage } from '@/lib/api';
 import { Badge, Button, Card, Input, Spinner } from '@/components/ui';
+import { KnowledgeTab } from '@/components/knowledge-tab';
 
 type Website = { id: string; name: string; url: string; industry?: string; description?: string };
 type Widget = { siteId: string; status: string; scriptSnippet?: string };
@@ -62,13 +63,6 @@ const steps = [
   'Done',
 ];
 
-const buildStages = [
-  { key: 'crawler', label: 'Crawler', match: ['crawl', 'extract'] },
-  { key: 'chunking', label: 'Chunking', match: ['chunk'] },
-  { key: 'embeddings', label: 'Embeddings', match: ['embed', 'index', 'saving'] },
-  { key: 'actions', label: 'Website Actions', match: ['action'] },
-  { key: 'completed', label: 'Completed', match: ['complete'] },
-];
 const emptyInstructionForm: InstructionForm = {
   businessName: '',
   companyDescription: '',
@@ -152,13 +146,6 @@ function uniqueQuestions(questions: string[]): string[] {
   });
 }
 
-function stageState(stage: (typeof buildStages)[number], phases: string[], complete: boolean) {
-  if (stage.key === 'completed' && complete) return 'done';
-  if (stage.key === 'actions' && complete) return 'done';
-  const hit = phases.some((phase) => stage.match.some((needle) => phase.toLowerCase().includes(needle)));
-  return hit ? 'done' : 'pending';
-}
-
 export default function OnboardingPage() {
   return (
     <Suspense fallback={<div className="flex h-64 items-center justify-center"><Spinner /></div>}>
@@ -181,10 +168,6 @@ function OnboardingContent() {
   const [creating, setCreating] = useState(false);
   const [url, setUrl] = useState('');
   const [savingUrl, setSavingUrl] = useState(false);
-  const [building, setBuilding] = useState(false);
-  const [buildComplete, setBuildComplete] = useState(false);
-  const [phases, setPhases] = useState<string[]>([]);
-  const [buildError, setBuildError] = useState('');
   const [instructionForm, setInstructionForm] = useState<InstructionForm>(emptyInstructionForm);
   const [alwaysBookDemo, setAlwaysBookDemo] = useState(false);
   const [avoidDiscounts, setAvoidDiscounts] = useState(false);
@@ -203,7 +186,7 @@ function OnboardingContent() {
   const [verifyState, setVerifyState] = useState<'idle' | 'checking' | 'installed' | 'missing'>('idle');
   const [verifyMessage, setVerifyMessage] = useState('');
   const [error, setError] = useState('');
-  const buildHandle = useRef<KnowledgeBuildHandle | null>(null);
+  const knowledgeReady = useCallback(() => setStep(3), []);
 
   const loadWebsite = useCallback(async (id: string) => {
     const site = (await api.getWebsite(id)) as Website;
@@ -270,40 +253,6 @@ function OnboardingContent() {
   useEffect(() => {
     if ((step === 5 || step === 6) && !actionsPayload) void Promise.resolve().then(loadActions);
   }, [actionsPayload, step, loadActions]);
-  useEffect(() => {
-    if (!websiteId || step !== 2 || building) return;
-    void Promise.resolve().then(async () => {
-      try {
-        const status = (await api.getKnowledgeStatus(websiteId)) as { hasKnowledge?: boolean; lastBuild?: { status?: string; phase?: string; error?: string } };
-        const build = status.lastBuild;
-        if (build?.phase) setPhases((prev) => (prev.includes(build.phase!) ? prev : [...prev, build.phase!]));
-        if (build?.status === 'QUEUED' || build?.status === 'RUNNING' || build?.status === 'RETRY_WAIT') setBuilding(true);
-        if (build?.status === 'FAILED') { setBuilding(false); setBuildError('Knowledge build failed. Please try again.'); }
-        if (status.hasKnowledge || build?.status === 'SUCCESS') {
-          setBuildComplete(true);
-          setBuilding(false);
-          setPhases((prev) => (prev.includes('complete') ? prev : [...prev, 'complete']));
-          setStep(3);
-        }
-      } catch {
-        setBuildError('Connection lost. Retrying...');
-      }
-    });
-  }, [building, step, websiteId]);
-
-  useEffect(() => {
-    if (!websiteId || step !== 2) return;
-    const timer = window.setInterval(() => { void api.getKnowledgeStatus(websiteId).then((data) => {
-      const build = (data as { lastBuild?: { status?: string; phase?: string; error?: string } }).lastBuild;
-      if (!build) return;
-      if (build.phase) setPhases((prev) => (prev.includes(build.phase!) ? prev : [...prev, build.phase!]));
-      if (build.status === 'QUEUED' || build.status === 'RUNNING' || build.status === 'RETRY_WAIT') setBuilding(true);
-      if (build.status === 'FAILED') { setBuilding(false); setBuildError('Knowledge build failed. Please try again.'); }
-      if (build.status === 'SUCCESS') { setBuilding(false); setBuildComplete(true); setStep(3); }
-    }).catch(() => setBuildError('Connection lost. Retrying...')); }, 1500);
-    return () => window.clearInterval(timer);
-  }, [step, websiteId]);
-
   const snippet = useMemo(() => {
     if (!widget) return '';
     const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8787';
@@ -368,35 +317,6 @@ function OnboardingContent() {
     } finally {
       setSavingUrl(false);
     }
-  }
-
-  function startKnowledgeBuild() {
-    if (!websiteId || !url) return;
-    setBuilding(true);
-    setBuildComplete(false);
-    setPhases([]);
-    setBuildError('');
-    const finishBuild = () => {
-      setPhases((prev) => (prev.includes('complete') ? prev : [...prev, 'complete']));
-      setBuildComplete(true);
-      setBuilding(false);
-      setTimeout(() => setStep(3), 650);
-    };
-
-    const handle = api.buildKnowledge(websiteId, normalizeUrl(url))
-      .onPhase((phase) => {
-        if (phase === 'connection_lost') { setBuildError('Connection lost. Retrying...'); return; }
-        setBuildError('');
-        setPhases((prev) => [...prev, phase]);
-        if (phase === 'complete' || phase.endsWith(':complete')) finishBuild();
-      })
-      .onComplete(finishBuild)
-      .onError((err) => {
-        setBuildError(errorMessage(err, 'Knowledge build failed. Please try again.'));
-        setBuilding(false);
-      });
-    buildHandle.current = handle;
-    handle.start();
   }
 
   async function saveInstructions(skip = false) {
@@ -589,27 +509,13 @@ function OnboardingContent() {
       )}
 
       {step === 2 && (
-        <Card className="rounded-lg">
-          <div className="flex flex-wrap items-center justify-between gap-4">
-            <div>
-              <h2 className="text-xl font-semibold">Building Knowledge...</h2>
-              <p className="mt-2 text-sm" style={{ color: 'var(--text-muted)' }}>Crawler, chunking, embeddings, and Website Actions run through the existing build system.</p>
-            </div>
-            <Button onClick={startKnowledgeBuild} loading={building} disabled={building || !url}>{building ? 'Building' : buildComplete ? 'Built' : 'Build Knowledge'}</Button>
+        <section className="space-y-6">
+          <div>
+            <h2 className="text-xl font-semibold">Build website knowledge</h2>
+            <p className="mt-2 text-sm text-[var(--text-muted)]">Build knowledge from your public website. Review crawl outcomes and resolve any failed sources here before continuing setup.</p>
           </div>
-          <div className="mt-6 grid gap-3 md:grid-cols-5">
-            {buildStages.map((stage) => {
-              const state = stageState(stage, phases, buildComplete);
-              return (
-                <div key={stage.key} className="rounded-lg border p-4" style={{ borderColor: state === 'done' ? 'var(--success)' : 'var(--border)', background: state === 'done' ? 'rgba(34,197,94,0.1)' : 'var(--bg-input)' }}>
-                  <div className="text-sm font-medium">{stage.label}</div>
-                  <div className="mt-2 text-xs" style={{ color: state === 'done' ? 'var(--success)' : 'var(--text-muted)' }}>{state === 'done' ? 'Completed' : building ? 'Waiting' : 'Ready'}</div>
-                </div>
-              );
-            })}
-          </div>
-          {buildError && <p className="mt-4 text-sm" style={{ color: 'var(--danger)' }}>{buildError}</p>}
-        </Card>
+          <KnowledgeTab key={websiteId} websiteId={websiteId} websiteUrl={url} onReady={knowledgeReady} />
+        </section>
       )}
 
       {step === 3 && (

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { KnowledgeState, type KnowledgeClient } from './knowledge-state.ts';
+import { KnowledgeState, knowledgeReadyForSetup, type KnowledgeClient } from './knowledge-state.ts';
 const previous = { id: 'old', status: 'SUCCESS', configuration: { budget: { maxPages: 50, maxRenderedPages: 5 } } };
 function fixture() {
   const timers = new Map<number, () => void>(); let next = 0;
@@ -16,6 +16,14 @@ function fixture() {
   return { state, client, timers, setBuild: (value: typeof build) => { build = value; }, snapshot };
 }
 const settle = () => new Promise(resolve => setImmediate(resolve));
+test('guided setup advances only when published knowledge is readable and the latest build succeeded', () => {
+  assert.equal(knowledgeReadyForSetup({ hasKnowledge: true, lastBuild: { status: 'SUCCESS' } }), true);
+  assert.equal(knowledgeReadyForSetup({ hasKnowledge: true, lastBuild: null }), true);
+  assert.equal(knowledgeReadyForSetup({ hasKnowledge: false, lastBuild: { status: 'SUCCESS' } }), false);
+  for (const status of ['QUEUED', 'RUNNING', 'RETRY_WAIT', 'FAILED', 'CANCELLED']) {
+    assert.equal(knowledgeReadyForSetup({ hasKnowledge: true, lastBuild: { status } }), false);
+  }
+});
 test('refresh replaces old SUCCESS immediately and exposes the cancellable new job', async () => {
   const f = fixture(); await f.state.refresh();
   const pending = f.state.start('https://fixture.invalid');

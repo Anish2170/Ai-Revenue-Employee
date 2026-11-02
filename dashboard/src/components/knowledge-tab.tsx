@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { api } from '@/lib/api';
-import { KnowledgeState, activeBuild } from '@/lib/knowledge-state';
+import { KnowledgeState, activeBuild, knowledgeReadyForSetup } from '@/lib/knowledge-state';
 import { Button, Card, Badge, Spinner } from '@/components/ui';
 import { KnowledgeBuildProgress } from '@/components/knowledge-build-progress';
 import { KnowledgeScopeReview } from '@/components/knowledge-scope-review';
@@ -9,7 +9,7 @@ import { KnowledgeCrawlDetails } from '@/components/knowledge-crawl-details';
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyRecord = Record<string, any>;
 
-export function KnowledgeTab({ websiteId, websiteUrl }: { websiteId: string; websiteUrl: string }) {
+export function KnowledgeTab({ websiteId, websiteUrl, onReady }: { websiteId: string; websiteUrl: string; onReady?: () => void }) {
   const [, render] = useState(0);
   const [controller, setController] = useState<KnowledgeState | null>(null);
   const [buildUrl, setBuildUrl] = useState(websiteUrl);
@@ -24,6 +24,9 @@ export function KnowledgeTab({ websiteId, websiteUrl }: { websiteId: string; web
   const currentBuild = status?.lastBuild;
   const isActive = pending || activeBuild(currentBuild);
   const startBuild = () => { void controller?.start(buildUrl); };
+  useEffect(() => {
+    if (!loading && !pending && knowledgeReadyForSetup(status)) onReady?.();
+  }, [loading, pending, status, onReady]);
 
   if (loading) return <div className="flex justify-center py-12"><Spinner /></div>;
 

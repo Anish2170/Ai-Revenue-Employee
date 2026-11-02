@@ -2,6 +2,7 @@
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type RecordData = Record<string, any>;
 export const activeBuild = (build: RecordData | null | undefined) => ['QUEUED', 'RUNNING', 'RETRY_WAIT'].includes(build?.status);
+export const knowledgeReadyForSetup = (status: RecordData | null | undefined) => Boolean(status?.hasKnowledge && (!status.lastBuild || status.lastBuild.status === 'SUCCESS'));
 export interface KnowledgeClient {
   getKnowledgeStatus(id: string): Promise<unknown>;
   getKnowledgeBuild(id: string, buildId: string): Promise<unknown>;

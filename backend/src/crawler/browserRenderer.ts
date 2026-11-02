@@ -5,6 +5,7 @@ import { join, resolve, dirname, basename } from 'node:path';
 import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import { config } from '../config/index.js';
+import { hasLoadingPlaceholder } from './contentPolicy.js';
 import { safeFetch, parseAndValidateUrl, type SafeFetchOptions } from '../security/ssrf.js';
 
 interface CdpMessage {
@@ -373,7 +374,7 @@ async function waitForStableDom(client: CdpClient, timeoutMs: number, signal?:Ab
   while (Date.now() < deadline) {
     signal?.throwIfAborted();latest = await readDomSnapshot(client);
     const length = latest.bodyText.length;
-    if (length > 0 && !/loading|please wait|preparing your/i.test(latest.bodyText) && length === lastLength && latest.readyState === 'complete') {
+    if (length > 0 && !hasLoadingPlaceholder(latest.bodyText) && length === lastLength && latest.readyState === 'complete') {
       stableCount += 1;
       if (stableCount >= 2) return latest;
     } else {
