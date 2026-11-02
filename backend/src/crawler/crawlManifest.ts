@@ -20,6 +20,8 @@ export interface CrawlManifest {
     finishedAt: string;
     maxPages: number;
     maxRenderedPages?: number;
+    budgetMode?: 'auto' | 'manual';
+    budgetSteps?: Array<{ maxPages: number; maxRenderedPages: number }>;
     maxDepth: number;
     maxRequests: number;
     networkRequests: number;

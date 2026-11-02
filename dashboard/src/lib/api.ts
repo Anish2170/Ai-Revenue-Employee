@@ -455,7 +455,7 @@ export class ApiClient {
     return request(`/api/websites/${websiteId}/knowledge/build/${buildId}/approve-scope`, { method: 'POST', body: JSON.stringify(body) });
   }
 
-  queueKnowledgeBuild(websiteId: string, url: string, budget: { maxPages: number; maxRenderedPages: number }) {
+  queueKnowledgeBuild(websiteId: string, url: string, budget: { maxPages: number; maxRenderedPages: number; mode?: 'auto' | 'manual' }) {
     return request<{ buildId: string; status: string }>(`/api/websites/${websiteId}/knowledge/build`, { method: 'POST', body: JSON.stringify({ url, budget }) });
   }
 

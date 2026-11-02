@@ -1,7 +1,7 @@
 export interface BuildProgressState {
-  configuration?: { approval?: { inventory: Array<{ disposition: string; url: string }> } } | null;
+  configuration?: { budget?: { mode?: 'auto' | 'manual'; maxPages: number; maxRenderedPages: number }; approval?: { inventory: Array<{ disposition: string; url: string }> } } | null;
   status: string;
-  coverage?: { completeWithinScope?: boolean; discovered?: number; attempted?: number; fetched?: number; useful?:number; rendered?:number; duplicates?:number; skipped?:number; failed?: number; limits?: string[]; scope?:string; missingCategories?:string[] } | null;
+  coverage?: { budgetMode?: 'auto' | 'manual'; budgetSteps?: Array<{ maxPages: number; maxRenderedPages: number }>; maxPages?: number; completeWithinScope?: boolean; discovered?: number; attempted?: number; fetched?: number; useful?:number; rendered?:number; duplicates?:number; skipped?:number; failed?: number; limits?: string[]; scope?:string; missingCategories?:string[] } | null;
   phase?: string;
   progress?: Record<string, number | null | undefined>;
   attempt?: number;
@@ -42,6 +42,13 @@ export function describeBuildProgress(build: BuildProgressState) {
   if (build.status === 'FAILED' || build.status === 'CANCELLED') { percent = Math.min(percent, 99); title = build.status === 'FAILED' ? 'Build failed' : 'Build cancelled'; description = 'The build did not complete. You can start another build below.'; }
   const approval = build.configuration?.approval;
   if(build.phase==='partial' || build.coverage?.completeWithinScope===false){percent=Math.min(percent,99);title='Build incomplete';description='Some discovered sources or crawl limits need review. Any previous usable knowledge has been retained.';}
+  if (build.status === 'FAILED' && build.coverage?.limits?.includes('page_budget')) {
+    const automatic = build.configuration?.budget?.mode === 'auto' || build.coverage.budgetMode === 'auto';
+    title = automatic ? 'Auto crawl limit reached' : 'Crawl limit reached';
+    description = automatic
+      ? 'Auto reached its 100-page safety limit. Review the remaining sources before continuing. Any previous usable knowledge has been retained.'
+      : 'This build reached its selected page limit. Choose Auto to grow the crawl, or review the remaining sources. Any previous usable knowledge has been retained.';
+  }
   if (build.status === 'SUCCESS' && approval) {
     percent = 100; title = 'Approved scope ready';
     description = `${approval.inventory.filter(entry => entry.disposition === 'required').length} required included sources processed. ${approval.inventory.filter(entry => entry.disposition === 'owner_excluded').length} optional pages explicitly excluded. Build work is complete within the approved scope; this is not whole-website coverage.`;

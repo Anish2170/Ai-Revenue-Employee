@@ -1,11 +1,12 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { api } from '@/lib/api';
-import { KnowledgeState, activeBuild, knowledgeReadyForSetup } from '@/lib/knowledge-state';
+import { KnowledgeState, activeBuild, crawlBudgetForProfile, knowledgeReadyForSetup } from '@/lib/knowledge-state';
 import { Button, Card, Badge, Spinner } from '@/components/ui';
 import { KnowledgeBuildProgress } from '@/components/knowledge-build-progress';
 import { KnowledgeScopeReview } from '@/components/knowledge-scope-review';
 import { KnowledgeCrawlDetails } from '@/components/knowledge-crawl-details';
+import { CrawlBudgetControls } from '@/components/crawl-budget-controls';
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyRecord = Record<string, any>;
 
@@ -18,8 +19,8 @@ export function KnowledgeTab({ websiteId, websiteUrl, onReady }: { websiteId: st
     setController(state); void state.refresh();
     return () => state.stop();
   }, [websiteId]);
-  const { status, loading = true, pending, cancelling, connectionLost, error, budgetProfile = '25:3' } = controller?.value ?? {};
-  const [maxPages, maxRenderedPages] = budgetProfile.split(':').map(Number);
+  const { status, loading = true, pending, cancelling, connectionLost, error, budgetProfile = 'auto' } = controller?.value ?? {};
+  const { maxPages, maxRenderedPages } = crawlBudgetForProfile(budgetProfile);
   const budget = { maxPages, maxRenderedPages };
   const currentBuild = status?.lastBuild;
   const isActive = pending || activeBuild(currentBuild);
@@ -77,16 +78,7 @@ export function KnowledgeTab({ websiteId, websiteUrl, onReady }: { websiteId: st
       {/* Build */}
       <Card id="knowledge-rebuild" className="scroll-mt-6">
         <h2 className="text-lg font-semibold mb-4">{status?.hasKnowledge ? 'Rebuild Knowledge' : 'Build Knowledge Base'}</h2>
-        <label className="mb-4 block text-sm">Crawl budget
-          <select aria-label="Crawl budget" className="ml-3 rounded border border-[var(--border)] bg-[var(--bg)] p-2" value={budgetProfile} disabled={isActive} onChange={event => controller?.setBudget(event.target.value)}>
-            {!['25:3','50:5','100:8','50:0'].includes(budgetProfile) && <option value={budgetProfile}>Saved — {maxPages} pages / {maxRenderedPages} renders</option>}
-            <option value="25:3">Standard — 25 pages / 3 renders</option>
-            <option value="50:5">Larger — 50 pages / 5 renders</option>
-            <option value="100:8">Extended — 100 pages / 8 renders</option>
-            <option value="50:0">Static HTML — 50 pages / no renders</option>
-          </select>
-        </label>
-        <p className="mb-4 text-xs text-[var(--text-muted)]">Maximum attempts, including failed pages. Request, text and time limits still apply. Larger budgets may take longer. If important pages fail, publication stays blocked. The same budget applies to a reviewed rebuild.</p>
+        <CrawlBudgetControls profile={budgetProfile} disabled={Boolean(isActive)} onChange={profile => controller?.setBudget(profile)} />
         <div className="flex gap-3 items-end">
           <div className="flex-1">
             <label className="block text-sm font-medium mb-1">URL to crawl</label>

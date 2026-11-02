@@ -129,6 +129,21 @@ test('budget is persisted from the actual authenticated build request and origin
   assert.equal(response.status, 202); assert.deepEqual(jobs[1].configuration.budget, { maxPages: 50, maxRenderedPages: 5 });
   assert.equal((await fetch(`${base}/api/websites/${site}/knowledge/build`, { method: 'POST', headers: headers(), body: JSON.stringify({ url: 'http://127.0.0.1', budget: { maxPages: 50, maxRenderedPages: 5 } }) })).status, 400);
 });
+test('omitting a budget queues Auto, with fixed server-controlled ceilings', async () => {
+  await reset();
+  const response = await fetch(`${base}/api/websites/${site}/knowledge/build`, { method: 'POST', headers: headers(), body: JSON.stringify({ url: publicOrigin }) });
+  assert.equal(response.status, 202);
+  assert.deepEqual(jobs[1].configuration.budget, { mode: 'auto', maxPages: 100, maxRenderedPages: 8 });
+});
+test('Auto rejects changed ceilings and cannot be used to expand a reviewed budget', async () => {
+  const id = await reset(), body = await bodyFor(id);
+  const budget = { mode: 'auto', maxPages: 100, maxRenderedPages: 8 };
+  assert.equal((await approve(id, { ...body, budget })).status, 400);
+  const url = `${base}/api/websites/${site}/knowledge/build`;
+  for (const invalid of [{ ...budget, maxPages: 500 }, { ...budget, maxPages: 50 }, { ...budget, maxRenderedPages: 9 }]) {
+    assert.equal((await fetch(url, { method: 'POST', headers: headers(), body: JSON.stringify({ url: publicOrigin, budget: invalid }) })).status, 400);
+  }
+});
 test('an active configured build cannot silently absorb a materially different budget', async () => {
   await reset(); const url = `${base}/api/websites/${site}/knowledge/build`;
   const send = (maxPages: number) => fetch(url, { method: 'POST', headers: headers(), body: JSON.stringify({ url: publicOrigin, budget: { maxPages, maxRenderedPages: 3 } }) });

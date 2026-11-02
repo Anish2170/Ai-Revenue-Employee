@@ -6,7 +6,7 @@ import { getWebsiteStore } from '../vectorstore/registry.js';
 import { loadSnapshotArtifact } from '../vectorstore/snapshotStorage.js';
 import type { CrawlManifest } from '../crawler/crawlManifest.js';
 import { randomUUID } from 'node:crypto';
-import { createScopeApproval, defaultCrawlBudget, makeScopeReview, readBuildConfiguration, scopeDigest, ScopeError, type BuildConfiguration, type CrawlBudget, type ScopeReviewInput } from './crawlScope.js';
+import { autoCrawlBudget, createScopeApproval, defaultCrawlBudget, makeScopeReview, readBuildConfiguration, scopeDigest, ScopeError, type BuildConfiguration, type CrawlBudget, type ScopeReviewInput } from './crawlScope.js';
 import { snapshotSha256, getSnapshotStorage } from '../vectorstore/snapshotStorage.js';
 
 const ACTIVE = ['QUEUED', 'RUNNING', 'RETRY_WAIT'] as const;
@@ -15,7 +15,7 @@ export type KnowledgeBuildStatus = 'QUEUED' | 'RUNNING' | 'RETRY_WAIT' | 'SUCCES
 
 function reuseActiveBuild(build: Awaited<ReturnType<typeof prisma.knowledgeBuild.findUniqueOrThrow>>, sourceUrl: string, budget?: CrawlBudget) {
   const configuration = readBuildConfiguration(build.configuration);
-  if (configuration?.approval || build.sourceUrl !== sourceUrl || scopeDigest(configuration?.budget ?? defaultCrawlBudget()) !== scopeDigest(budget ?? defaultCrawlBudget()))
+  if (configuration?.approval || build.sourceUrl !== sourceUrl || scopeDigest(configuration?.budget ?? defaultCrawlBudget()) !== scopeDigest(budget ?? autoCrawlBudget()))
     throw new ScopeError('Another build is active with a different scope or budget. Wait for it or cancel it before starting a new build.');
   return { build, created: false };
 }
@@ -43,7 +43,7 @@ export async function enqueueBuild(
         },
       });
       const build = await tx.knowledgeBuild.create({
-        data: { websiteId, organizationId, snapshotId: snapshot.id, status: 'QUEUED', currentPhase: 'queued', requestedByUserId: userId, sourceUrl, language: language ?? null, idempotencyKey: idempotencyKey ?? null, maxAttempts: 3, configuration: { version: 1, budget: budget ?? defaultCrawlBudget() } },
+        data: { websiteId, organizationId, snapshotId: snapshot.id, status: 'QUEUED', currentPhase: 'queued', requestedByUserId: userId, sourceUrl, language: language ?? null, idempotencyKey: idempotencyKey ?? null, maxAttempts: 3, configuration: { version: 1, budget: budget ?? autoCrawlBudget() } },
       });
       return { build, created: true };
     });
@@ -71,7 +71,7 @@ function publicBuild(build: Awaited<ReturnType<typeof prisma.knowledgeBuild.find
   };
 }
 
-export function summarizeManifest(manifest:CrawlManifest){return {scope:manifest.scope,completeWithinScope:manifest.completeWithinScope,maxPages:manifest.maxPages,maxRenderedPages:manifest.maxRenderedPages??3,discovered:manifest.discovered,attempted:manifest.attempted,fetched:manifest.fetched,useful:manifest.useful,rendered:manifest.rendered,duplicates:manifest.duplicates,failed:manifest.failed,skipped:manifest.skipped,networkRequests:manifest.networkRequests,limits:manifest.limits,missingCategories:[...new Set([...manifest.discoveredCategoriesNotFetched,...manifest.entries.filter(entry=>!['fetched','duplicate'].includes(entry.state)&&entry.reason!=='outside_html_scope').map(entry=>entry.category)])]};}
+export function summarizeManifest(manifest:CrawlManifest){return {scope:manifest.scope,completeWithinScope:manifest.completeWithinScope,maxPages:manifest.maxPages,maxRenderedPages:manifest.maxRenderedPages??3,...(manifest.budgetMode?{budgetMode:manifest.budgetMode,budgetSteps:manifest.budgetSteps}:{}),discovered:manifest.discovered,attempted:manifest.attempted,fetched:manifest.fetched,useful:manifest.useful,rendered:manifest.rendered,duplicates:manifest.duplicates,failed:manifest.failed,skipped:manifest.skipped,networkRequests:manifest.networkRequests,limits:manifest.limits,missingCategories:[...new Set([...manifest.discoveredCategoriesNotFetched,...manifest.entries.filter(entry=>!['fetched','duplicate'].includes(entry.state)&&entry.reason!=='outside_html_scope').map(entry=>entry.category)])]};}
 export async function getBuildManifest(organizationId:string,websiteId:string,buildId:string){
  const build=await prisma.knowledgeBuild.findFirst({where:{id:buildId,organizationId,websiteId}});if(!build?.snapshotId)return null;
  const row=await prisma.knowledgeSnapshot.findFirst({where:{id:build.snapshotId,organizationId,websiteId}});if(!row?.storageKey)return null;

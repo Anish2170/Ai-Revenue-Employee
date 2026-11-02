@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { KnowledgeState, knowledgeReadyForSetup, type KnowledgeClient } from './knowledge-state.ts';
-const previous = { id: 'old', status: 'SUCCESS', configuration: { budget: { maxPages: 50, maxRenderedPages: 5 } } };
+const previous = { id: 'old', status: 'SUCCESS', configuration: { budget: { mode: 'manual' as const, maxPages: 50, maxRenderedPages: 5 } } };
 function fixture() {
   const timers = new Map<number, () => void>(); let next = 0;
   let build = { ...previous };
@@ -54,9 +54,30 @@ test('persisted budget restored on initial navigation; explicit edit survives re
   const f = fixture(); await f.state.refresh(); assert.equal(f.state.value.budgetProfile, '50:5');
   f.state.setBudget('100:8'); await f.state.refresh(); assert.equal(f.state.value.budgetProfile, '100:8');
 });
-test('legacy null configuration retains bounded default', async () => {
+test('legacy completed builds default the next crawl to Auto', async () => {
   const f = fixture(); f.client.getKnowledgeStatus = async () => ({ lastBuild: { id: 'legacy', status: 'SUCCESS', configuration: null } });
-  await f.state.refresh(); assert.equal(f.state.value.budgetProfile, '25:3');
+  await f.state.refresh(); assert.equal(f.state.value.budgetProfile, 'auto');
+});
+
+test('an old completed manual budget does not override Auto; an active legacy job retains its actual limits', async () => {
+  const f = fixture();
+  f.client.getKnowledgeStatus = async () => ({ lastBuild: { id: 'legacy', status: 'SUCCESS', configuration: { budget: { maxPages: 25, maxRenderedPages: 3 } } } });
+  await f.state.refresh(); assert.equal(f.state.value.budgetProfile, 'auto');
+  f.client.getKnowledgeStatus = async () => ({ lastBuild: { id: 'active', status: 'RUNNING', configuration: { budget: { maxPages: 50, maxRenderedPages: 0 } } } });
+  await f.state.refresh(); assert.equal(f.state.value.budgetProfile, '50:0');
+  f.state.stop();
+});
+test('Auto is sent to the backend with fixed server ceilings, while a manual choice stays explicit', async () => {
+  for (const [profile, expected] of [
+    ['auto', { mode: 'auto', maxPages: 100, maxRenderedPages: 8 }],
+    ['25:3', { mode: 'manual', maxPages: 25, maxRenderedPages: 3 }],
+    ['50:0', { mode: 'manual', maxPages: 50, maxRenderedPages: 0 }],
+  ] as const) {
+    const f = fixture(); let requested: unknown;
+    f.state.setBudget(profile);
+    f.client.queueKnowledgeBuild = async (_id, _url, budget) => { requested = budget; return { buildId: 'new', status: 'QUEUED' }; };
+    await f.state.start('https://fixture.invalid'); assert.deepEqual(requested, expected); f.state.stop();
+  }
 });
 test('late pre-enqueue status cannot replace new running job', async () => {
   const f = fixture(); await f.state.refresh();

@@ -33,6 +33,10 @@ export function KnowledgeBuildProgress({ build, connectionLost = false }: { buil
         <span>{active ? 'Estimated overall progress · updates as work completes' : view.title}</span>
         {seconds !== null && <span className="tabular-nums">{Math.floor(seconds / 60)}m {seconds % 60}s {active ? 'elapsed' : 'total'}</span>}
       </div>
+      {build.configuration?.budget?.mode === 'auto' && <p className="mt-3 text-xs text-[var(--text-muted)]">
+        {active ? `Auto crawl: current allowance ${build.progress?.crawlLimit ?? 25} pages; expands only when needed, up to 100 pages.`
+          : build.coverage?.budgetSteps ? `Auto adjusted the crawl allowance: ${build.coverage.budgetSteps.map(step => step.maxPages).join(' → ')} pages.` : 'Auto crawl was used for this build.'}
+      </p>}
       <ol aria-label="Build stages" className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         {BUILD_STEPS.map((step, index) => {
           const done = build.status === 'SUCCESS' && (build.coverage?.completeWithinScope !== false || Boolean(build.configuration?.approval)) || index < view.step;

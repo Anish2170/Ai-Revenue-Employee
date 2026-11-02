@@ -42,3 +42,11 @@ test('approved configuration cannot turn a failed required-source build into suc
   const view = describeBuildProgress({ status: 'FAILED', phase: 'partial', coverage: { completeWithinScope: false }, configuration: { approval: { inventory: [] } } });
   assert.ok(view.percent < 100); assert.match(view.description, /retained/);
 });
+
+test('page-limit failures explain Auto versus explicitly selected manual limits', () => {
+  const manual = describeBuildProgress({ status: 'FAILED', phase: 'partial', coverage: { limits: ['page_budget'] } });
+  assert.equal(manual.title, 'Crawl limit reached'); assert.match(manual.description, /Choose Auto/);
+  const automatic = describeBuildProgress({ status: 'FAILED', phase: 'partial', coverage: { limits: ['page_budget'], budgetMode: 'auto' } });
+  assert.equal(automatic.title, 'Auto crawl limit reached'); assert.match(automatic.description, /100-page safety limit/);
+  assert.ok(automatic.percent < 100);
+});

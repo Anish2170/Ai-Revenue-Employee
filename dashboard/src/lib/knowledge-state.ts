@@ -3,14 +3,20 @@
 type RecordData = Record<string, any>;
 export const activeBuild = (build: RecordData | null | undefined) => ['QUEUED', 'RUNNING', 'RETRY_WAIT'].includes(build?.status);
 export const knowledgeReadyForSetup = (status: RecordData | null | undefined) => Boolean(status?.hasKnowledge && (!status.lastBuild || status.lastBuild.status === 'SUCCESS'));
+export interface KnowledgeCrawlBudget { maxPages: number; maxRenderedPages: number; mode?: 'auto' | 'manual' }
+export function crawlBudgetForProfile(profile: string): KnowledgeCrawlBudget {
+  if (profile === 'auto') return { mode: 'auto', maxPages: 100, maxRenderedPages: 8 };
+  const [maxPages, maxRenderedPages] = profile.split(':').map(Number);
+  return { mode: 'manual', maxPages, maxRenderedPages };
+}
 export interface KnowledgeClient {
   getKnowledgeStatus(id: string): Promise<unknown>;
   getKnowledgeBuild(id: string, buildId: string): Promise<unknown>;
-  queueKnowledgeBuild(id: string, url: string, budget: { maxPages: number; maxRenderedPages: number }): Promise<{ buildId: string; status: string }>;
+  queueKnowledgeBuild(id: string, url: string, budget: KnowledgeCrawlBudget): Promise<{ buildId: string; status: string }>;
   cancelKnowledgeBuild(id: string, buildId: string): Promise<unknown>;
 }
 export class KnowledgeState {
-  value = { status: null as RecordData | null, loading: true, pending: false, cancelling: false, connectionLost: false, error: '', budgetProfile: '25:3' };
+  value = { status: null as RecordData | null, loading: true, pending: false, cancelling: false, connectionLost: false, error: '', budgetProfile: 'auto' };
   private generation = 0;
   private stopped = false;
   private failures = 0;
@@ -32,7 +38,8 @@ export class KnowledgeState {
   private adopt(build: RecordData | null) {
     this.value.status = { ...this.value.status, lastBuild: build };
     const budget = build?.configuration?.budget;
-    if (!this.budgetEdited && budget) this.value.budgetProfile = `${budget.maxPages}:${budget.maxRenderedPages}`;
+    // Old completed builds do not silently opt a user out of the new Auto default.
+    if (!this.budgetEdited && budget && (budget.mode || activeBuild(build))) this.value.budgetProfile = budget.mode === 'auto' ? 'auto' : `${budget.maxPages}:${budget.maxRenderedPages}`;
     if (build?.status === 'SUCCESS') this.value.error = '';
   }
   setBudget(profile: string) { this.budgetEdited = true; this.value.budgetProfile = profile; this.emit(); }
@@ -74,10 +81,10 @@ export class KnowledgeState {
     this.value.pending = true; this.value.error = ''; this.value.connectionLost = false;
     this.adopt(null); this.emit();
     try {
-      const [maxPages, maxRenderedPages] = this.value.budgetProfile.split(':').map(Number);
-      const queued = await this.client.queueKnowledgeBuild(this.websiteId, url, { maxPages, maxRenderedPages });
+      const budget = crawlBudgetForProfile(this.value.budgetProfile);
+      const queued = await this.client.queueKnowledgeBuild(this.websiteId, url, budget);
       if (!this.valid(generation)) return;
-      this.adopt({ id: queued.buildId, status: queued.status, phase: 'queued', createdAt: new Date().toISOString(), configuration: { budget: { maxPages, maxRenderedPages } } });
+      this.adopt({ id: queued.buildId, status: queued.status, phase: 'queued', createdAt: new Date().toISOString(), configuration: { budget } });
       this.value.pending = false; this.emit();
       await this.poll(generation, queued.buildId);
     } catch (error) {

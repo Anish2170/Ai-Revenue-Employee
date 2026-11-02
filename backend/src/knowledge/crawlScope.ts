@@ -8,11 +8,17 @@ import { parseAndValidateUrl, isPublicAddress } from '../security/ssrf.js';
 import type { CrawlEntry, CrawlManifest } from '../crawler/crawlManifest.js';
 import type { KnowledgeSnapshot } from '../context/types.js';
 
-export const crawlBudgetSchema = z.object({
+export const manualCrawlBudgetSchema = z.object({
   maxPages: z.number().int().min(1).max(100),
   maxRenderedPages: z.number().int().min(0).max(8),
+  mode: z.literal('manual').optional(),
 }).strict();
+export const crawlBudgetSchema = z.union([manualCrawlBudgetSchema, z.object({
+  mode: z.literal('auto'), maxPages: z.literal(100), maxRenderedPages: z.literal(8),
+}).strict()]);
 export type CrawlBudget = z.infer<typeof crawlBudgetSchema>;
+export const autoCrawlBudget = (): CrawlBudget => ({ mode: 'auto', maxPages: 100, maxRenderedPages: 8 });
+// Existing jobs with null configuration retain the original bounded behavior.
 export const defaultCrawlBudget = (): CrawlBudget => ({ maxPages: Math.min(100, Math.max(1, Math.floor(config.crawl.maxPages) || 25)), maxRenderedPages: 3 });
 export class ScopeError extends Error {
   constructor(message: string, public status = 409, public code?: string) { super(message); this.name = 'ScopeError'; }
@@ -57,6 +63,7 @@ export function readBuildConfiguration(value: unknown): BuildConfiguration | und
   if (parsed.version !== 1) throw new ScopeError('Unsupported crawl configuration.');
   crawlBudgetSchema.parse(parsed.budget);
   if (parsed.approval) {
+    manualCrawlBudgetSchema.parse(parsed.budget);
     validateApprovalIdentity(parsed.approval);
     if (digest(parsed.budget) !== digest(parsed.approval.budget)) throw new ScopeError('Approved budget changed.');
   }
@@ -92,7 +99,8 @@ export function createScopeApproval(input: ScopeReviewInput, request: {
     throw new ScopeError('Explicit scope limitation acknowledgement and a reason are required.', 400);
   if (input.manifest.limits.some(limit => limit !== 'page_budget') || input.manifest.entries.some(entry => entry.reason === 'robots_disallow'))
     throw new ScopeError('Resolve crawl restrictions or discovery limits before approving exclusions.');
-  const budget = crawlBudgetSchema.parse(request.budget);
+  // Approval freezes the reviewed budget; it must never grow during execution.
+  const budget = manualCrawlBudgetSchema.parse(request.budget);
   const excluded = new Set(request.excludedUrls);
   if (excluded.size !== request.excludedUrls.length) throw new ScopeError('Duplicate excluded URL.', 400);
   for (const url of excluded) {
@@ -114,7 +122,7 @@ export function createScopeApproval(input: ScopeReviewInput, request: {
 export function validateApprovalIdentity(approval: ScopeApproval): void {
   const { hash, ...unsigned } = approval;
   if (approval.version !== 1 || hash !== digest(unsigned) || !approval.configuredWebsiteRevision || !approval.approvedByUserId || !approval.organizationId || !approval.websiteId || !/^[a-f0-9]{64}$/.test(approval.reviewHash)) throw new ScopeError('Invalid scope approval integrity.');
-  crawlBudgetSchema.parse(approval.budget);
+  manualCrawlBudgetSchema.parse(approval.budget);
   if (!Number.isFinite(Date.parse(approval.expiresAt)) || !Number.isFinite(Date.parse(approval.approvedAt))) throw new ScopeError('Invalid approval timestamps.');
   const origin = parseAndValidateUrl(approval.sourceUrl).origin;
   const host = new URL(origin).hostname.replace(/^\[|\]$/g, '');

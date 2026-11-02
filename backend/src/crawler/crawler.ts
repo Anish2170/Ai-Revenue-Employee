@@ -14,6 +14,7 @@ import type { CrawlEntry, CrawlManifest } from './crawlManifest.js';
 import type { CrawledPage } from '../context/types.js';
 import { extractActionsFromHtml, type RawDiscoveredAction } from '../business-actions/actionDiscovery.js';
 export interface CrawlOptions {
+    mode?: 'auto' | 'manual';
     maxPages?: number;
     concurrency?: number;
     timeoutMs?: number;
@@ -46,7 +47,19 @@ export async function crawl(startUrl: string, opts: CrawlOptions = {}, deps: Cra
     const start = normalizeUrl(startUrl);
     if (!start)
         throw Error('Invalid start URL.');
-    const origin = new URL(start).origin, maxPages = bounded(opts.maxPages ?? config.crawl.maxPages, 25, 100), maxDepth = bounded(opts.maxDepth, 5, 8), maxRequests = bounded(opts.maxRequests, maxPages * 4 + 130, 500), maxQueued = bounded(opts.maxQueued, 1000, 2000), maxRender = opts.maxRenderedPages === 0 ? 0 : bounded(opts.maxRenderedPages, 3, 8), timeout = bounded(opts.timeoutMs ?? config.crawl.timeoutMs, 12000, 30000);
+    // Auto grows in the same crawl. Its request/deadline/text counters never reset.
+    const automatic = opts.mode === 'auto' && !opts.reviewedSources;
+    const origin = new URL(start).origin, pageCeiling = bounded(opts.maxPages ?? (automatic ? 100 : config.crawl.maxPages), 25, 100), renderCeiling = opts.maxRenderedPages === 0 ? 0 : bounded(opts.maxRenderedPages, automatic ? 8 : 3, 8), maxDepth = bounded(opts.maxDepth, 5, 8), maxRequests = bounded(opts.maxRequests, pageCeiling * 4 + 130, 500), maxQueued = bounded(opts.maxQueued, 1000, 2000), timeout = bounded(opts.timeoutMs ?? config.crawl.timeoutMs, 12000, 30000);
+    let maxPages = automatic ? Math.min(25, pageCeiling) : pageCeiling;
+    let maxRender = automatic ? Math.min(3, renderCeiling) : renderCeiling;
+    const budgetSteps = [{ maxPages, maxRenderedPages: maxRender }];
+    const growBudget = () => {
+        if (!automatic || maxPages >= pageCeiling && maxRender >= renderCeiling) return false;
+        const tier = maxPages < Math.min(50, pageCeiling) || maxRender < Math.min(5, renderCeiling) ? [50, 5] : [100, 8];
+        maxPages = Math.min(tier[0], pageCeiling); maxRender = Math.min(tier[1], renderCeiling);
+        budgetSteps.push({ maxPages, maxRenderedPages: maxRender });
+        return true;
+    };
     const deadline = Date.now() + bounded(opts.maxDurationMs, 120000, 300000), controller = new AbortController(), timer = setTimeout(() => controller.abort(Error('crawl_deadline')), Math.max(1, deadline - Date.now()));
     const signal = opts.signal ? AbortSignal.any([opts.signal, controller.signal]) : controller.signal;
     const transport = deps.fetch ?? safeFetch, sleep = deps.sleep ?? (async (ms) => { await pause(ms, undefined, { signal }); });
@@ -173,7 +186,8 @@ export async function crawl(startUrl: string, opts: CrawlOptions = {}, deps: Cra
             for (const url of known)
                 if (url)
                     add(url, 0);
-            while (queue.length && attempts < maxPages && !signal.aborted && !limits.has('text_budget')) {
+            while (queue.length && !signal.aborted && !limits.has('text_budget')) {
+                if (attempts >= maxPages && (!growBudget() || attempts >= maxPages)) break;
                 queue.sort((a, b) => (b.url === start ? 1000 : known.has(b.url) ? 900 : reviewed.get(b.url) === 'required' ? 850 : crawlPriority(b.url)) - (a.url === start ? 1000 : known.has(a.url) ? 900 : reviewed.get(a.url) === 'required' ? 850 : crawlPriority(a.url)) || a.depth - b.depth || a.url.localeCompare(b.url));
                 const concurrency = robots.delayMs ? 1 : bounded(opts.concurrency ?? config.crawl.concurrency, 4, 4), wave = queue.splice(0, Math.min(concurrency, maxPages - attempts));
                 attempts += wave.length;
@@ -208,7 +222,7 @@ export async function crawl(startUrl: string, opts: CrawlOptions = {}, deps: Cra
                         let html = response.body.toString('utf8'), url = response.url, parsed = extract(html, url);
                         entry.renderer = 'static';
                         if (parsed.needsRendering) {
-                            if (renders >= maxRender)
+                            if (renders >= maxRender && (!growBudget() || renders >= maxRender))
                                 throw Error('render_budget');
                             renders++;
                             const rendered = await (deps.render ?? renderPage)(url, Math.max(1, Math.min(timeout, deadline - Date.now())), { signal, origin, fetch: request, allows: target => robots.allows(target) });
@@ -294,6 +308,6 @@ export async function crawl(startUrl: string, opts: CrawlOptions = {}, deps: Cra
         clearTimeout(timer);
     }
     const all = [...entries.values()], categoriesFetched = [...new Set(all.filter(e => e.state === 'fetched').map(e => e.category))];
-    const manifest: CrawlManifest = { version: 1, scope: `same-origin public HTML: ${origin}; max ${maxPages} attempts, depth ${maxDepth}`, startedAt: new Date(deadline - bounded(opts.maxDurationMs, 120000, 300000)).toISOString(), finishedAt: new Date().toISOString(), maxPages, maxRenderedPages: maxRender, maxDepth, maxRequests, networkRequests: network, discovered: entries.size, attempted: attempts, fetched: all.filter(e => e.httpStatus !== undefined && e.httpStatus >= 200 && e.httpStatus < 300 && e.reason !== 'non_html').length, useful: pages.length, rendered: renders, duplicates: all.filter(e => e.state === 'duplicate').length, failed: all.filter(e => e.state === 'failed').length, skipped: all.filter(e => ['excluded', 'gone'].includes(e.state)).length, completeWithinScope: !limits.size && !all.some(e => e.state === 'failed' || e.state === 'pending' || e.reason === 'owner_excluded'), limits: [...limits], entries: all, categoriesFetched, discoveredCategoriesNotFetched: [...new Set(all.filter(e => !categoriesFetched.includes(e.category) && e.state !== 'excluded').map(e => e.category))] };
+    const manifest: CrawlManifest = { version: 1, scope: `same-origin public HTML: ${origin}; max ${maxPages} attempts, depth ${maxDepth}`, startedAt: new Date(deadline - bounded(opts.maxDurationMs, 120000, 300000)).toISOString(), finishedAt: new Date().toISOString(), maxPages, maxRenderedPages: maxRender, budgetMode: automatic ? 'auto' : 'manual', budgetSteps, maxDepth, maxRequests, networkRequests: network, discovered: entries.size, attempted: attempts, fetched: all.filter(e => e.httpStatus !== undefined && e.httpStatus >= 200 && e.httpStatus < 300 && e.reason !== 'non_html').length, useful: pages.length, rendered: renders, duplicates: all.filter(e => e.state === 'duplicate').length, failed: all.filter(e => e.state === 'failed').length, skipped: all.filter(e => ['excluded', 'gone'].includes(e.state)).length, completeWithinScope: !limits.size && !all.some(e => e.state === 'failed' || e.state === 'pending' || e.reason === 'owner_excluded'), limits: [...limits], entries: all, categoriesFetched, discoveredCategoriesNotFetched: [...new Set(all.filter(e => !categoriesFetched.includes(e.category) && e.state !== 'excluded').map(e => e.category))] };
     return { pages, skipped, actions, manifest };
 }

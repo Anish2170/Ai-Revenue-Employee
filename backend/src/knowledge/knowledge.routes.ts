@@ -8,13 +8,13 @@ import { assertWebsiteOwnership, getWebsite, OwnershipError } from '../websites/
 import * as knowledgeService from './knowledge.service.js';
 import { UnsafeUrlError, resolvePublicUrl } from '../security/ssrf.js';
 import { requireRole, requirePrivilegedDashboardRole } from '../auth/authorization.js';
-import { crawlBudgetSchema, ScopeError } from './crawlScope.js';
+import { crawlBudgetSchema, manualCrawlBudgetSchema, ScopeError } from './crawlScope.js';
 
 export const knowledgeRouter = Router();
 knowledgeRouter.use(requireAuth);
 const buildSchema = z.object({ url: z.string().url(), language: z.string().min(2).max(32).optional(), idempotencyKey: z.string().min(8).max(128).optional(), budget: crawlBudgetSchema.optional() }).strict();
 const scopeSchema = z.object({ reviewHash: z.string().regex(/^[a-f0-9]{64}$/), excludedUrls: z.array(z.string().url().max(4096)).min(1).max(100),
-  reason: z.string().trim().min(12).max(500), acknowledgeLimitations: z.literal(true), budget: crawlBudgetSchema }).strict();
+  reason: z.string().trim().min(12).max(500), acknowledgeLimitations: z.literal(true), budget: manualCrawlBudgetSchema }).strict();
 const knowledgeBuildLimiter = rateLimit([
   { name: 'knowledge_build_user', limit: 5, windowMs: hours(1), key: authUserKey },
   { name: 'knowledge_build_org', limit: 20, windowMs: days(1), key: (req) => req.auth?.organizationId ?? null },
