@@ -105,7 +105,8 @@ async function reviewInput(organizationId: string, websiteId: string, buildId: s
   const artifact = await getSnapshotStorage(row.storageProvider).read(row.storageKey);
   if (!artifact || snapshotSha256(artifact.bytes) !== row.contentSha256) throw new ScopeError('Crawl artifact integrity check failed.');
   const snapshot = JSON.parse(artifact.bytes.toString('utf8'));
-  if (!snapshot.crawlManifest || snapshot.publication?.id !== row.id || snapshot.sourceUrl !== latest.sourceUrl) throw new ScopeError('Invalid review artifact identity.');
+  if (!snapshot.crawlManifest) throw new ScopeError('This build has no saved crawl inventory. Rebuild knowledge to record per-URL outcomes before reviewing a limited scope.', 409, 'crawl_inventory_unavailable');
+  if (snapshot.publication?.id !== row.id || snapshot.sourceUrl !== latest.sourceUrl) throw new ScopeError('Invalid review artifact identity.');
   const { meta } = await getWebsiteStore(websiteId);
   return { organizationId, websiteId, configuredWebsiteUrl: website.url, configuredWebsiteRevision: website.updatedAt.toISOString(), sourceUrl: latest.sourceUrl, buildId, artifactSha256: row.contentSha256,
     activeVersion: meta?.activeVersion ?? null, previousUrls: [...new Set([...(meta?.pages.map(page => page.url) ?? []), ...(meta?.crawlManifest?.entries.filter(entry => ['fetched', 'duplicate'].includes(entry.state)).map(entry => entry.url) ?? [])])].sort(), manifest: snapshot.crawlManifest };

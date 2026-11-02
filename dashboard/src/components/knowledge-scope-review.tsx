@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { api } from '@/lib/api';
+import { api, ApiError } from '@/lib/api';
 import { Button } from '@/components/ui';
 
 interface Review {
@@ -20,11 +20,15 @@ export function KnowledgeScopeReview({ websiteId, buildId, budget, onQueued }: {
   const [acknowledged, setAcknowledged] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [unavailable, setUnavailable] = useState(false);
   useEffect(() => { setAcknowledged(false); }, [budget.maxPages, budget.maxRenderedPages]);
   const load = async () => {
-    setBusy(true); setError('');
+    setBusy(true); setError(''); setUnavailable(false); setReview(null);
     try { setReview(await api.getKnowledgeScopeReview(websiteId, buildId) as Review); setExcluded([]); setAcknowledged(false); }
-    catch (err) { setError(err instanceof Error ? err.message : 'Scope review is unavailable.'); }
+    catch (err) {
+      if (err instanceof ApiError && err.code === 'crawl_inventory_unavailable') setUnavailable(true);
+      else setError(err instanceof Error ? err.message : 'Scope review is unavailable.');
+    }
     finally { setBusy(false); }
   };
   const approve = async () => {
@@ -37,7 +41,12 @@ export function KnowledgeScopeReview({ websiteId, buildId, budget, onQueued }: {
     finally { setBusy(false); }
   };
   return <div className="mt-4 space-y-3 text-sm">
-    <Button variant="secondary" onClick={load} disabled={busy}>Review a limited crawl scope</Button>
+    <Button variant="secondary" onClick={load} loading={busy}>Review a limited crawl scope</Button>
+    {unavailable && <div role="status" className="rounded-lg border border-[var(--border)] p-4 space-y-2">
+      <p>This build has no saved crawl inventory to review. Rebuild knowledge first to record the included, failed and skipped URLs.</p>
+      <p>After the rebuild finishes, return here to review a limited scope.</p>
+      <a className="underline" href="#knowledge-rebuild">Go to rebuild</a>
+    </div>}
     {review && <div className="space-y-3 rounded-lg border border-[var(--border)] p-4">
       <h3 className="font-semibold">Review included and excluded sources</h3>
       <p className="break-all">Connected website: {review.configuredWebsiteUrl} · Start page: {review.sourceUrl}</p>

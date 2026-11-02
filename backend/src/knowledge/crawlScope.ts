@@ -15,7 +15,7 @@ export const crawlBudgetSchema = z.object({
 export type CrawlBudget = z.infer<typeof crawlBudgetSchema>;
 export const defaultCrawlBudget = (): CrawlBudget => ({ maxPages: Math.min(100, Math.max(1, Math.floor(config.crawl.maxPages) || 25)), maxRenderedPages: 3 });
 export class ScopeError extends Error {
-  constructor(message: string, public status = 409) { super(message); this.name = 'ScopeError'; }
+  constructor(message: string, public status = 409, public code?: string) { super(message); this.name = 'ScopeError'; }
 }
 // JSONB may reorder object keys. Integrity must survive a database round trip.
 function canonical(value: unknown): unknown {

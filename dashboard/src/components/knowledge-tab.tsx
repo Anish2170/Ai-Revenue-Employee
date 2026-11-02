@@ -1,10 +1,11 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api } from '@/lib/api';
 import { KnowledgeState, activeBuild } from '@/lib/knowledge-state';
 import { Button, Card, Badge, Spinner } from '@/components/ui';
 import { KnowledgeBuildProgress } from '@/components/knowledge-build-progress';
 import { KnowledgeScopeReview } from '@/components/knowledge-scope-review';
+import { KnowledgeCrawlDetails } from '@/components/knowledge-crawl-details';
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyRecord = Record<string, any>;
 
@@ -12,10 +13,6 @@ export function KnowledgeTab({ websiteId, websiteUrl }: { websiteId: string; web
   const [, render] = useState(0);
   const [controller, setController] = useState<KnowledgeState | null>(null);
   const [buildUrl, setBuildUrl] = useState(websiteUrl);
-  const [manifest, setManifest] = useState<AnyRecord | null>(null);
-  const [detailError, setDetailError] = useState('');
-  const [detailBuildId, setDetailBuildId] = useState('');
-  const detailRequest = useRef(0);
   useEffect(() => {
     const state = new KnowledgeState(api, websiteId, () => render(value => value + 1));
     setController(state); void state.refresh();
@@ -26,18 +23,7 @@ export function KnowledgeTab({ websiteId, websiteUrl }: { websiteId: string; web
   const budget = { maxPages, maxRenderedPages };
   const currentBuild = status?.lastBuild;
   const isActive = pending || activeBuild(currentBuild);
-  const startBuild = () => { setManifest(null); setDetailError(''); void controller?.start(buildUrl); };
-  useEffect(() => { detailRequest.current++; setManifest(null); setDetailError(''); }, [currentBuild?.id]);
-  const fetchManifest = async () => {
-    const request = ++detailRequest.current, buildId = currentBuild?.id;
-    try {
-      const result = await api.getKnowledgeManifest(websiteId, buildId);
-      if (request !== detailRequest.current) return;
-      setDetailBuildId(buildId); setDetailError(''); setManifest(result as AnyRecord);
-    } catch {
-      if (request === detailRequest.current) { setDetailBuildId(buildId); setDetailError('Crawl details are not available yet.'); }
-    }
-  };
+  const startBuild = () => { void controller?.start(buildUrl); };
 
   if (loading) return <div className="flex justify-center py-12"><Spinner /></div>;
 
@@ -78,16 +64,15 @@ export function KnowledgeTab({ websiteId, websiteUrl }: { websiteId: string; web
           <h2 className="text-lg font-semibold mb-2">Latest Build</h2>
           <p className="text-sm text-[var(--text-muted)]">{String(status.lastBuild.status).replace('_', ' ')} · {status.lastBuild.phase || 'queued'} · attempt {status.lastBuild.attempt ?? 0}/{status.lastBuild.maxAttempts ?? 3}</p>
           {activeBuild(currentBuild) && <Button variant="secondary" loading={cancelling} disabled={cancelling} onClick={() => void controller?.cancel()}>Cancel refresh</Button>}
-          <Button variant="secondary" onClick={() => void fetchManifest()}>View crawl details</Button>
-          {manifest && detailBuildId === currentBuild?.id && <details open className="mt-3 text-xs"><summary>Per-URL crawl outcomes ({manifest.entries?.length ?? 0})</summary><ul>{(manifest.entries ?? []).slice(0,100).map((entry:AnyRecord,index:number)=><li key={index} className="mt-1 break-all">{entry.url} — {entry.state}{entry.reason ? ` (${entry.reason})` : ''}</li>)}</ul>{manifest.entries?.length>100 && <p>Showing the first 100 outcomes.</p>}</details>}
+          <KnowledgeCrawlDetails key={`${websiteId}:${status.lastBuild.id}`} websiteId={websiteId} buildId={status.lastBuild.id} isActive={Boolean(isActive)} />
           {status.lastBuild.error && <p className="mt-2 text-sm text-[var(--danger)]">{status.lastBuild.error}</p>}
           {status.lastBuild.configurationError && <p role="alert" className="mt-2 text-sm text-[var(--danger)]">{status.lastBuild.configurationError}</p>}
-          {!isActive && <KnowledgeScopeReview key={status.lastBuild.id} websiteId={websiteId} buildId={status.lastBuild.id} budget={budget} onQueued={queued => { void controller?.queued(queued.buildId, queued.status); }} />}
+          {!isActive && <KnowledgeScopeReview key={`${websiteId}:${status.lastBuild.id}`} websiteId={websiteId} buildId={status.lastBuild.id} budget={budget} onQueued={queued => { void controller?.queued(queued.buildId, queued.status); }} />}
         </Card>
       )}
 
       {/* Build */}
-      <Card>
+      <Card id="knowledge-rebuild" className="scroll-mt-6">
         <h2 className="text-lg font-semibold mb-4">{status?.hasKnowledge ? 'Rebuild Knowledge' : 'Build Knowledge Base'}</h2>
         <label className="mb-4 block text-sm">Crawl budget
           <select aria-label="Crawl budget" className="ml-3 rounded border border-[var(--border)] bg-[var(--bg)] p-2" value={budgetProfile} disabled={isActive} onChange={event => controller?.setBudget(event.target.value)}>
@@ -117,7 +102,6 @@ export function KnowledgeTab({ websiteId, websiteUrl }: { websiteId: string; web
 
         {pending && <p role="status">Starting new build…</p>}
         {connectionLost && <Button variant="secondary" onClick={() => void controller?.refresh()}>Retry status connection</Button>}
-        {detailError && detailBuildId === currentBuild?.id && <p role="alert">{detailError}</p>}
         {error && <p className="text-[var(--danger)] text-sm mt-3">{error}</p>}
 
         {currentBuild && <KnowledgeBuildProgress build={currentBuild} connectionLost={connectionLost} />}

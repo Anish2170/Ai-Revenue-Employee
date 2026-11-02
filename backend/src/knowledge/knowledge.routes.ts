@@ -43,7 +43,7 @@ knowledgeRouter.get('/api/websites/:id/knowledge/build/:buildId/scope-review', r
     await assertWebsiteOwnership(req.auth!.organizationId, req.params.id);
     res.json(await knowledgeService.getScopeReview(req.auth!.organizationId, req.params.id, req.params.buildId));
   } catch (error) {
-    if (error instanceof OwnershipError || error instanceof ScopeError) return res.status(error.status).json({ error: 'scope_review_unavailable', message: error.message });
+    if (error instanceof OwnershipError || error instanceof ScopeError) return res.status(error.status).json({ error: error instanceof ScopeError ? error.code ?? 'scope_review_unavailable' : error.code, message: error.message });
     next(error);
   }
 });
@@ -53,7 +53,7 @@ knowledgeRouter.post('/api/websites/:id/knowledge/build/:buildId/approve-scope',
     const result = await knowledgeService.enqueueReviewedBuild(req.auth!.organizationId, req.params.id, req.params.buildId, req.auth!.userId, req.body);
     res.status(202).json({ buildId: result.build.id, created: result.created, status: result.build.status });
   } catch (error) {
-    if (error instanceof OwnershipError || error instanceof ScopeError) return res.status(error.status).json({ error: 'scope_review_required', message: error.message });
+    if (error instanceof OwnershipError || error instanceof ScopeError) return res.status(error.status).json({ error: error instanceof ScopeError ? error.code ?? 'scope_review_required' : error.code, message: error.message });
     next(error);
   }
 });
@@ -72,7 +72,7 @@ knowledgeRouter.get('/api/websites/:id/knowledge/status', async (req, res, next)
   catch (error) { if (error instanceof OwnershipError) return res.status(error.status).json({ error: error.code, message: error.message }); next(error); }
 });
 knowledgeRouter.get('/api/websites/:id/knowledge/build/:buildId/manifest', async(req,res,next)=>{
-  try{await assertWebsiteOwnership(req.auth!.organizationId,req.params.id);const manifest=await knowledgeService.getBuildManifest(req.auth!.organizationId,req.params.id,req.params.buildId);if(!manifest)return res.status(404).json({error:'manifest_not_available'});res.json(manifest);}
+  try{await assertWebsiteOwnership(req.auth!.organizationId,req.params.id);const manifest=await knowledgeService.getBuildManifest(req.auth!.organizationId,req.params.id,req.params.buildId);if(!manifest)return res.status(404).json({error:'manifest_not_available',message:'This build has no saved per-URL crawl details. Rebuild knowledge to record crawl outcomes.'});res.json(manifest);}
   catch(error){if(error instanceof OwnershipError)return res.status(error.status).json({error:error.code,message:error.message});next(error);}
 });
 knowledgeRouter.post('/api/websites/:id/knowledge/build/:buildId/cancel',async(req,res,next)=>{
