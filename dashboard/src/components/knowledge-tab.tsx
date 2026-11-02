@@ -67,10 +67,10 @@ export function KnowledgeTab({ websiteId, websiteUrl, onReady }: { websiteId: st
           <h2 className="text-lg font-semibold mb-2">Latest Build</h2>
           <p className="text-sm text-[var(--text-muted)]">{String(status.lastBuild.status).replace('_', ' ')} · {status.lastBuild.phase || 'queued'} · attempt {status.lastBuild.attempt ?? 0}/{status.lastBuild.maxAttempts ?? 3}</p>
           {activeBuild(currentBuild) && <Button variant="secondary" loading={cancelling} disabled={cancelling} onClick={() => void controller?.cancel()}>Cancel refresh</Button>}
-          <KnowledgeCrawlDetails key={`${websiteId}:${status.lastBuild.id}`} websiteId={websiteId} buildId={status.lastBuild.id} isActive={Boolean(isActive)} />
+          <KnowledgeCrawlDetails key={`details:${websiteId}:${status.lastBuild.id}`} websiteId={websiteId} buildId={status.lastBuild.id} isActive={Boolean(isActive)} />
           {status.lastBuild.error && <p className="mt-2 text-sm text-[var(--danger)]">{status.lastBuild.error}</p>}
           {status.lastBuild.configurationError && <p role="alert" className="mt-2 text-sm text-[var(--danger)]">{status.lastBuild.configurationError}</p>}
-          {!isActive && <KnowledgeScopeReview key={`${websiteId}:${status.lastBuild.id}`} websiteId={websiteId} buildId={status.lastBuild.id} budget={budget} onQueued={queued => { void controller?.queued(queued.buildId, queued.status); }} />}
+          {!isActive && <KnowledgeScopeReview key={`scope:${websiteId}:${status.lastBuild.id}`} websiteId={websiteId} buildId={status.lastBuild.id} budget={budget} onQueued={queued => { void controller?.queued(queued.buildId, queued.status); }} />}
         </Card>
       )}
 
