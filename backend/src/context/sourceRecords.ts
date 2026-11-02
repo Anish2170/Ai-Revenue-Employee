@@ -59,18 +59,22 @@ export function priceRecords(chunk: RetrievedChunk): PriceRecord[] {
   for (const block of blocks) {
     // DOM table rows retain cell boundaries. Flat legacy cards retain line boundaries.
     for (const unit of block.includes(' | ') ? block.split('\n') : [block]) {
-      const lines = unit.replace(/(?<=[a-z)])(?=[A-Z][a-z])/gu, '\n').split(/\n|\s+\|\s+/u).map(s => s.trim()).filter(Boolean);
+      const lines = (unit.includes('\n') ? unit : unit.replace(/(?<=[a-z)])(?=[A-Z][a-z])/gu, '\n'))
+        .replace(new RegExp(`(${amountPattern})\\s*\\/\\s*(mo|month|yr|year|night|visit|session|item|tooth)\\b`, 'giu'), '$1/$2')
+        .split(/\n|\s+\|\s+/u).map(s => s.trim()).filter(Boolean);
       const indexes = lines.map((s, i) => amountLine.test(s) ? i : -1).filter(i => i >= 0);
-      if (indexes.length !== 1 || lines.length > 8 || unit.length > 700) continue;
+      // Keep the complete card, including features and billing conditions.
+      if (indexes.length !== 1 || lines.length > 24 || unit.length > 1800) continue;
       const index = indexes[0], match = lines[index].match(amountLine)!;
       const subject = index === 0 ? chunk.heading : lines[0];
       // A value alone, CTA or generic heading does not identify a priced item.
       if (!subject || subject.length > 120 || /^(?:price|cost|fee|pricing|plans?|services?)$/iu.test(subject) || /[$₹€£¥]|sign up|book |https?:/iu.test(subject)) continue;
       const sectionNotes = index === 0 ? blocks.filter(b => b !== block && b.trim() !== subject && !amountLine.test(b.trim())) : [];
       if (sectionNotes.some(b => /[$₹€£¥]\s*\d/u.test(b))) continue;
-      const qualification = [...new Set([match[2].trim(), ...lines.filter((_, i) => i !== index && !(index > 0 && i === 0)), ...scopeNotes, ...sectionNotes])].filter(Boolean).join('; ');
+      const notes = [...new Set([...lines.filter((_, i) => i !== index && !(index > 0 && i === 0)), ...scopeNotes, ...sectionNotes])].filter(Boolean).join('; ');
+      const qualification = [match[2].trim(), notes].filter(Boolean).join('; ');
       const amount = match[1].replace(/\s*[-–—]\s*/u, '–');
-      const text = `${subject} costs ${amount}.${qualification ? ` ${qualification.replace(/[.!?]$/u, '')}.` : ''}`;
+      const text = `${subject} costs ${amount}${match[2].trim()}.${notes ? ` ${notes.replace(/[.!?]$/u, '')}.` : ''}`;
       records.push({ subject, amount, qualification, text, raw: unit, chunk });
     }
   }
@@ -82,6 +86,8 @@ export function subjectTerms(text: string): string[] {
     .map(s => s.length > 4 && s.endsWith('s') ? s.slice(0, -1) : s).filter(s => !stop.has(s));
 }
 export function broadCatalogQuery(query: string): 'price' | 'service' | null {
+  if (/^what (?:training )?(?:programs|classes|services|treatments) do you (?:offer|provide)[.!?]*$/iu.test(query.trim())) return 'service';
+  if (/^(?:what (?:are|is) |show |tell me |list )?(?:your |the |all |available )?(?:membership )?(?:prices?|pricing|fees|costs?|plans?)(?: options)?[.!?]*$/iu.test(query.trim())) return 'price';
   if (subjectTerms(query).length) return null;
   if (/\b(?:price|prices|pricing|fees)\b/iu.test(query)) return 'price';
   if (/\b(?:services|treatments)\b/iu.test(query)) return 'service';

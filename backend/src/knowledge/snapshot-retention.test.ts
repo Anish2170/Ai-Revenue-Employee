@@ -16,6 +16,7 @@ test('retention protects the latest three, tenant boundaries, and backups when s
   let readMode: 'ok' | 'missing' | 'corrupt' = 'ok';
   let deleteFailure = false;
   const tx = {
+    auditLog: { findMany: async () => [] },
     $queryRaw: async (_query: TemplateStringsArray, ...values: unknown[]) => {
       assert.deepEqual(values, ['site', 'org']);
       return owned ? [{ id: 'site' }] : [];
@@ -70,4 +71,27 @@ test('retention protects the latest three, tenant boundaries, and backups when s
     prisma.$transaction = original;
     setSnapshotStorageForTests(null);
   }
+});
+
+test('action-only version audit pins protect rollback artifacts beyond the ordinary retention window', async () => {
+  const original = prisma.$transaction;
+  let malformed = false;
+  const tx = {
+    $queryRaw: async () => [{ id: 'site' }],
+    auditLog: { findMany: async ({ where }: any) => {
+      assert.equal(where.organizationId, 'org'); assert.equal(where.targetId, 'site');
+      assert.equal(where.action, 'website_actions.snapshot_published');
+      return [{ metadata: malformed ? {} : { version: 1, previousSnapshotId: 'rollback', newSnapshotId: 'refresh' } }];
+    } },
+    knowledgeSnapshot: {
+      findMany: async () => ['latest', 'second', 'third', 'refresh', 'rollback'].map(id => ({ id })),
+      delete: async () => { throw Error('pinned snapshots must not be deleted'); },
+    },
+  };
+  prisma.$transaction = (async (fn: any) => fn(tx)) as typeof prisma.$transaction;
+  try {
+    assert.equal(await pruneKnowledgeSnapshots('org', 'site'), 0);
+    malformed = true;
+    await assert.rejects(pruneKnowledgeSnapshots('org', 'site'), /rollback pins are invalid/);
+  } finally { prisma.$transaction = original; }
 });

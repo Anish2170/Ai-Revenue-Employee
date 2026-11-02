@@ -11,6 +11,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --import tsx --test \"src/**/*.test.ts\"",
     "ingest": "tsx scripts/ingest.ts",
+    "actions:refresh": "node dist/business-actions/actionRefresh.cli.js",
     "knowledge:migrate-r2": "tsx scripts/migrateKnowledgeSnapshotsToR2.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",

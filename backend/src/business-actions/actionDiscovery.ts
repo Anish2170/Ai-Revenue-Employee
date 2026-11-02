@@ -28,14 +28,14 @@ const SOCIAL_HOST_PATTERN = /(^|\.)(facebook|twitter|x|linkedin|instagram|youtub
 const BUSINESS_PATH_PATTERN = /\b(demo|sales|pricing|plans?|contact|support|help|trial|signup|sign-up|login|sign-in|docs?|documentation|api|enterprise|careers?|jobs|partners?|integrations?|case-stud(?:y|ies)|customers?)\b/i;
 
 const INTENT_RULES: Array<{ intent: DiscoveredActionIntent; rule: string; patterns: RegExp[]; base: number }> = [
-  { intent: 'book_demo', rule: 'appointment_booking', base: 0.92, patterns: [/\b(book|schedule|request)\s+(an?\s+)?(appointment|visit)\b/i] },
+  { intent: 'book_demo', rule: 'appointment_booking', base: 0.92, patterns: [/\b(book|schedule|request)\s+(an?\s+)?(?:(?:fitness|initial|free)\s+)?(appointment|visit|assessment|session|tour)\b/i] },
   { intent: 'book_demo', rule: 'demo_or_sales_consultation', base: 0.9, patterns: [/\b(book|schedule|request)\s+(a\s+)?(demo|call|consultation)\b/i, /\b(talk|speak)\s+(to|with)\s+(sales|an advisor|advisor|an expert|expert|specialist)\b/i, /\bcontact\s+sales\b/i, /\bmeet\s+(an\s+)?expert\b/i] },
   { intent: 'pricing', rule: 'pricing_or_plans', base: 0.9, patterns: [/\b(pricing|plans?|compare plans?|view plans?|see pricing)\b/i] },
   { intent: 'contact', rule: 'contact_team', base: 0.86, patterns: [/\b(contact|contact sales|get in touch|talk to us|reach us)\b/i] },
   { intent: 'support', rule: 'support_help_ticket', base: 0.88, patterns: [/\b(support|help center|customer support|submit ticket|open ticket)\b/i] },
-  { intent: 'free_trial', rule: 'trial_get_started', base: 0.88, patterns: [/\b(start|try|get started).{0,16}(free|trial)\b/i, /\bstart free trial\b/i, /\btry free\b/i] },
+  { intent: 'free_trial', rule: 'trial_get_started', base: 0.88, patterns: [/\b(start|try|get started).{0,16}(free|trial)\b/i, /\bstart free trial\b/i, /\btry free\b/i, /\bclaim\s+(?:a\s+)?free\s+(?:session|trial|pass)\b/i] },
   { intent: 'login', rule: 'auth_login', base: 0.95, patterns: [/\b(log in|login|sign in)\b/i] },
-  { intent: 'signup', rule: 'auth_signup', base: 0.9, patterns: [/\b(sign up|signup|create account|register)\b/i] },
+  { intent: 'signup', rule: 'auth_signup', base: 0.9, patterns: [/\b(sign up|signup|create account|register|join now|become a member)\b/i] },
   { intent: 'documentation', rule: 'docs_guides_api', base: 0.9, patterns: [/\b(documentation|developer docs|api docs|docs|guides)\b/i] },
   { intent: 'enterprise', rule: 'enterprise', base: 0.86, patterns: [/\b(enterprise|enterprise solutions|for enterprise)\b/i] },
   { intent: 'careers', rule: 'careers', base: 0.82, patterns: [/\b(careers|jobs|open roles|join our team)\b/i] },
@@ -56,6 +56,9 @@ export function extractActionsFromHtml(html: string, page: CrawledPage, maxCandi
     const href = tag === 'form' ? node.attr('action') : node.attr('href');
     const label = actionLabel($, node, tag);
     if (!label || label.length < 2) return;
+    // A JS-only control has no verified navigation destination. Never assign
+    // the current page to a menu toggle or an unresolvable button.
+    if (!href) return;
 
     let url = page.url;
     if (href) {
@@ -91,6 +94,8 @@ export function extractActionsFromHtml(html: string, page: CrawledPage, maxCandi
 }
 
 export interface ActionDiscoveryOptions {
+  /** Hard off switch: do not consult provider availability or call generation. */
+  rulesOnly?: boolean;
   onProgress?: (completed: number, total: number) => void | Promise<void>;
   /** Injectable classifier for offline verification. */
   generate?: (req: StructuredRequest) => Promise<unknown>;
@@ -127,7 +132,7 @@ export async function buildActionGraph(rawActions: RawDiscoveredAction[], option
     cursor = Math.min(cursor + 2, rawActions.length);
     await Promise.all(rawActions.slice(start, cursor).map(async (source, offset) => {
       const raw = { ...source, rankSignals: { ...source.rankSignals, internalLinkFrequency: frequency.get(source.url) ?? 1 } };
-      const classified = await classifyAction(raw, req => generate(req, raw.url), !!options.generate);
+      const classified = await classifyAction(raw, req => generate(req, raw.url), !!options.generate, options.rulesOnly === true);
       if (classified && classified.confidence >= MIN_GRAPH_CONFIDENCE) {
         results[start + offset] = { ...raw, ...classified, why: whySelected(raw, classified.confidence) };
       }
@@ -207,8 +212,10 @@ function normalizeUrlForGrouping(url: string): string {
   parsed.search = '';
   return parsed.toString().replace(/\/$/, '');
 }
-async function classifyAction(raw: RawDiscoveredAction, generate: (req: StructuredRequest) => Promise<unknown>, forceLlm = false): Promise<Pick<DiscoveredActionCandidate, 'intent' | 'confidence' | 'detectionMethod' | 'rule'> | null> {
-  const text = `${raw.label} ${raw.url} ${raw.surroundingHeading} ${raw.pageTitle} ${raw.pageDescription}`;
+async function classifyAction(raw: RawDiscoveredAction, generate: (req: StructuredRequest) => Promise<unknown>, forceLlm = false, rulesOnly = false): Promise<Pick<DiscoveredActionCandidate, 'intent' | 'confidence' | 'detectionMethod' | 'rule'> | null> {
+  // Page titles/descriptions describe the whole business, not each link.
+  // Classification needs the control's own label and destination semantics.
+  const text = `${raw.label} ${new URL(raw.url).pathname.replace(/[-_/]/g, ' ')}`;
   let best: Pick<DiscoveredActionCandidate, 'intent' | 'confidence' | 'detectionMethod' | 'rule'> | null = null;
   for (const rule of INTENT_RULES) {
     const ruleText = rule.rule === 'appointment_booking' ? raw.label : text;
@@ -216,7 +223,7 @@ async function classifyAction(raw: RawDiscoveredAction, generate: (req: Structur
     const confidence = Math.min(0.99, rule.base + signalBoost(raw));
     if (!best || confidence > best.confidence) best = { intent: rule.intent, confidence, detectionMethod: 'rule', rule: rule.rule };
   }
-  if (best && best.confidence >= MIN_RULE_CONFIDENCE_FOR_LLM) return best;
+  if (rulesOnly || best && best.confidence >= MIN_RULE_CONFIDENCE_FOR_LLM) return best;
   if (!forceLlm && !llmAvailable()) return best;
 
   try {

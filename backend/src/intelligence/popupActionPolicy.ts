@@ -16,11 +16,11 @@ const ALIASES: Record<string, string[]> = { support: ['contact_support'], contac
 // "Pricing & Financing" names a navigation section; it promises no rates,
 // eligibility or offer. Accept only this exact additional label, with all
 // destination, provenance, tenant and material-claim checks still required.
-const SAFE_LABEL = /^(?:(?:view|see|check|compare|explore|browse|shop) (?:our |the )?(?:pricing|prices|plans|fees|collection|products|catalog|catalogue|services)|(?:book|schedule|request|arrange) (?:a |an )?(?:appointment|consultation|demo|site visit)|(?:contact|talk to) (?:us|sales|support|our team)|(?:get )?support|learn more|read more|documentation|(?:get )?help|buy now|shop now|get in touch|pricing(?: & financing)?|contact|appointment|book demo|call now|call us|email us|whatsapp)$/i;
+const SAFE_LABEL = /^(?:(?:view|see|check|compare|explore|browse|shop) (?:our |the )?(?:pricing|prices|plans|fees|collection|products|catalog|catalogue|services)|(?:book|schedule|request|arrange) (?:a |an )?(?:appointment|consultation|demo|site visit|fitness assessment|assessment)|(?:contact|talk to) (?:us|sales|support|our team)|(?:get )?support|learn more|read more|documentation|(?:get )?help|buy now|shop now|get in touch|pricing(?: & financing)?|contact|appointment|book demo|call now|call us|email us|whatsapp)$/i;
 
 function purpose(text: string): PopupActionPurpose | null {
   const words = text.toLowerCase().replace(/[_/-]+/g, ' ');
-  if (/\b(appointments?|consultations?|site visit|reservations?|reserve|booking|stay|rooms?|table)\b/.test(words)) return 'appointment';
+  if (/\b(appointments?|consultations?|assessments?|site visit|reservations?|reserve|booking|stay|rooms?|table)\b/.test(words)) return 'appointment';
   if (/\b(demo|demonstration)\b/.test(words)) return 'demo';
   if (/\b(pricing|prices?|plans?|fees|costs?)\b/.test(words)) return 'pricing';
   if (/\b(collection|products?|shop|catalog|catalogue|buy|purchase)\b/.test(words)) return 'product';

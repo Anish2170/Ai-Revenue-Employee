@@ -125,6 +125,8 @@ export interface ResolvedContext {
  * retrievals.
  */
 export interface KnowledgeSnapshot {
+  /** Action-only versions retain all knowledge; parent is a protected rollback artifact. */
+  actionRefresh?: { version: 1; operation: 'refresh' | 'rollback'; parentSnapshotId: string; appliedAt: string; reviewDigest: string };
   /** Limited publication keeps raw crawl completeness false and carries its audited contract. */
   scopeApproval?: import('../knowledge/crawlScope.js').ScopeApproval;
   /** Additive v1 metadata; old readers can ignore it. No database migration. */

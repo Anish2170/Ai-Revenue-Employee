@@ -77,7 +77,7 @@ export default function WebsiteDetailPage() {
 
       {tab === 'analytics' && <AnalyticsView websiteId={id} websiteName={website.name} />}
       {tab === 'instructions' && <InstructionsTab websiteId={id} />}
-      {tab === 'widget' && <WidgetTab websiteId={id} />}
+      {tab === 'widget' && <WidgetTab key={id} websiteId={id} />}
       {tab === 'knowledge' && <KnowledgeTab key={id} websiteId={id} websiteUrl={website.url} />}
     </div>
   );
@@ -232,6 +232,8 @@ function WidgetTab({ websiteId }: { websiteId: string }) {
   const [widget, setWidget] = useState<AnyRecord | null>(null);
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState(false);
+  const [verifying, setVerifying] = useState(false);
+  const [verificationMessage, setVerificationMessage] = useState('');
 
   useEffect(() => {
     api.getWidget(websiteId)
@@ -250,6 +252,18 @@ function WidgetTab({ websiteId }: { websiteId: string }) {
     navigator.clipboard.writeText(snippet);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleVerify = async () => {
+    setVerifying(true);
+    setVerificationMessage('');
+    try {
+      const result = await api.verifyWidgetInstallation(websiteId) as { installed: boolean; reason: string };
+      setWidget(await api.getWidget(websiteId) as AnyRecord);
+      setVerificationMessage(result.reason);
+    } catch (cause) {
+      setVerificationMessage(cause instanceof Error ? cause.message : 'Unable to verify installation.');
+    } finally { setVerifying(false); }
   };
 
   return (
@@ -271,11 +285,15 @@ function WidgetTab({ websiteId }: { websiteId: string }) {
       </div>
       <div className="mt-6 space-y-2 text-sm text-[var(--text-muted)]">
         <p><strong>Site ID:</strong> <code className="text-[var(--text)]">{widget.siteId}</code></p>
-        <p><strong>Status:</strong>{' '}
-          <Badge variant={widget.status === 'ACTIVE' ? 'success' : 'warning'}>
-            {widget.status === 'ACTIVE' ? 'Active' : 'Disabled'}
+        <p><strong>Installation:</strong>{' '}
+          <Badge variant={widget.installed === true ? 'success' : 'warning'}>
+            {widget.installed === true ? 'Verified installed' : 'Not verified'}
           </Badge>
         </p>
+        <p><strong>Widget:</strong> {widget.status === 'ACTIVE' ? 'Enabled' : 'Disabled'}</p>
+        <p>Enabled means the widget can respond. Verify installation after publishing the snippet on your website.</p>
+        <Button onClick={() => void handleVerify()} loading={verifying}>Verify installation</Button>
+        {verificationMessage && <p role="status">{verificationMessage}</p>}
       </div>
     </Card>
   );

@@ -161,6 +161,9 @@ export function planRetrieval(query: string, chunks: RetrievedChunk[], options: 
     const known = labels(chunks), pageUrl = pageIdentity(options.page, options.sourceUrl), needs = requestedNeeds(query);
     let subjects = matchingLabels(query, known), topicSource: QueryPlan['topicSource'] = subjects.length ? 'explicit' : 'none';
     const broadTopic = options.purpose !== 'popup' && Boolean(broadCatalogQuery(query));
+    // A catalog question must not become one plan because its category word
+    // (for example "membership") happens to occur in that plan's name.
+    if (broadTopic) { subjects = []; topicSource = 'none'; }
     const reference = !broadTopic && (/\b(?:it|its|this|that|these|those|this service|this item|the process)\b|इस|इसका|इसके|ये/iu.test(query) || topicTerms(query).length === 0 || options.purpose === 'popup');
     // Unmatched concrete words may name an unknown product/service. A deictic
     // word alone must not replace that question with a familiar page topic.

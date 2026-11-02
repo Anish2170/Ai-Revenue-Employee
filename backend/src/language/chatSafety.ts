@@ -107,7 +107,7 @@ function question(query: string) {
   if (/\bfree\b/u.test(value)) return { kind: 'service', topic: /consultation/u.test(value) ? 'free consultation' : value.match(/\bfree\s+[\p{L}]+/u)?.[0] ?? 'the free offer' };
   if (/refund|refundable|wapas|वापस|रिफंड/iu.test(value)) return { kind: 'refund', topic: /consultation/.test(value) ? 'consultation fees' : 'refund policy' };
   if (/cancel|cancellation|radd|रद्द/iu.test(value)) return { kind: 'cancellation', topic: 'appointment cancellation' };
-  if (/\b(?:where|link|url)\b.*\bbook|\bbook.*\b(?:link|url)\b|बुकिंग लिंक/iu.test(value)) return { kind: 'booking_link', topic: 'booking link' };
+  if (/\b(?:where|link|url)\b.*\bbook|\bbook.*\b(?:link|url)\b|\bhow (?:can|do) i book\b|बुकिंग लिंक/iu.test(value)) return { kind: 'booking_link', topic: 'booking link' };
   if (/\bbook(?:ing)?\b|बुकिंग/iu.test(value)) return { kind: 'booking', topic: 'online booking' };
   if (/open|hours|closed|khul|band|खुल|बंद|समय/iu.test(value)) return { kind: /\b(?:kal|aaj|today|tomorrow)\b|आज|कल/u.test(value) ? 'relative_hours' : 'hours', topic: 'opening hours' };
   if (/price|pricing|cost|how much|kitn|daam|rupay|rupee|कीमत|रुपये|सफाई.*शुरू|कितन/iu.test(value)) {
@@ -180,7 +180,7 @@ export function buildChatSafetyPlan(context: ResolvedContext, query: string, lan
   // valid demo navigation for businesses that actually configured it.
   if (target.kind === 'demo') actions.booking = actions.booking.filter(action => actionPurpose(action, { websiteId: context.websiteId, websiteUrl: context.instructions.websiteUrl, businessName: context.business.name }) === 'demo');
   let state: AnswerState = conflicting||retrievalConflict ? 'contradictory' : selected.length && !opaqueRelated ? selected.every(fact => fact.negative) ? 'known_negative' : 'known_positive' : 'unknown';
-  if (target.kind === 'price' && selected.length > 1 && subjectTerms(query).length && new Set(selected.map(f => normalized(f.subject))).size > 1) state = 'ambiguous';
+  if (target.kind === 'price' && selected.length > 1 && broadCatalogQuery(query) !== 'price' && subjectTerms(query).length && new Set(selected.map(f => normalized(f.subject))).size > 1) state = 'ambiguous';
   if (target.kind === 'relative_hours' || target.kind === 'price' && !selected.length && /^(treatment price|lagega)$/u.test(target.topic) || /^(?:it|this|that)$/u.test(target.topic)) state = 'ambiguous';
   // Keep the entire qualification boundary; never shorten a page by cutting
   // off conditions. Long pages need a targeted answer or verified navigation.
@@ -188,6 +188,14 @@ export function buildChatSafetyPlan(context: ResolvedContext, query: string, lan
   if (target.kind === 'service' && availabilityRequest(query) && !retrievalConflict && !conflicting) {
     excerpts.push(...context.chunks.filter(chunk => safeChatSourceUrl(chunk.url, context.instructions.websiteUrl))
       .flatMap(chunk => serviceDescriptions(chunk, query).map(content => ({ ...chunk, content }))).slice(0, 1));
+  }
+  if (target.kind === 'service_overview' && !retrievalConflict && !conflicting) {
+    excerpts.push(...context.chunks.filter(chunk => safeChatSourceUrl(chunk.url, context.instructions.websiteUrl)
+      && /^\/(?:programs|services|treatments)\//iu.test(chunk.page)
+      && !('truncated' in chunk && chunk.truncated) && !UNSAFE_SOURCE.test(chunk.content))
+      .flatMap(chunk => chunk.content.split(/\n\s*\n/u).map(s => s.trim())
+        .filter(text => text.length >= 40 && text.length <= 600 && /[.!?।]$/u.test(text) && !/[$₹€£¥]\s*\d/u.test(text))
+        .slice(0, 1).map(content => ({ ...chunk, content: `${chunk.heading}: ${content}` }))).slice(0, 4));
   }
   if (excerpts.length) state = 'known_positive';
   if (target.kind === 'booking_link' && actions.booking.length) state = selected.some(fact => fact.negative) || conflicting ? 'contradictory' : 'known_positive';
@@ -241,7 +249,7 @@ function composeEvidenceReply(plan: ChatSafetyPlan): string {
     : local(plan, 'Contact capture is unavailable here. Please use a verified business contact route.', 'यहाँ संपर्क जानकारी दर्ज करने की सुविधा उपलब्ध नहीं है। कृपया व्यवसाय के सत्यापित संपर्क माध्यम का उपयोग करें।', 'Yahan contact details save karne ki suvidha available nahi hai. Business ka verified contact route use karein.');
   if (plan.kind === 'contact' && !plan.selected.length && plan.contact[0]) return `${local(plan, 'You can contact the business here:', 'व्यवसाय से यहाँ संपर्क कर सकते हैं:', 'Business se yahan contact kar sakte hain:')} ${plan.contact[0].destination}`;
   if (plan.kind === 'demo' && plan.state === 'known_positive' && plan.booking[0]) return `${local(plan, 'You can request a demo here:', 'डेमो का अनुरोध यहाँ कर सकते हैं:', 'Demo yahan request kar sakte hain:')} ${plan.booking[0].destination}`;
-  if (plan.state !== 'contradictory' && !plan.selected.length && (plan.kind === 'service_overview' || plan.kind === 'price')) {
+  if (plan.state !== 'contradictory' && !plan.selected.length && !plan.excerpts.length && (plan.kind === 'service_overview' || plan.kind === 'price')) {
     const action = (plan.kind === 'price' ? plan.navigation.pricing : plan.navigation.services)[0];
     if (action && !subjectTerms(plan.query).length) return `${local(plan, plan.kind === 'price' ? 'You can view pricing here:' : 'You can explore services here:', plan.kind === 'price' ? 'कीमतों की जानकारी यहाँ देखें:' : 'सेवाओं की जानकारी यहाँ देखें:', plan.kind === 'price' ? 'Pricing yahan dekh sakte hain:' : 'Services yahan dekh sakte hain:')} ${action.destination}\n${local(plan, 'Which treatment or service are you interested in?', 'आप किस उपचार या सेवा के बारे में जानना चाहते हैं?', 'Aap kis treatment ya service ke baare mein jaanna chahte hain?')}`;
     if (plan.kind === 'service_overview') return local(plan, 'Which treatment or service would you like to know about?', 'आप किस उपचार या सेवा के बारे में जानना चाहते हैं?', 'Aap kis treatment ya service ke baare mein jaanna chahte hain?');

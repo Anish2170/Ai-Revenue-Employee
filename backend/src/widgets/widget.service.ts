@@ -11,6 +11,20 @@ import { prisma } from '../db/prisma.js';
 import { config } from '../config/index.js';
 import { assertWebsiteOwnership } from '../websites/website.service.js';
 import { UnsafeUrlError, safeFetch } from '../security/ssrf.js';
+import * as cheerio from 'cheerio';
+
+export function hasWidgetScript(html: string, pageUrl: string, siteId: string): boolean {
+  const $ = cheerio.load(html);
+  return $('script[src][data-site-id]').toArray().some(node => {
+    if ($(node).attr('data-site-id') !== siteId) return false;
+    if ($(node).closest('template,noscript').length) return false;
+    try {
+      const src = new URL($(node).attr('src')!, pageUrl);
+      const expected = new URL(`${config.widgetBaseUrl}/widget.js`);
+      return src.origin === expected.origin && src.pathname === expected.pathname;
+    } catch { return false; }
+  });
+}
 
 function randomSiteId(): string {
   return `site_${randomBytes(6).toString('hex')}`; // e.g. site_9f3a1c7e2b04
@@ -72,15 +86,13 @@ export async function verifyWidgetInstallation(organizationId: string, websiteId
       },
     });
     const html = response.body.toString('utf8');
-    const installed =
-      html.includes(`data-site-id="${widget.siteId}"`) ||
-      html.includes(`data-site-id='${widget.siteId}'`) ||
-      (html.includes('/widget.js') && html.includes(widget.siteId));
+    const successful = response.status >= 200 && response.status < 300;
+    const installed = successful && hasWidgetScript(html, response.url, widget.siteId);
 
-    if (installed) {
+    if (successful) {
       await prisma.widget.update({
         where: { id: widget.id },
-        data: { installedAt: new Date() },
+        data: { installedAt: installed ? widget.installedAt ?? new Date() : null },
       });
     }
 

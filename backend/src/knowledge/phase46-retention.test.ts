@@ -25,7 +25,7 @@ for (const kind of ['invalid-vector', 'partial', 'wrong-model', 'wrong-publicati
     const rows = ['newest', 'second', 'third', 'oldest'].map(id => ({ id, websiteId: 'site', organizationId: 'org', storageKey: r2SnapshotKey('org', 'site', id), contentSha256: snapshotSha256(bytes) }));
     const deleted: string[] = [];
     const original = prisma.$transaction;
-    const tx = { $queryRaw: async () => [{ id: 'site' }], knowledgeSnapshot: { findMany: async () => rows, delete: async ({ where }: any) => { deleted.push(where.id); } } };
+    const tx = { $queryRaw: async () => [{ id: 'site' }], auditLog: { findMany: async () => [] }, knowledgeSnapshot: { findMany: async () => rows, delete: async ({ where }: any) => { deleted.push(where.id); } } };
     prisma.$transaction = (async (fn: any) => fn(tx)) as typeof prisma.$transaction;
     setSnapshotStorageForTests({ provider: 'R2', read: async () => ({ bytes, etag: null }), write: async () => { throw Error('unused'); }, delete: async key => { deleted.push(key); } });
     try {

@@ -1,6 +1,6 @@
 'use client';
 
-import { FormEvent, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
+import { FormEvent, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { api, errorMessage } from '@/lib/api';
 import { Badge, Button, Card, Input, Spinner } from '@/components/ui';
@@ -162,6 +162,7 @@ function OnboardingContent() {
   const [websites, setWebsites] = useState<Website[]>([]);
   const [website, setWebsite] = useState<Website | null>(null);
   const [websiteId, setWebsiteId] = useState(initialWebsiteId);
+  const selectedWebsite = useRef(initialWebsiteId);
   const [loading, setLoading] = useState(true);
   const [createOpen, setCreateOpen] = useState(!initialWebsiteId);
   const [createForm, setCreateForm] = useState({ name: '', url: '', industry: '', description: '' });
@@ -189,7 +190,17 @@ function OnboardingContent() {
   const knowledgeReady = useCallback(() => setStep(3), []);
 
   const loadWebsite = useCallback(async (id: string) => {
+    selectedWebsite.current = id;
+    setWidget(null);
+    setActionsPayload(null);
+    setActionsLoading(false);
+    setChatMessages([]);
+    setChatInput('');
+    setChatLoading(false);
+    setVerifyState('idle');
+    setVerifyMessage('');
     const site = (await api.getWebsite(id)) as Website;
+    if (selectedWebsite.current !== id) return site;
     setWebsite(site);
     setWebsiteId(site.id);
     setUrl(site.url);
@@ -214,7 +225,9 @@ function OnboardingContent() {
 
   useEffect(() => {
     if (!websiteId) return;
-    void api.getWidget(websiteId).then((data) => setWidget(data as Widget)).catch(() => undefined);
+    let cancelled = false;
+    void api.getWidget(websiteId).then((data) => { if (!cancelled && selectedWebsite.current === websiteId) setWidget(data as Widget); }).catch(() => undefined);
+    return () => { cancelled = true; };
   }, [websiteId]);
 
   useEffect(() => {
@@ -244,9 +257,12 @@ function OnboardingContent() {
     if (!websiteId) return;
     setActionsLoading(true);
     try {
-      setActionsPayload((await api.getDiscoveredWebsiteActions(websiteId)) as ActionsPayload);
+      const payload = (await api.getDiscoveredWebsiteActions(websiteId)) as ActionsPayload;
+      if (selectedWebsite.current === websiteId) setActionsPayload(payload);
+    } catch (cause) {
+      if (selectedWebsite.current === websiteId) setError(errorMessage(cause, 'Unable to load website actions.'));
     } finally {
-      setActionsLoading(false);
+      if (selectedWebsite.current === websiteId) setActionsLoading(false);
     }
   }, [websiteId]);
 
@@ -291,6 +307,7 @@ function OnboardingContent() {
       setWebsites((prev) => [created, ...prev]);
       setWebsite(created);
       setWebsiteId(created.id);
+      selectedWebsite.current = created.id;
       setUrl(created.url);
       setCreateOpen(false);
       setStep(1);
@@ -358,7 +375,7 @@ function OnboardingContent() {
   }
 
   async function sendChat(question?: string) {
-    if (!widget) return;
+    if (!widget || chatLoading) return;
     const content = (question ?? chatInput).trim();
     if (!content) return;
     const nextMessages: ChatMessage[] = [...chatMessages, { role: 'user', content }];
@@ -366,12 +383,14 @@ function OnboardingContent() {
     setChatInput('');
     setChatLoading(true);
     try {
-      const response = (await api.sendTestChat(widget.siteId, [{ role: 'user', content }])) as { reply: string };
+      const response = (await api.sendTestChat(widget.siteId, nextMessages)) as { reply: string };
+      if (selectedWebsite.current !== websiteId) return;
       setChatMessages([...nextMessages, { role: 'assistant', content: response.reply || 'I could not generate a response.' }]);
     } catch (err) {
+      if (selectedWebsite.current !== websiteId) return;
       setChatMessages([...nextMessages, { role: 'assistant', content: err instanceof Error ? err.message : 'Test chat failed.' }]);
     } finally {
-      setChatLoading(false);
+      if (selectedWebsite.current === websiteId) setChatLoading(false);
     }
   }
 

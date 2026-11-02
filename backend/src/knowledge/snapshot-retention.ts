@@ -1,6 +1,7 @@
 import { prisma } from '../db/prisma.js';
 import { getSnapshotStorage, loadSnapshotArtifact } from '../vectorstore/snapshotStorage.js';
 import { validateKnowledgeSnapshot } from './publication.js';
+import { REFRESH_AUDIT_ACTION, protectedActionSnapshotIds } from '../business-actions/actionRefreshPins.js';
 
 /** Only prune immutable R2 snapshots after a usable replacement has been published. */
 export async function pruneKnowledgeSnapshots(organizationId: string, websiteId: string): Promise<number> {
@@ -12,8 +13,11 @@ export async function pruneKnowledgeSnapshots(organizationId: string, websiteId:
       where: { organizationId, websiteId, status: 'READY', storageProvider: 'R2' },
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
     });
-    const retained = snapshots.slice(0, 3);
-    const obsolete = snapshots.slice(3);
+    const pins = protectedActionSnapshotIds(await tx.auditLog.findMany({
+      where: { organizationId, targetType: 'website', targetId: websiteId, action: REFRESH_AUDIT_ACTION }, select: { metadata: true },
+    }));
+    const retained = snapshots.filter((snapshot, index) => index < 3 || pins.has(snapshot.id));
+    const obsolete = snapshots.filter((snapshot, index) => index >= 3 && !pins.has(snapshot.id));
     if (!obsolete.length) return 0;
     const latest = retained[0]!;
     // A missing/corrupt replacement must never cause older backups to be removed.

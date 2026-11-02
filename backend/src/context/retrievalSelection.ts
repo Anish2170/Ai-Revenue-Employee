@@ -184,7 +184,8 @@ export function selectRetrieval(all: RetrievedChunk[], plan: QueryPlan, options:
         // policy/hours remain cross-page candidates when the question requests them.
         if (subjects.length && !row.entity && !row.needs.some(need => plan.needs.includes(need) && ['refund', 'cancellation', 'hours', 'booking'].includes(need)))
             continue;
-        if (selected.filter(r => normalizeUrl(r.chunk.url) === normalizeUrl(row.chunk.url)).length >= 2)
+        const catalogPrice = broadCatalogQuery(plan.originalQuery) === 'price' && priceRecords(row.chunk).length > 0;
+        if (!catalogPrice && selected.filter(r => normalizeUrl(r.chunk.url) === normalizeUrl(row.chunk.url)).length >= 2)
             continue;
         add(row);
     }
