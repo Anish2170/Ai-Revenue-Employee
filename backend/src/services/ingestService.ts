@@ -12,7 +12,7 @@ import { MemoryVectorStore } from '../vectorstore/memoryStore.js';
 import { loadLatestWebsiteSnapshot, writeSnapshotArtifact, snapshotSha256, type StoredArtifact } from '../vectorstore/snapshotStorage.js';
 import { saveSnapshotFile, legacySnapshotPath, websiteSnapshotPath, loadSnapshot } from '../vectorstore/persistence.js';
 import { activateLegacySnapshot } from '../vectorstore/index.js';
-import { buildActionGraph } from '../business-actions/actionDiscovery.js';
+import { buildActionGraph, selectActionDiscoveryCandidates } from '../business-actions/actionDiscovery.js';
 import { generateDecision, llmAvailable } from '../llm/index.js';
 import { validateKnowledgeSnapshot } from '../knowledge/publication.js';
 import type { KnowledgeSnapshot, Chunk, EmbeddedChunk } from '../context/types.js';
@@ -122,7 +122,7 @@ export async function ingest(url: string, opts: IngestOptions = {}, deps: Ingest
         }
         await opts.onPhase?.('action_discovery');
         let classificationCalls = 0;
-        base.actionGraph = await (deps.actions ?? buildActionGraph)(result.actions.slice(0, 100), { generate: async (req) => { await check(); if (!llmAvailable() || classificationCalls++ >= 6)
+        base.actionGraph = await (deps.actions ?? buildActionGraph)(selectActionDiscoveryCandidates(result.actions, 100), { generate: async (req) => { await check(); if (!llmAvailable() || classificationCalls++ >= 6)
                 return null; return generateDecision({ ...req, signal: opts.signal, deadlineAt: Date.now() + 6000 }); }, onProgress: async (actionsCompleted, actionsTotal) => { await check(); await opts.onPhase?.('action_discovery', { actionsCompleted, actionsTotal }); } });
         await opts.onPhase?.('chunking', { chunks: chunks.length });
         await check();

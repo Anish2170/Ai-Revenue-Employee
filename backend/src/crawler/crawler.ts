@@ -12,7 +12,7 @@ import { renderPage, type RenderedPage } from './browserRenderer.js';
 import { parseRobots, type RobotsPolicy } from './robots.js';
 import type { CrawlEntry, CrawlManifest } from './crawlManifest.js';
 import type { CrawledPage } from '../context/types.js';
-import { extractActionsFromHtml, type RawDiscoveredAction } from '../business-actions/actionDiscovery.js';
+import { extractActionsFromHtml, selectActionDiscoveryCandidates, type RawDiscoveredAction } from '../business-actions/actionDiscovery.js';
 export interface CrawlOptions {
     mode?: 'auto' | 'manual';
     maxPages?: number;
@@ -292,7 +292,7 @@ export async function crawl(startUrl: string, opts: CrawlOptions = {}, deps: Cra
                         pages.push(result.page);
                         acceptedChars += result.page.text.length;
                     }
-                    actions.push(...result.raw.filter(action => normalizeUrl(action.url)).slice(0, 20));
+                    actions.push(...selectActionDiscoveryCandidates(result.raw.filter(action => normalizeUrl(action.url)), 20));
                 }
                 await opts.onProgress?.(pages.length, skipped.length, maxPages);
                 if (queue.length)

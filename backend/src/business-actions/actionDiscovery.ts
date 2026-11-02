@@ -212,7 +212,7 @@ function normalizeUrlForGrouping(url: string): string {
   parsed.search = '';
   return parsed.toString().replace(/\/$/, '');
 }
-async function classifyAction(raw: RawDiscoveredAction, generate: (req: StructuredRequest) => Promise<unknown>, forceLlm = false, rulesOnly = false): Promise<Pick<DiscoveredActionCandidate, 'intent' | 'confidence' | 'detectionMethod' | 'rule'> | null> {
+function classifyByRules(raw: RawDiscoveredAction): Pick<DiscoveredActionCandidate, 'intent' | 'confidence' | 'detectionMethod' | 'rule'> | null {
   // Page titles/descriptions describe the whole business, not each link.
   // Classification needs the control's own label and destination semantics.
   const text = `${raw.label} ${new URL(raw.url).pathname.replace(/[-_/]/g, ' ')}`;
@@ -223,6 +223,42 @@ async function classifyAction(raw: RawDiscoveredAction, generate: (req: Structur
     const confidence = Math.min(0.99, rule.base + signalBoost(raw));
     if (!best || confidence > best.confidence) best = { intent: rule.intent, confidence, detectionMethod: 'rule', rule: rule.rule };
   }
+  return best;
+}
+
+/** Keep distinct business intents ahead of repeated navigation within existing
+ * crawl/classification budgets. Uses the graph's own rules and ranking, no AI. */
+export function selectActionDiscoveryCandidates(actions: RawDiscoveredAction[], limit: number): RawDiscoveredAction[] {
+  const budget = Math.max(0, Math.floor(limit));
+  if (!budget) return [];
+  if (actions.length <= budget) return actions;
+  const ranked = actions.map((raw, index) => {
+    const classification = classifyByRules(raw);
+    return { raw, index, classification, score: classification ? rankScore({ ...raw, ...classification, why: '' }) : 0 };
+  }).sort((a, b) => Number(!!b.classification) - Number(!!a.classification) || b.score - a.score || a.index - b.index);
+  const selected: RawDiscoveredAction[] = [];
+  const intents = new Set<DiscoveredActionIntent>();
+  const destinations = new Set<string>();
+  const add = (entry: typeof ranked[number]) => {
+    // Keep query-specific destinations distinct, as in the fetched controls.
+    const key = entry.classification
+      ? `${entry.classification.intent}|${entry.raw.url}`
+      : JSON.stringify([entry.raw.label, entry.raw.url, entry.raw.context]);
+    if (selected.length >= budget || destinations.has(key)) return;
+    selected.push(entry.raw);
+    destinations.add(key);
+  };
+  for (const entry of ranked) {
+    if (!entry.classification || intents.has(entry.classification.intent)) continue;
+    add(entry);
+    intents.add(entry.classification.intent);
+  }
+  for (const entry of ranked) add(entry);
+  return selected;
+}
+
+async function classifyAction(raw: RawDiscoveredAction, generate: (req: StructuredRequest) => Promise<unknown>, forceLlm = false, rulesOnly = false): Promise<Pick<DiscoveredActionCandidate, 'intent' | 'confidence' | 'detectionMethod' | 'rule'> | null> {
+  const best = classifyByRules(raw);
   if (rulesOnly || best && best.confidence >= MIN_RULE_CONFIDENCE_FOR_LLM) return best;
   if (!forceLlm && !llmAvailable()) return best;
 
