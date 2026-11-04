@@ -3,7 +3,6 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { requireAuth } from '../auth/auth.middleware.js';
 import { validateBody } from '../middleware/validate.js';
-import { authUserKey, days, hours, rateLimit } from '../middleware/rateLimit.js';
 import { assertWebsiteOwnership, getWebsite, OwnershipError } from '../websites/website.service.js';
 import * as knowledgeService from './knowledge.service.js';
 import { UnsafeUrlError, resolvePublicUrl } from '../security/ssrf.js';
@@ -15,13 +14,9 @@ knowledgeRouter.use(requireAuth);
 const buildSchema = z.object({ url: z.string().url(), language: z.string().min(2).max(32).optional(), idempotencyKey: z.string().min(8).max(128).optional(), budget: crawlBudgetSchema.optional() }).strict();
 const scopeSchema = z.object({ reviewHash: z.string().regex(/^[a-f0-9]{64}$/), excludedUrls: z.array(z.string().url().max(4096)).min(1).max(100),
   reason: z.string().trim().min(12).max(500), acknowledgeLimitations: z.literal(true), budget: manualCrawlBudgetSchema }).strict();
-const knowledgeBuildLimiter = rateLimit([
-  { name: 'knowledge_build_user', limit: 5, windowMs: hours(1), key: authUserKey },
-  { name: 'knowledge_build_org', limit: 20, windowMs: days(1), key: (req) => req.auth?.organizationId ?? null },
-  { name: 'knowledge_build_website', limit: 3, windowMs: hours(1), key: (req) => req.auth?.organizationId ? `${req.auth.organizationId}:${req.params.id}` : null },
-]);
-
-knowledgeRouter.post('/api/websites/:id/knowledge/build', requirePrivilegedDashboardRole, knowledgeBuildLimiter, validateBody(buildSchema), async (req, res, next) => {
+// Testing phase: no hourly/daily build-request quota. Authentication, source
+// validation, the durable active-build guard and bounded crawl work still apply.
+knowledgeRouter.post('/api/websites/:id/knowledge/build', requirePrivilegedDashboardRole, validateBody(buildSchema), async (req, res, next) => {
   try {
     await assertWebsiteOwnership(req.auth!.organizationId, req.params.id);
     const body = req.body as z.infer<typeof buildSchema>;
@@ -47,7 +42,7 @@ knowledgeRouter.get('/api/websites/:id/knowledge/build/:buildId/scope-review', r
     next(error);
   }
 });
-knowledgeRouter.post('/api/websites/:id/knowledge/build/:buildId/approve-scope', requireRole('OWNER'), knowledgeBuildLimiter, validateBody(scopeSchema), async (req, res, next) => {
+knowledgeRouter.post('/api/websites/:id/knowledge/build/:buildId/approve-scope', requireRole('OWNER'), validateBody(scopeSchema), async (req, res, next) => {
   try {
     await assertWebsiteOwnership(req.auth!.organizationId, req.params.id);
     const result = await knowledgeService.enqueueReviewedBuild(req.auth!.organizationId, req.params.id, req.params.buildId, req.auth!.userId, req.body);
