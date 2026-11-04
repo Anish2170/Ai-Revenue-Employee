@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+process.env.CHAT_RESPONSE_MODE = 'rules';
 import {mkdir,writeFile} from 'node:fs/promises';
 import {resolve,join} from 'node:path';
 import {randomUUID} from 'node:crypto';
@@ -6,6 +7,7 @@ import test from 'node:test';
 process.env.DATABASE_URL='';process.env.GEMINI_API_KEY='synthetic-phase4';process.env.OPENAI_API_KEY='';process.env.DEBUG_TRACE='false';
 const directory=resolve('evaluations/phase4-2026-10-27/test-'+randomUUID());await mkdir(directory,{recursive:true});process.env.KNOWLEDGE_DIR=directory;
 const {config}=await import('../config/index.js');
+Object.assign(config.chat, { responseMode: 'rules' });
 const {streamChatReply}=await import('../services/chatService.js');
 const {__setProvidersForTests}=await import('../llm/index.js');
 const {fixtureHtml}=await import('../knowledge/phase3Fixtures.js');

@@ -65,7 +65,28 @@ export async function getWidgetView(organizationId: string, websiteId: string) {
   };
 }
 
-export async function verifyWidgetInstallation(organizationId: string, websiteId: string) {
+/** Injectable read-only probe shared by the owner route and installation tests. */
+export async function inspectWidgetInstallation(url: string, siteId: string, deps: { fetch?: typeof safeFetch } = {}) {
+  try {
+    const response = await (deps.fetch ?? safeFetch)(url, { timeoutMs: 12000, maxBytes: 2 * 1024 * 1024,
+      headers: { 'User-Agent': 'AI-Revenue-Employee-Install-Verifier/1.0', Accept: 'text/html,application/xhtml+xml' } });
+    const base = { checkedUrl: response.url, status: response.status };
+    if (response.status < 200 || response.status >= 300) return { ...base, installed: false, verificationStatus: 'inconclusive' as const, reason: `The website returned HTTP ${response.status}; installation could not be checked.` };
+    const html = response.body.toString('utf8');
+    if (hasWidgetScript(html, response.url, siteId)) return { ...base, installed: true, verificationStatus: 'installed' as const, reason: 'Widget script found on website.' };
+    // HTTP HTML cannot establish what Next Script, effects or tag managers add.
+    // Never turn a missing static tag into proof of removal on a JavaScript page.
+    if (/<script\b/iu.test(html)) {
+      return { ...base, installed: false, verificationStatus: 'inconclusive' as const, reason: 'No matching widget script was found in the page HTML. JavaScript-installed widgets cannot be verified while browser rendering is unavailable. Check the live page and your install snippet.' };
+    }
+    return { ...base, installed: false, verificationStatus: 'missing' as const, reason: 'The matching widget script was not found on this page. Check that the site ID and script URL match your install snippet.' };
+  } catch (err) {
+    return { installed: false, verificationStatus: 'inconclusive' as const, checkedUrl: url,
+      reason: err instanceof UnsafeUrlError ? 'This website URL cannot be reached from the service. Please use a public HTTP or HTTPS website.' : 'Unable to load the website to verify installation. Please try again shortly.' };
+  }
+}
+
+export async function verifyWidgetInstallation(organizationId: string, websiteId: string, deps: Parameters<typeof inspectWidgetInstallation>[2] = {}) {
   await assertWebsiteOwnership(organizationId, websiteId);
   const website = await prisma.website.findUnique({
     where: { id: websiteId },
@@ -77,36 +98,10 @@ export async function verifyWidgetInstallation(organizationId: string, websiteId
   }
 
   const widget = website.widget ?? (await getOrCreateWidget(organizationId, websiteId));
-  try {
-    const response = await safeFetch(website.url, {
-      timeoutMs: 12000,
-      headers: {
-        'User-Agent': 'AI-Revenue-Employee-Install-Verifier/1.0',
-        Accept: 'text/html,application/xhtml+xml',
-      },
-    });
-    const html = response.body.toString('utf8');
-    const successful = response.status >= 200 && response.status < 300;
-    const installed = successful && hasWidgetScript(html, response.url, widget.siteId);
-
-    if (successful) {
-      await prisma.widget.update({
-        where: { id: widget.id },
-        data: { installedAt: installed ? widget.installedAt ?? new Date() : null },
-      });
-    }
-
-    return {
-      installed,
-      checkedUrl: response.url,
-      status: response.status,
-      reason: installed ? 'Widget script found on website.' : 'Widget script was not found in the page HTML.',
-    };
-  } catch (err) {
-    return {
-      installed: false,
-      checkedUrl: website.url,
-      reason: err instanceof UnsafeUrlError ? 'This website URL cannot be reached from the service. Please use a public HTTP or HTTPS website.' : 'Unable to fetch website.',
-    };
+  const result = await inspectWidgetInstallation(website.url, widget.siteId, deps);
+  // An inconclusive HTTP check is not proof that a verified embed was removed.
+  if (result.verificationStatus !== 'inconclusive') {
+    await prisma.widget.update({ where: { id: widget.id }, data: { installedAt: result.installed ? widget.installedAt ?? new Date() : null } });
   }
+  return result;
 }

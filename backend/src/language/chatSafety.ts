@@ -8,10 +8,11 @@ import type { ChatLanguageState } from './chatLanguage.js';
 import { parseAndValidateUrl, isPublicAddress } from '../security/ssrf.js';
 import { isIP } from 'node:net';
 import { safetyLanguageCopy } from './chatSafetyLanguage.js';
-import { priceRecords, matchesSubject, subjectTerms, broadCatalogQuery, contactRecords, matchesContact, serviceDescriptions } from '../context/sourceRecords.js';
+import { priceRecords, matchesSubject, subjectTerms, broadCatalogQuery, contactRecords, matchesContact, serviceDescriptions, sourceUnsafe as UNSAFE_SOURCE } from '../context/sourceRecords.js';
 import { normalizeFactQuery, contactRequest, availabilityRequest, factTopicTerms } from '../context/factQuery.js';
 import { requestsContactCapture, voluntarilySharesContact } from '../leads/contactIntent.js';
 import { understandChat, conversationalReply, isSafeConversationalClause, type ChatIntent } from './chatConversation.js';
+import { sourceEvidenceMatches } from '../context/sourceEvidence.js';
 
 export type AnswerState = 'known_positive' | 'known_negative' | 'unknown' | 'contradictory' | 'ambiguous';
 type Kind = 'price' | 'refund' | 'cancellation' | 'hours' | 'closed' | 'service' | 'booking' | 'contact';
@@ -27,7 +28,6 @@ export interface ChatSafetyPlan {
 }
 const MONEY = String.raw`(?:[$₹€£¥]\s*\d[\d,.]*|(?:USD|INR|EUR|GBP|CAD|AUD)\s*\d[\d,.]*)`;
 const PRICE = new RegExp(String.raw`^(.{1,80}?) (starts? at|costs?|is priced at) (${MONEY})((?:(?:\s*\/(?:mo|month|yr|year))|(?:\s+(?:per|a) (?:month|year|visit|session|item))|(?:,?\s+(?:billed (?:annually|monthly)|(?:including|excluding) (?:tax|VAT)|for (?:new|existing) customers)))*)\.$`, 'iu');
-const UNSAFE_SOURCE = /ignore|system prompt|instruction|pretend|hypothetical|for example|used to|previously|expired|outdated|historical|<script|override/iu;
 export function normalized(text: string): string { return text.normalize('NFKC').toLowerCase().replace(/[’‘]/g, "'").replace(/\s+/g, ' ').trim(); }
 function semantics(text: string): string {
   return normalized(text)
@@ -96,6 +96,7 @@ export function verifiedChatActions(context: ResolvedContext) {
 function question(query: string) {
   const value = semantics(normalizeFactQuery(query));
   if (broadCatalogQuery(query) === 'service') return { kind: 'service_overview', topic: 'services' };
+  if (broadCatalogQuery(query) === 'price') return { kind: 'price', topic: 'pricing' };
   if (/^(?:hi|hello|hey|thanks|thank you|ok|okay|yes|no|नमस्ते|धन्यवाद|namaste|shukriya)[.!?।]*$/u.test(value)) return { kind: 'conversation', topic: 'your question' };
   if (contactRequest(query)) return { kind: 'contact', topic: 'contact details' };
   if (/^(?:contact(?: details| information)?|phone(?: number)?|email(?: address)?)[.!?]*$/u.test(value) || /(?:contact|phone|email).*(?:details|number|address)|(?:how|where).*contact/u.test(value)) return { kind: 'contact', topic: 'contact details' };
@@ -184,12 +185,24 @@ export function buildChatSafetyPlan(context: ResolvedContext, query: string, lan
   if (target.kind === 'relative_hours' || target.kind === 'price' && !selected.length && /^(treatment price|lagega)$/u.test(target.topic) || /^(?:it|this|that)$/u.test(target.topic)) state = 'ambiguous';
   // Keep the entire qualification boundary; never shorten a page by cutting
   // off conditions. Long pages need a targeted answer or verified navigation.
-  const excerpts = (target.kind === 'general' || target.kind === 'service' && /explain|detail|about|samjhao/iu.test(query)) && !retrievalConflict && !conflicting && (!selected.length || /explain|detail|about|samjhao/iu.test(query)) ? context.chunks.filter(chunk => safeChatSourceUrl(chunk.url, context.instructions.websiteUrl) && !('truncated' in chunk && chunk.truncated) && !UNSAFE_SOURCE.test(chunk.content)).flatMap(chunk => chunk.content.split(/\n\s*\n/u).filter(paragraph => paragraph.length <= 600 && /[.!?।]$/u.test(paragraph.trim()) && !/[$₹€£¥]\s*\d/u.test(paragraph) && matchesSubject(query, paragraph)).map(content => ({ ...chunk, content }))).slice(0, /detail/iu.test(query) ? 3 : 1) : [];
+  const excerpts = (target.kind === 'general' || target.kind === 'service' && /explain|detail|about|samjhao/iu.test(query)) && !retrievalConflict && !conflicting && (!selected.length || /explain|detail|about|samjhao/iu.test(query)) ? context.chunks.filter(chunk => safeChatSourceUrl(chunk.url, context.instructions.websiteUrl) && !('truncated' in chunk && chunk.truncated) && !UNSAFE_SOURCE.test(chunk.content)).flatMap(chunk => chunk.content.split(/\n\s*\n/u).filter(paragraph => paragraph.length <= 600 && /[.!।]$/u.test(paragraph.trim()) && !/[$₹€£¥]\s*\d/u.test(paragraph) && matchesSubject(query, paragraph)).map(content => ({ ...chunk, content }))).slice(0, /detail/iu.test(query) ? 3 : 1) : [];
+  if (!selected.length && !retrievalConflict && !conflicting && state === 'unknown'
+    && (!excerpts.length || /\b(?:where|who|when|schedule|duration)\b/iu.test(query)) && ['general', 'service', 'hours', 'cancellation', 'refund', 'booking'].includes(target.kind)) {
+    const prose = context.chunks.filter(chunk => safeChatSourceUrl(chunk.url, context.instructions.websiteUrl))
+      .flatMap(chunk => sourceEvidenceMatches(chunk, query).map(unit => ({ chunk, unit })))
+      .sort((a, b) => b.unit.relevance - a.unit.relevance || b.chunk.score - a.chunk.score);
+    if (prose.length) {
+      excerpts.length = 0;
+      for (const { chunk, unit } of prose.slice(0, 1)) {
+        if (!excerpts.some(excerpt => excerpt.content === unit.content)) excerpts.push({ ...chunk, content: unit.content });
+      }
+    }
+  }
   if (target.kind === 'service' && availabilityRequest(query) && !retrievalConflict && !conflicting) {
     excerpts.push(...context.chunks.filter(chunk => safeChatSourceUrl(chunk.url, context.instructions.websiteUrl))
       .flatMap(chunk => serviceDescriptions(chunk, query).map(content => ({ ...chunk, content }))).slice(0, 1));
   }
-  if (target.kind === 'service_overview' && !retrievalConflict && !conflicting) {
+  if (target.kind === 'service_overview' && !selected.length && !retrievalConflict && !conflicting) {
     excerpts.push(...context.chunks.filter(chunk => safeChatSourceUrl(chunk.url, context.instructions.websiteUrl)
       && /^\/(?:programs|services|treatments)\//iu.test(chunk.page)
       && !('truncated' in chunk && chunk.truncated) && !UNSAFE_SOURCE.test(chunk.content))
@@ -257,7 +270,7 @@ function composeEvidenceReply(plan: ChatSafetyPlan): string {
   let text: string;
   if (plan.state === 'contradictory') text = local(plan, `I have conflicting details about ${plan.topic}. It's best to check the current details with the team.`, `${plan.topic} की जानकारी एक जैसी नहीं है। टीम से वर्तमान जानकारी की पुष्टि करना बेहतर होगा।`, `${plan.topic} ki jaankari ek jaisi nahi hai. Team se current details check karna behtar hoga.`);
   else if (plan.state === 'ambiguous') text = local(plan, plan.kind === 'relative_hours' ? 'Which date do you mean? I can share the published weekly hours, but cannot confirm live availability.' : 'Which treatment or service do you mean? Prices depend on the specific service.', plan.kind === 'relative_hours' ? 'आप किस तारीख के बारे में पूछ रहे हैं? साप्ताहिक समय बता सकता हूँ, लेकिन लाइव उपलब्धता की पुष्टि नहीं कर सकता।' : 'आप किस उपचार या सेवा की कीमत पूछ रहे हैं?', plan.kind === 'relative_hours' ? 'Aap kis date ki baat kar rahe hain? Weekly hours bata sakta hoon, lekin live availability confirm nahi kar sakta.' : 'Aap kis treatment ya service ki price pooch rahe hain?');
-  else if (plan.state === 'unknown') text = local(plan, `I don't have the details about ${plan.topic} yet. You can check with the team.`, `${plan.topic} की जानकारी अभी मेरे पास नहीं है। टीम से इसकी पुष्टि कर सकते हैं।`, `${plan.topic} ki detail abhi mere paas nahi hai. Team se check kar sakte hain.`);
+  else if (plan.state === 'unknown') text = local(plan, `I don't have confirmed details about ${plan.topic} yet. You can check with the team.`, `${plan.topic} की जानकारी अभी मेरे पास नहीं है। टीम से इसकी पुष्टि कर सकते हैं।`, `${plan.topic} ki confirmed detail abhi mere paas nahi hai. Team se check kar sakte hain.`);
   else text = [...new Set(plan.selected.map(fact => fact.kind === 'contact' ? fact.text : renderChatFact(fact, plan)))].join(plan.selected.length > 2 ? '\n' : ' ');
   if (plan.state.startsWith('known') && plan.kind === 'service_overview') text = local(plan, 'Published services include:', 'प्रकाशित सेवाओं में शामिल हैं:', 'Published services mein shamil hain:') + '\n' + text;
   if (plan.state.startsWith('known') && plan.kind === 'price' && !subjectTerms(plan.query).length && plan.selected.length > 1) text = local(plan, 'Some published fees:', 'कुछ प्रकाशित शुल्क:', 'Kuch published fees:') + '\n' + text;

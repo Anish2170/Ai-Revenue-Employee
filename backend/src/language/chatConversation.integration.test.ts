@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+for (const credential of ['DATABASE_URL', 'OPENAI_API_KEY', 'GEMINI_API_KEY']) process.env[credential] = '';
+await import('../config/index.js').then(({ config }) => { Object.assign(config.chat, { responseMode: 'rules' }); });
 import test, { type TestContext } from 'node:test';
 import type { ChatStreamInput, ChatStreamEvent } from '../services/chatService.js';
 import type { LLMProvider, StreamRequest } from '../llm/provider/types.js';

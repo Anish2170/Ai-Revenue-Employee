@@ -20,6 +20,7 @@ import { chatFailureMessage, chatRetrievalQuery, resolveChatLanguage, type ChatL
 import {answerQuery} from '../context/retrievalPlan.js';
 import {composeEvidenceCoverage} from '../context/evidenceCoverage.js';
 import { understandChat, chatBusinessStyle } from '../language/chatConversation.js';
+import { naturalChatReply } from './naturalChatService.js';
 
 export interface ChatStreamInput {
   messages: ChatMessage[];
@@ -183,6 +184,7 @@ async function* guardedReply(input: ChatStreamInput, context: ResolvedContext, p
  * @returns an async iterable of chat stream events.
  */
 export async function streamChatReply(input: ChatStreamInput): Promise<AsyncIterable<ChatStreamEvent>> {
+  if (config.chat.responseMode === 'hybrid') return naturalChatReply(input);
   chatTrace(input, 'strategy', {
     name: 'direct_chat_rag',
     note: 'chat answers from retrieved business knowledge; no interrupt decision here',

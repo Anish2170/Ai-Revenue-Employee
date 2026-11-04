@@ -1,8 +1,8 @@
 /** Source-bound structural records. No model output or owner instructions enter here.
  * Legacy flat cards are supported without rewriting the published snapshot. */
 import type { RetrievedChunk } from './types.js';
-import { contactRequest, factTopicTerms } from './factQuery.js';
-export const sourceUnsafe = /ignore|system prompt|instruction|pretend|hypothetical|for example|used to|previously|expired|outdated|historical|<script|override/iu;
+import { contactRequest, factTopicTerms, normalizeFactQuery } from './factQuery.js';
+export const sourceUnsafe = /(?:ignore|disregard).{0,50}(?:instructions?|prompts?|rules?|system)|system prompt|override.{0,40}instructions?|pretend (?:you|to)|hypothetical|for example|used to|previously|expired|outdated|historical|<script/iu;
 export const moneyPattern = String.raw`(?:[$₹€£¥]\s*\d[\d,]*(?:\.\d+)?|(?:USD|INR|EUR|GBP|CAD|AUD)\s*\d[\d,]*(?:\.\d+)?)`;
 const amountPattern = `${moneyPattern}(?:\\s*[-–—]\\s*(?:${moneyPattern}|\\d[\\d,]*(?:\\.\\d+)?))?`;
 const amountLine = new RegExp(`^(?:Price|Cost|Fee)?\\s*:?\\s*(${amountPattern})((?:\\s*\\/(?:mo|month|yr|year|night|visit|session|item|tooth))?)$`, 'iu');
@@ -59,7 +59,7 @@ export function priceRecords(chunk: RetrievedChunk): PriceRecord[] {
   for (const block of blocks) {
     // DOM table rows retain cell boundaries. Flat legacy cards retain line boundaries.
     for (const unit of block.includes(' | ') ? block.split('\n') : [block]) {
-      const lines = (unit.includes('\n') ? unit : unit.replace(/(?<=[a-z)])(?=[A-Z][a-z])/gu, '\n'))
+      const lines = unit.replace(/(?<=[a-z)])(?=(?:Covered|Depends|In-office|Per\b|High\b|Surgical\b|Screwed|Includes\b|Immediate\b))/gu, '\n')
         .replace(new RegExp(`(${amountPattern})\\s*\\/\\s*(mo|month|yr|year|night|visit|session|item|tooth)\\b`, 'giu'), '$1/$2')
         .split(/\n|\s+\|\s+/u).map(s => s.trim()).filter(Boolean);
       const indexes = lines.map((s, i) => amountLine.test(s) ? i : -1).filter(i => i >= 0);
@@ -86,6 +86,8 @@ export function subjectTerms(text: string): string[] {
     .map(s => s.length > 4 && s.endsWith('s') ? s.slice(0, -1) : s).filter(s => !stop.has(s));
 }
 export function broadCatalogQuery(query: string): 'price' | 'service' | null {
+  query = normalizeFactQuery(query).trim();
+  if (/^(?:(?:your|all|available)\s+)?memberships?(?:\s+(?:options?|plans?))?[.!?]*$/iu.test(query)) return 'price';
   if (/^what (?:training )?(?:programs|classes|services|treatments) do you (?:offer|provide)[.!?]*$/iu.test(query.trim())) return 'service';
   if (/^(?:what (?:are|is) |show |tell me |list )?(?:your |the |all |available )?(?:membership )?(?:prices?|pricing|fees|costs?|plans?)(?: options)?[.!?]*$/iu.test(query.trim())) return 'price';
   if (subjectTerms(query).length) return null;

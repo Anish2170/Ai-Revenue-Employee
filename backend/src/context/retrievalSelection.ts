@@ -5,6 +5,8 @@ import { chunkNeeds, normalizedTerms, topicTerms, type EvidenceConflict, type Qu
 import type { RetrievedChunk } from './types.js';
 import { priceRecords, matchesSubject, broadCatalogQuery, contactRecords, matchesContact, serviceDescriptions } from './sourceRecords.js';
 import { availabilityRequest } from './factQuery.js';
+import { sourceEvidenceMatches } from './sourceEvidence.js';
+import { lexicalRanking } from './lexicalRanking.js';
 const normalize = (text: string) => text.normalize('NFKC').toLowerCase().replace(/[’‘]/g, "'").replace(/\s+/g, ' ').trim();
 const tainted = (text: string) => /ignore (?:previous|all|the)|system prompt|override .*instructions|pretend (?:you|to)|<script/iu.test(text);
 interface Material {
@@ -49,6 +51,7 @@ function conflicts(all: RetrievedChunk[], plan: QueryPlan): EvidenceConflict[] {
     return [...groups.values()].filter(rows => new Set(rows.map(r => r.fact.value)).size > 1).slice(0, 10).map(rows => ({ kind: rows[0].fact.kind, subject: rows[0].fact.subject, sourceIds: [...new Set(rows.map(r => r.chunk.id))].slice(0, 20), urls: [...new Set(rows.map(r => r.chunk.url))].slice(0, 20) }));
 }
 export function selectRetrieval(all: RetrievedChunk[], plan: QueryPlan, options: {
+    hybrid?: boolean;
     topK: number;
     threshold: number;
     maxChars: number;
@@ -69,6 +72,8 @@ export function selectRetrieval(all: RetrievedChunk[], plan: QueryPlan, options:
         valid = false;
     } if (!valid)
         omitted.push({ id: chunk.id, reason: 'source_origin_mismatch' }); return valid; });
+    const bm25 = options.hybrid ? lexicalRanking(scoped, plan.originalQuery) : new Map<string, number>();
+    const maximumBm25 = Math.max(1, ...bm25.values());
     const conflictList = conflicts(scoped, plan), subjects = plan.subjects.map(topicTerms), queryTerms = topicTerms(plan.originalQuery);
     const duplicateMap = new Map<string, RetrievedChunk>();
     const unique: RetrievedChunk[] = [];
@@ -82,9 +87,10 @@ export function selectRetrieval(all: RetrievedChunk[], plan: QueryPlan, options:
         const exactRecord = records.some(record => matchesSubject(plan.originalQuery, record.subject) || plan.subjects.some(subject => matchesSubject(subject, record.subject)));
         const contact = contactRecords(chunk).some(record => matchesContact(plan.originalQuery, record));
         const description = availabilityRequest(plan.originalQuery) && serviceDescriptions(chunk, plan.originalQuery).length > 0;
+        const prose = sourceEvidenceMatches(chunk, plan.originalQuery).length > 0;
         // A source-bound lexical match can recover a weak semantic hit. It
         // changes relevance only; evidence and origin guards still run below.
-        if (!Number.isFinite(chunk.score) || chunk.score < options.threshold && !exactRecord && !(broad && records.length) && !contact && !description) {
+        if (!Number.isFinite(chunk.score) || chunk.score < options.threshold && !exactRecord && !(broad && records.length) && !contact && !description && !prose && !(bm25.get(chunk.id)! > 0)) {
             omitted.push({ id: chunk.id, reason: 'below_cosine_threshold' });
             continue;
         }
@@ -116,6 +122,8 @@ export function selectRetrieval(all: RetrievedChunk[], plan: QueryPlan, options:
         const recordMatch = records.some(record => matchesSubject(plan.originalQuery, record.subject) || plan.subjects.some(subject => matchesSubject(subject, record.subject)));
         const contactMatch = contactRecords(chunk).some(record => matchesContact(plan.originalQuery, record));
         const descriptionMatch = availabilityRequest(plan.originalQuery) && serviceDescriptions(chunk, plan.originalQuery).length > 0;
+        const proseMatches = sourceEvidenceMatches(chunk, plan.originalQuery);
+        const proseMatch = proseMatches.length > 0;
         if (recordMatch || contactMatch || descriptionMatch) reasons.push('source_lexical_match');
         if (contactMatch) needs.push('contact');
         if (descriptionMatch) needs.push('service');
@@ -123,11 +131,13 @@ export function selectRetrieval(all: RetrievedChunk[], plan: QueryPlan, options:
         const contentSubjects = material(chunk.content).filter(f => f.kind === 'price').map(f => topicTerms(f.subject));
         const subjectMatches = subjects.map(terms => terms.length > 0 && terms.every(t => metadata.includes(t) || body.includes(t)));
         const bodyMismatch = subjects.length && contentSubjects.length && !contentSubjects.some(terms => subjects.some(subject => subject.every(t => terms.includes(t)) && !knownSubjects.some(other => other.length > subject.length && subject.every(t => other.includes(t)) && other.every(t => terms.includes(t)))));
-        const entity = (recordMatch || contactMatch || descriptionMatch || subjectMatches.some(Boolean)) && !bodyMismatch;
+        const entity = (recordMatch || contactMatch || descriptionMatch || proseMatch || subjectMatches.some(Boolean)) && !bodyMismatch;
         const lexical = queryTerms.length ? queryTerms.filter(t => body.includes(t) || metadata.includes(t)).length / queryTerms.length : 0;
         const facet = plan.needs.filter(n => needs.includes(n)).length;
         const exactPage = Boolean(plan.pageUrl && normalizeUrl(chunk.url) === plan.pageUrl && !/public contact|footer|navigation/iu.test(chunk.heading));
         let rankScore = chunk.score + lexical * .2 + (entity ? .3 : 0) + (facet ? Math.min(.12, .06 * facet) : 0);
+        if (options.hybrid && bm25.get(chunk.id)! > 0) { rankScore += .5 * bm25.get(chunk.id)! / maximumBm25; reasons.push('bm25_relevance'); }
+        if (proseMatch) { rankScore += Math.min(1.5, Math.max(...proseMatches.map(p => p.relevance)) * .15); reasons.push('complete_source_unit'); }
         if (contactMatch && chunk.pageType === 'contact') rankScore += .2;
         if (broadCatalogQuery(plan.originalQuery) && records.length) {
             rankScore += .4;
@@ -147,12 +157,14 @@ export function selectRetrieval(all: RetrievedChunk[], plan: QueryPlan, options:
             rankScore -= .6;
             reasons.push('source_subject_mismatch');
         }
-        return { chunk, needs, rankScore, reasons, entity, bodyMismatch };
+        return { chunk, needs, rankScore, reasons, entity, bodyMismatch, proseMatch };
     }).sort((a, b) => b.rankScore - a.rankScore || a.chunk.id.localeCompare(b.chunk.id));
     const selected: typeof candidates = [], max = Math.min(10, Math.max(1, options.topK));
+    const primaryCatalog = broadCatalogQuery(plan.originalQuery) === 'price'
+      && candidates.some(row => row.chunk.pageType === 'pricing' && priceRecords(row.chunk).length > 0);
     let remaining = Math.max(0, Math.min(20000, options.maxChars));
     const add = (row: typeof candidates[number]) => {
-        if (selected.includes(row) || selected.length >= max)
+        if (selected.includes(row) || selected.length >= max || primaryCatalog && (row.chunk.pageType !== 'pricing' || !priceRecords(row.chunk).length))
             return false;
         if (row.chunk.content.length > remaining) {
             if (!omitted.some(x => x.id === row.chunk.id && x.reason === 'whole_source_exceeds_budget'))
@@ -178,11 +190,11 @@ export function selectRetrieval(all: RetrievedChunk[], plan: QueryPlan, options:
     for (const row of candidates) {
         if (row.bodyMismatch)
             continue;
-        if (plan.needs.length && !row.needs.some(need => plan.needs.includes(need)))
+        if (!options.hybrid && plan.needs.length && !row.needs.some(need => plan.needs.includes(need)) && !row.proseMatch)
             continue;
         // A specific subject should not be displaced by unrelated material. Shared
         // policy/hours remain cross-page candidates when the question requests them.
-        if (subjects.length && !row.entity && !row.needs.some(need => plan.needs.includes(need) && ['refund', 'cancellation', 'hours', 'booking'].includes(need)))
+        if (!options.hybrid && subjects.length && !row.entity && !row.needs.some(need => plan.needs.includes(need) && ['refund', 'cancellation', 'hours', 'booking'].includes(need)))
             continue;
         const catalogPrice = broadCatalogQuery(plan.originalQuery) === 'price' && priceRecords(row.chunk).length > 0;
         if (!catalogPrice && selected.filter(r => normalizeUrl(r.chunk.url) === normalizeUrl(row.chunk.url)).length >= 2)

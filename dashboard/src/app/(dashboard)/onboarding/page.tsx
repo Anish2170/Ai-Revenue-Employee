@@ -184,7 +184,7 @@ function OnboardingContent() {
   const [chatLoading, setChatLoading] = useState(false);
   const [platform, setPlatform] = useState<Platform>('html');
   const [copied, setCopied] = useState(false);
-  const [verifyState, setVerifyState] = useState<'idle' | 'checking' | 'installed' | 'missing'>('idle');
+  const [verifyState, setVerifyState] = useState<'idle' | 'checking' | 'installed' | 'missing' | 'inconclusive'>('idle');
   const [verifyMessage, setVerifyMessage] = useState('');
   const [error, setError] = useState('');
   const knowledgeReady = useCallback(() => setStep(3), []);
@@ -406,12 +406,12 @@ function OnboardingContent() {
     setVerifyState('checking');
     setVerifyMessage('');
     try {
-      const result = (await api.verifyWidgetInstallation(websiteId)) as { installed: boolean; reason?: string; checkedUrl?: string };
-      setVerifyState(result.installed ? 'installed' : 'missing');
+      const result = (await api.verifyWidgetInstallation(websiteId)) as { installed: boolean; verificationStatus?: 'installed' | 'missing' | 'inconclusive'; reason?: string; checkedUrl?: string };
+      setVerifyState(result.installed ? 'installed' : result.verificationStatus === 'inconclusive' ? 'inconclusive' : 'missing');
       setVerifyMessage(result.reason || 'Verification completed.');
       if (result.installed) router.push('/analytics?launched=1');
     } catch (err) {
-      setVerifyState('missing');
+      setVerifyState('inconclusive');
       setVerifyMessage(err instanceof Error ? err.message : 'Verification failed.');
     }
   }
@@ -678,6 +678,7 @@ function OnboardingContent() {
                 <Button onClick={verifyInstall} loading={verifyState === 'checking'}>Verify Installation</Button>
                 {verifyState === 'installed' && <span className="text-sm" style={{ color: 'var(--success)' }}>Widget Installed Successfully</span>}
                 {verifyState === 'missing' && <span className="text-sm" style={{ color: 'var(--danger)' }}>Widget Not Found</span>}
+                {verifyState === 'inconclusive' && <span className="text-sm" style={{ color: 'var(--text-muted)' }}>Verification Incomplete — Try Again</span>}
               </div>
               {verifyMessage && <p className="mt-3 text-sm" style={{ color: 'var(--text-muted)' }}>{verifyMessage}</p>}
             </div>

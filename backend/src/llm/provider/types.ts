@@ -12,9 +12,21 @@ export interface ChatTurn {
   role: 'user' | 'assistant';
   content: string;
 }
+export interface TokenUsage {
+  provider: string;
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  cacheWriteTokens?: number;
+  reasoningTokens?: number;
+}
 
 /** Request for a single structured (JSON) generation. */
 export interface StructuredRequest {
+  maxOutputTokens?: number;
+  onUsage?: (usage: TokenUsage) => void;
+  debug?: { requestId?: string; pipeline?: string };
   signal?: AbortSignal;
   /** Wall-clock end of the entire popup pipeline; retries share this budget. */
   deadlineAt?: number;
@@ -28,6 +40,8 @@ export interface StructuredRequest {
 
 /** Request for a streamed chat completion. */
 export interface StreamRequest {
+  maxOutputTokens?: number;
+  onUsage?: (usage: TokenUsage) => void;
   signal?: AbortSignal;
   system: string;
   messages: ChatTurn[];

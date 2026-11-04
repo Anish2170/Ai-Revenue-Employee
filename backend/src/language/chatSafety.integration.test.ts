@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+for (const credential of ['DATABASE_URL', 'OPENAI_API_KEY', 'GEMINI_API_KEY']) process.env[credential] = '';
+await import('../config/index.js').then(({ config }) => { Object.assign(config.chat, { responseMode: 'rules' }); });
 import test, { type TestContext } from 'node:test';
 process.env.DATABASE_URL = ''; process.env.DEBUG_TRACE = 'false';
 const { config } = await import('../config/index.js');

@@ -2,6 +2,8 @@
  * values live here. Keep channel requests separate from service availability. */
 export function normalizeFactQuery(text: string): string {
   return text.normalize('NFKC').toLowerCase()
+    .replace(/\b(?:prcing|pricng|priceing|pricin)\b/gu, 'pricing')
+    .replace(/\bfree\s+trail\b/gu, 'free trial')
     .replace(/\b(?:avilabe|availabe|availble|avalable)\b/gu, 'available')
     .replace(/\bemergncy\b/gu, 'emergency')
     .replace(/आपातकालीन|आपातकाल/gu, 'emergency')

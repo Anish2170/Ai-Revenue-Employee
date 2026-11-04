@@ -9,6 +9,10 @@ function bool(value: string | undefined, fallback: boolean): boolean {
   if (value === undefined) return fallback;
   return value.toLowerCase() === 'true' || value === '1';
 }
+function boundedInteger(value: string | undefined, fallback: number, min: number, max: number): number {
+  const parsed = Number(value ?? fallback);
+  return Number.isFinite(parsed) ? Math.max(min, Math.min(max, Math.floor(parsed))) : fallback;
+}
 
 function csv(value: string | undefined): string[] {
   return (value ?? '')
@@ -54,6 +58,14 @@ export const config = {
   port: Number(process.env.PORT ?? 8787),
   host: process.env.HOST ?? '0.0.0.0',
   version: process.env.APP_VERSION ?? process.env.RENDER_GIT_COMMIT ?? '0.1.0',
+  chat: {
+    responseMode: (process.env.CHAT_RESPONSE_MODE ?? 'hybrid') as 'hybrid' | 'rules',
+    cacheEnabled: process.env.CHAT_ANSWER_CACHE !== 'false',
+    cacheTtlMs: boundedInteger(process.env.CHAT_CACHE_TTL_SECONDS, 300, 1, 3600) * 1000,
+    cacheMaxEntries: boundedInteger(process.env.CHAT_CACHE_MAX_ENTRIES, 250, 1, 1000),
+    maxOutputTokens: boundedInteger(process.env.CHAT_MAX_OUTPUT_TOKENS, 700, 128, 2000),
+    deadlineMs: boundedInteger(process.env.CHAT_DEADLINE_MS, 45000, 5000, 60000),
+  },
 
   gemini: {
     apiKey: process.env.GEMINI_API_KEY ?? '',
@@ -149,6 +161,7 @@ export const hasLLM = hasPrimaryLLM || hasFallbackLLM;
 export const hasDatabase = config.databaseUrl.length > 0;
 
 export function validateProductionConfig(): void {
+  if (!['hybrid', 'rules'].includes(config.chat.responseMode)) throw new Error('Invalid CHAT_RESPONSE_MODE; use hybrid or rules.');
   if (!config.isProduction) return;
 
   const missing = [

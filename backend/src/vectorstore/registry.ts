@@ -72,11 +72,11 @@ function incompatibleReason(snap: KnowledgeSnapshot): string | null {
 }
 
 /** Get or lazily load the store for a website. */
-export async function getWebsiteStore(websiteId: string): Promise<{ store: VectorStore; meta: LoadedMeta | null }> {
+export async function getWebsiteStore(websiteId: string, options: { requireFreshVersion?: boolean } = {}): Promise<{ store: VectorStore; meta: LoadedMeta | null }> {
   const cached=stores.get(websiteId);
   let latest;
   try{latest=hasDatabase?await prisma.knowledgeSnapshot.findFirst({where:{websiteId,status:'READY'},orderBy:{createdAt:'desc'}}):null;}
-  catch(error){if(cached)return {store:cached.store,meta:cached.meta};throw error;}
+  catch(error){if(cached && !options.requireFreshVersion)return {store:cached.store,meta:cached.meta};throw error;}
   const identity = latest ? `${latest.id}:${latest.storageKey}` : null;
   const existing = stores.get(websiteId);
   if (existing && existing.snapshotIdentity === identity) {
@@ -98,7 +98,7 @@ export async function getWebsiteStore(websiteId: string): Promise<{ store: Vecto
   }
   if(snap){try{validateKnowledgeSnapshot(snap);if(latest&&snap.publication&&snap.publication.id!==latest.id)throw Error('Snapshot identity mismatch');if(snap.scopeApproval&&(snap.scopeApproval.websiteId!==websiteId||latest&&snap.scopeApproval.organizationId!==latest.organizationId))throw Error('Snapshot tenant mismatch');}catch{snap=null;}}
   // A failed replacement read cannot evict a known-good cached index.
-  if(!snap && existing)return {store:existing.store,meta:existing.meta};
+  if(!snap && existing){if(options.requireFreshVersion)throw Error('Latest knowledge version could not be verified.');return {store:existing.store,meta:existing.meta};}
   if(!snap && latest){
     const loaded=await loadLatestWebsiteSnapshot(websiteId);snap=loaded.snapshot;
     if(loaded.snapshotId && snap)latest={...latest,id:loaded.snapshotId,storageKey:loaded.storageKey??latest.storageKey};

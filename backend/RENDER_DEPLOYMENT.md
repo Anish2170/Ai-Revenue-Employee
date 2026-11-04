@@ -26,10 +26,12 @@ This is the canonical production Build Command. Starting at the repository root,
 
 1. Runs `cd widget`, installs the widget dependencies (including development dependencies needed to build), and builds the widget.
 2. The widget build generates `backend/public/widget.js` from `widget/src/index.ts`.
-3. Runs `cd ../backend`, installs backend dependencies. The backend `postinstall` generates Prisma Client.
+3. Runs `cd ../backend`, installs backend dependencies. The backend `postinstall` only generates Prisma Client; it does not download or start a browser.
 4. Builds the backend TypeScript.
 
 `backend/public/widget.js` is intentionally generated during deployment and remains Git-ignored. Do not commit it to Git. A fresh checkout can produce the widget bundle successfully with the canonical Build Command above.
+
+Production crawling is HTTP/HTML-only on the existing Render Free service. SSRF protection, same-origin boundaries, robots rules and request/page/deadline limits remain enforced. Server-rendered HTML is readable even when the page also has JavaScript. JavaScript-only shells are reported as incomplete sources; browser rendering is unavailable. Static widget tags are verified from HTML. JavaScript-installed widgets return an inconclusive check without clearing a prior verified installation. No Chromium provisioning, host setting or paid plan change is required. Legacy local browser fixture tools remain separate from the production crawler.
 
 ## 3. Start Command
 

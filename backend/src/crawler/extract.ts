@@ -2,7 +2,7 @@
 import * as cheerio from 'cheerio';
 import type { ContentSection } from '../context/types.js';
 import { hasLoadingPlaceholder, usefulBusinessText } from './contentPolicy.js';
-const STRIP_SELECTORS = 'script,style,noscript,svg,nav,[role="navigation"],form,iframe,template,[aria-hidden="true"],[hidden],[id*="cookie" i],[class*="cookie" i],[id*="consent" i],[class*="consent" i],[class*="advert" i],[id*="newsletter" i]';
+const STRIP_SELECTORS = 'script,style,noscript,svg,nav,[role="navigation"],input,textarea,select,button,label,iframe,template,[aria-hidden="true"],[hidden],[id*="cookie" i],[class*="cookie" i],[id*="consent" i],[class*="consent" i],[class*="advert" i],[id*="newsletter" i]';
 export interface ExtractedPage {
     title: string;
     text: string;
@@ -47,9 +47,18 @@ export function extract(html: string, pageUrl: string): ExtractedPage {
     const cleaning = { removedNavigation: $('nav,[role="navigation"]').length > 0, removedFooter: $('footer').length > 0, removedScripts: $('script').length > 0, removedCookieBanners: $('[id*="cookie" i],[class*="cookie" i],[id*="consent" i]').length > 0, beforeLength, afterLength: 0 };
     const structuredDataBlocks = $('script[type="application/ld+json"]').length;
     const jsShell = $('script[type="module"],script[src*="_next"],script[src*="app"],#root,#app,#__next').length > 0;
+    // Comparison tables often encode their most important value as an icon.
+    // Preserve explicit check/cross semantics before decorative SVGs disappear.
+    $('td svg,th svg').each((_i, node) => {
+        const icon = $(node), label = icon.attr('aria-label') || icon.find('title').text();
+        const classes = icon.attr('class') ?? '';
+        const value = /^(?:yes|included|available|true|check)$/iu.test(label) || /\blucide-check(?:-icon)?\b/u.test(classes) ? 'Included'
+            : /^(?:no|not included|unavailable|false|cross)$/iu.test(label) || /\blucide-x(?:-icon)?\b/u.test(classes) ? 'Not included' : '';
+        if (value) icon.replaceWith(value);
+    });
     // Keep public footer/address facts, but never transplant the footer navigation.
     const footerFacts: string[] = [];
-    $('footer p,footer address,aside address').each((_i, node) => { const copy = $(node).clone(); copy.find('a,nav,script,style,form').remove(); const text = normalizeText(copy.text()); if (usefulBusinessText(text))
+    $('footer p,footer address,aside address,footer a[href^="tel:"],footer a[href^="mailto:"]').each((_i, node) => { const copy = $(node).clone(); copy.find('nav,script,style,input,button').remove(); const text = normalizeText(copy.text()); if (/\b(?:hours?|closed|monday|sunday|am|pm)\b|@|\+?\d[\d ().-]{5,}/iu.test(text) || $(node).is('address'))
         footerFacts.push(text); });
     $(STRIP_SELECTORS).remove();
     $('body > header,body > footer,footer,body > aside,[role="banner"],[role="contentinfo"]').remove();

@@ -47,6 +47,7 @@ function toGeminiSchema(node: Record<string, unknown>): Record<string, unknown> 
       break;
     case 'string':
       out.type = Type.STRING;
+      if (Array.isArray(node.enum) && node.enum.every(value => typeof value === 'string')) out.enum = node.enum;
       break;
     case 'number':
       out.type = Type.NUMBER;
@@ -101,6 +102,13 @@ export function createGeminiProvider(modelOverride = config.llm.fallback.model):
   // Flash-Lite 3.5 ignores sampling parameters and disallows model prefills.
   // Keep older model overrides unchanged; rely on 3.5's default minimal thinking.
   const isFlashLite35 = /^gemini-3\.5-flash-lite(?:-|$)/.test(model.replace(/^models\//, ''));
+  const reportUsage = (req: StreamRequest | StructuredRequest, metadata: any) => {
+    if (!metadata || !Number.isFinite(metadata.promptTokenCount)) return;
+    try { req.onUsage?.({ provider: 'gemini', model, inputTokens: metadata.promptTokenCount,
+      outputTokens: (metadata.candidatesTokenCount ?? 0) + (metadata.thoughtsTokenCount ?? 0),
+      cachedInputTokens: metadata.cachedContentTokenCount ?? 0, reasoningTokens: metadata.thoughtsTokenCount ?? 0 }); }
+    catch { logger.warn('[llm] usage observer failed'); }
+  };
 
   return {
     id: `gemini:${model}`,
@@ -116,11 +124,13 @@ export function createGeminiProvider(modelOverride = config.llm.fallback.model):
           systemInstruction: req.system,
           responseMimeType: 'application/json',
           responseSchema: toGeminiSchema(req.schema),
+          ...(req.maxOutputTokens ? { maxOutputTokens: req.maxOutputTokens } : {}),
           ...(isFlashLite35 ? {} : { temperature: 0.4 }),
         },
       }), req.signal);
       checkCancelled(req.signal);
-
+      reportUsage(req, response.usageMetadata);
+      if (response.candidates?.some(c => c.finishReason === 'MAX_TOKENS')) throw new Error('Gemini structured response was truncated');
       const text = response.text;
       if (!text) throw new Error('Gemini returned an empty structured response');
       return JSON.parse(stripFences(text));
@@ -148,12 +158,16 @@ export function createGeminiProvider(modelOverride = config.llm.fallback.model):
           contents: toGeminiContents(req.messages),
           config: {
             systemInstruction: req.system,
+            ...(req.maxOutputTokens ? { maxOutputTokens: req.maxOutputTokens } : {}),
             ...(isFlashLite35 ? {} : { temperature: 0.6 }),
           },
         }), req.signal);
 
+        let finalUsage: unknown;
         for await (const chunk of stream) {
           checkCancelled(req.signal);
+          if (chunk.usageMetadata) finalUsage = chunk.usageMetadata;
+          if (chunk.candidates?.some(c => c.finishReason === 'MAX_TOKENS')) { reportUsage(req, finalUsage); throw new Error('Gemini response was truncated'); }
           const text = chunk.text;
           if (text) {
             raw += text;
@@ -161,7 +175,7 @@ export function createGeminiProvider(modelOverride = config.llm.fallback.model):
             yield text;
           }
         }
-
+        reportUsage(req, finalUsage);
         chatTrace(req, 'Gemini response received', { chars: raw.length });
       } catch (err) {
         logger.error(`[chat:${req.debug?.requestId ?? 'no-request-id'}] Gemini provider error`, serializeProviderError(err));

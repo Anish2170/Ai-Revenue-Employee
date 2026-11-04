@@ -65,7 +65,7 @@ export async function retrieve(query: string, websiteId?: string, options?: Retr
     hits = metadata;
     logger.warn('[retrieval] semantic retrieval failed; scoped lexical recovery', { websiteId: websiteId ?? null });
   }
-  const selected=selectRetrieval(hits,plan,{topK:retrievalConfig.topK,threshold:retrievalConfig.similarityThreshold,maxChars:retrievalConfig.maxContextChars,sourceUrl,activeVersion:options?.activeVersion??resolved.activeVersion});
+  const selected=selectRetrieval(hits,plan,{hybrid: options?.purpose === 'chat' && config.chat.responseMode === 'hybrid',topK:retrievalConfig.topK,threshold:retrievalConfig.similarityThreshold,maxChars:retrievalConfig.maxContextChars,sourceUrl,activeVersion:options?.activeVersion??resolved.activeVersion});
   const kept=selected.chunks;
   selected.diagnostics.mode = failed ? 'lexical_fallback' : 'semantic';
   if (failed) selected.diagnostics.failure = 'embedding_or_search_failure';

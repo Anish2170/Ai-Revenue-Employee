@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+// Preserve the former rules route as an explicit rollback contract.
+for (const credential of ['DATABASE_URL', 'OPENAI_API_KEY', 'GEMINI_API_KEY']) process.env[credential] = '';
+await import('../config/index.js').then(({ config }) => { Object.assign(config.chat, { responseMode: 'rules' }); });
 import test, { type TestContext } from 'node:test';
 import { readFileSync } from 'node:fs';
 for (const key of ['DATABASE_URL','OPENAI_API_KEY','GEMINI_API_KEY','R2_ACCESS_KEY_ID','R2_SECRET_ACCESS_KEY']) process.env[key] = '';

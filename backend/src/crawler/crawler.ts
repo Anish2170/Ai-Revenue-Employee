@@ -8,7 +8,7 @@ import { safeFetch, UnsafeUrlError, type SafeFetchOptions } from '../security/ss
 import { extract } from './extract.js';
 import { usefulBusinessText } from './contentPolicy.js';
 import { normalizeUrl, isCrawlablePath, classifyPage } from './links.js';
-import { renderPage, type RenderedPage } from './browserRenderer.js';
+import type { RenderedPage, RenderPolicy } from './browserRenderer.js';
 import { parseRobots, type RobotsPolicy } from './robots.js';
 import type { CrawlEntry, CrawlManifest } from './crawlManifest.js';
 import type { CrawledPage } from '../context/types.js';
@@ -37,7 +37,8 @@ export interface CrawlResult {
 }
 export interface CrawlDependencies {
     fetch?: (url: string, options: SafeFetchOptions) => ReturnType<typeof safeFetch>;
-    render?: (url: string, timeoutMs: number, policy?: Parameters<typeof renderPage>[2]) => Promise<RenderedPage>;
+    /** Internal fixture seam only; production is HTTP/HTML-only on this host. */
+    render?: (url: string, timeoutMs: number, policy?: RenderPolicy) => Promise<RenderedPage>;
     sleep?: (ms: number) => Promise<void>;
 }
 const bounded = (value: number | undefined, fallback: number, max: number) => Math.min(max, Math.max(1, Math.floor(Number.isFinite(value) ? value! : fallback)));
@@ -49,7 +50,7 @@ export async function crawl(startUrl: string, opts: CrawlOptions = {}, deps: Cra
         throw Error('Invalid start URL.');
     // Auto grows in the same crawl. Its request/deadline/text counters never reset.
     const automatic = opts.mode === 'auto' && !opts.reviewedSources;
-    const origin = new URL(start).origin, pageCeiling = bounded(opts.maxPages ?? (automatic ? 100 : config.crawl.maxPages), 25, 100), renderCeiling = opts.maxRenderedPages === 0 ? 0 : bounded(opts.maxRenderedPages, automatic ? 8 : 3, 8), maxDepth = bounded(opts.maxDepth, 5, 8), maxRequests = bounded(opts.maxRequests, pageCeiling * 4 + 130, 500), maxQueued = bounded(opts.maxQueued, 1000, 2000), timeout = bounded(opts.timeoutMs ?? config.crawl.timeoutMs, 12000, 30000);
+    const origin = new URL(start).origin, pageCeiling = bounded(opts.maxPages ?? (automatic ? 100 : config.crawl.maxPages), 25, 100), renderCeiling = !deps.render || opts.maxRenderedPages === 0 ? 0 : bounded(opts.maxRenderedPages, automatic ? 8 : 3, 8), maxDepth = bounded(opts.maxDepth, 5, 8), maxRequests = bounded(opts.maxRequests, pageCeiling * 4 + 130, 500), maxQueued = bounded(opts.maxQueued, 1000, 2000), timeout = bounded(opts.timeoutMs ?? config.crawl.timeoutMs, 12000, 30000);
     let maxPages = automatic ? Math.min(25, pageCeiling) : pageCeiling;
     let maxRender = automatic ? Math.min(3, renderCeiling) : renderCeiling;
     const budgetSteps = [{ maxPages, maxRenderedPages: maxRender }];
@@ -222,10 +223,11 @@ export async function crawl(startUrl: string, opts: CrawlOptions = {}, deps: Cra
                         let html = response.body.toString('utf8'), url = response.url, parsed = extract(html, url);
                         entry.renderer = 'static';
                         if (parsed.needsRendering) {
+                            if (!deps.render) throw Error('browser_rendering_unavailable');
                             if (renders >= maxRender && (!growBudget() || renders >= maxRender))
                                 throw Error('render_budget');
                             renders++;
-                            const rendered = await (deps.render ?? renderPage)(url, Math.max(1, Math.min(timeout, deadline - Date.now())), { signal, origin, fetch: request, allows: target => robots.allows(target) });
+                            const rendered = await deps.render(url, Math.max(1, Math.min(timeout, deadline - Date.now())), { signal, origin, fetch: request, allows: target => robots.allows(target) });
                             if (rendered.incomplete)
                                 throw Error(rendered.blockedResources?.length ? 'external_or_restricted_resources' : 'dynamic_content_unresolved');
                             if (rendered.status !== null && (rendered.status < 200 || rendered.status >= 300))
@@ -263,7 +265,7 @@ export async function crawl(startUrl: string, opts: CrawlOptions = {}, deps: Cra
                     catch (error) {
                         entry.state = 'failed';
                         const message = error instanceof Error ? error.message : '';
-                        entry.reason = signal.aborted ? 'cancelled_or_deadline' : /^(render_budget|external_or_restricted_resources|dynamic_content_unresolved|render_scope|request_budget)$/.test(message) ? message : error instanceof UnsafeUrlError ? 'unsafe_or_out_of_scope' : /size limit/i.test(message) ? 'response_size_limit' : 'fetch_or_render_failure';
+                        entry.reason = signal.aborted ? 'cancelled_or_deadline' : /^(browser_rendering_unavailable|render_budget|external_or_restricted_resources|dynamic_content_unresolved|render_scope|request_budget)$/.test(message) ? message : error instanceof UnsafeUrlError ? 'unsafe_or_out_of_scope' : /size limit/i.test(message) ? 'response_size_limit' : 'fetch_or_render_failure';
                         return null;
                     }
                 }));

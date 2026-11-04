@@ -14,6 +14,7 @@ export function usefulBusinessText(text: string): boolean {
     const noise = /^(?:home|about|contact|privacy|next|previous|sign|in|out|menu|search|login|register|terms|copyright|all|rights|reserved|cookies|accept|reject|and|or)$/i;
     if (words.filter(word => !noise.test(word)).length < 3)
         return false;
+    if (/[\w.+-]+@[\w.-]+\.[a-z]{2,}|\+?\d[\d ().-]{6,}\d/iu.test(clean)) return true;
     const fact = /[$₹€£¥]\s*\d|\b(?:reserve|reservation|refund|non-refundable|cancell?ation|cancell?ations|returns?|booking|appointments?|opening|closed|opens?|hours?|offered|provided|available|not available|per month|billed annually|notice|delivery|shipping)\b|\b(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b|(?:कीमत|वापस|उपलब्ध|नहीं)/iu;
     if (fact.test(clean))
         return true;

@@ -56,3 +56,18 @@ for (const description of [
   assert.ok(!page.text.includes('Submit'));
  });
 }
+
+test('HTTP-only crawl reports unresolved JavaScript without loading a browser or fetching scripts', async () => {
+ const origin = 'https://gym.invalid', resources: string[] = [];
+ const result = await crawl(origin, {}, {
+  fetch: async (url, options) => {
+   resources.push(url); assert.equal(options.allowedOrigin, origin);
+   return { url, status: new URL(url).pathname === '/robots.txt' || new URL(url).pathname === '/sitemap.xml' ? 404 : 200, headers: { 'content-type': 'text/html' }, body: Buffer.from('<main id="app">Loading services...</main><script src="/app.js"></script>') };
+  },
+  sleep: async () => {},
+ });
+ assert.equal(result.pages.length, 0); assert.equal(result.manifest.rendered, 0);
+ assert.equal(result.manifest.maxRenderedPages, 0); assert.equal(result.manifest.completeWithinScope, false);
+ assert.ok(result.manifest.entries.some(entry => entry.reason === 'browser_rendering_unavailable'));
+ assert.ok(resources.every(url => new URL(url).origin === origin && !url.endsWith('.js')));
+});

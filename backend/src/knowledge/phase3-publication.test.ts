@@ -81,6 +81,15 @@ test('new source chunks preserve chat known/unknown and popup factual validation
  const knowledge={query:'dental cleaning',knowledgeAvailable:true,unavailableReason:null,chunks:context.chunks,scores:[]};const plan=buildPopupCopyPlan(knowledge,instructions);
  assert.equal(checkPopupGrounding('Need help?','Dental cleaning starts at ₹1,200.',plan).ok,true);assert.equal(checkPopupGrounding('Need help?','Dental implants cost ₹1,200.',plan).ok,false);
 });
+
+test('answer-cache version checks fail closed on database outage or unreadable replacement', async () => {
+ reset(); await getWebsiteStore('site'); dbDown = true;
+ await assert.rejects(getWebsiteStore('site', { requireFreshVersion: true }));
+ assert.equal((await getWebsiteStore('site')).meta!.activeVersion, 'old'); dbDown = false;
+ rows.push({ id: 'broken', websiteId: 'site', organizationId: 'org', status: 'READY', storageKey: 'broken', storageProvider: 'R2' });
+ objects.set('broken', Buffer.from('invalid json'));
+ await assert.rejects(getWebsiteStore('site', { requireFreshVersion: true }), /could not be verified/);
+});
 test('snapshot validation rejects invalid dimensions, duplicates, partial candidates',()=>{
  for(const mutate of [(s:KnowledgeSnapshot)=>s.documents.push(s.documents[0]),(s:KnowledgeSnapshot)=>s.dimensions=3,(s:KnowledgeSnapshot)=>s.documents[0].embedding=[0,0]]){const candidate=snapshot();mutate(candidate);assert.throws(()=>validateKnowledgeSnapshot(candidate));}
 });
