@@ -23,6 +23,8 @@ import { understandChat, chatBusinessStyle } from '../language/chatConversation.
 import { naturalChatReply } from './naturalChatService.js';
 
 export interface ChatStreamInput {
+  /** Internal dashboard inspection; never populated from visitor request JSON. */
+  onContextResolved?: (context: ResolvedContext) => void;
   messages: ChatMessage[];
   behaviour?: VisitorBehaviour;
   tenant?: { websiteId: string; instructions: BusinessInstructions; businessActions?: BusinessActionConfig[] };
@@ -102,7 +104,7 @@ export function buildSourceAttributionReply(context: ResolvedContext, query: str
   // Other languages use the normal grounded model path instead of an English shortcut.
   if (!['English', 'Hindi', 'Hinglish'].includes(language.language)) return null;
 
-  const chunk = context.chunks.find((item) => item.title.trim() && safeChatSourceUrl(item.url, context.instructions.websiteUrl));
+  const chunk = context.chunks.find((item) => item.sourceKind !== 'TEXT' && item.sourceKind !== 'FILE' && item.title.trim() && safeChatSourceUrl(item.url, context.instructions.websiteUrl));
   if (!chunk) return null;
 
   const title = cleanPageTitle(chunk.title) || chunk.heading || 'source';
@@ -173,6 +175,7 @@ async function* guardedReply(input: ChatStreamInput, context: ResolvedContext, p
   const cited = plan.conversation?.needsFacts !== false && plan.state.startsWith('known') ? [...plan.selected.map(fact => fact.chunk), ...plan.excerpts] : [];
   const seen = new Set<string>();
   for (const chunk of cited) {
+    if (chunk.sourceKind === 'TEXT' || chunk.sourceKind === 'FILE') continue;
     const url = safeChatSourceUrl(chunk.url, context.instructions.websiteUrl);
     if (!url || seen.has(url)) continue;
     seen.add(url); yield { type: 'source', source: { title: chunk.title || chunk.heading || 'Source', url } };
@@ -217,6 +220,7 @@ export async function streamChatReply(input: ChatStreamInput): Promise<AsyncIter
   });
   const context = await getBusinessContext({ query: retrievalQuery, behaviour: input.behaviour, tenant: input.tenant, signal: input.signal,history:userMessages.slice(0,-1),purpose:'chat' });
   context.websiteId = input.tenant?.websiteId;
+  input.onContextResolved?.(context);
   chatTrace(input, 'retrieval:result', {
     source: context.source,
     chunks: context.chunks.length,
@@ -242,7 +246,7 @@ export async function streamChatReply(input: ChatStreamInput): Promise<AsyncIter
     return (async function*():AsyncIterable<ChatStreamEvent>{
       if(input.signal?.aborted)throw input.signal.reason;
       yield {type:'token',text:coverage.text};
-      const seen=new Set<string>();for(const chunk of coverage.sources){const url=safeChatSourceUrl(chunk.url,context.instructions.websiteUrl);if(url&&!seen.has(url)){seen.add(url);yield {type:'source',source:{title:chunk.title||chunk.heading||'Source',url}};}}
+      const seen=new Set<string>();for(const chunk of coverage.sources){if(chunk.sourceKind==='TEXT'||chunk.sourceKind==='FILE')continue;const url=safeChatSourceUrl(chunk.url,context.instructions.websiteUrl);if(url&&!seen.has(url)){seen.add(url);yield {type:'source',source:{title:chunk.title||chunk.heading||'Source',url}};}}
     })();
   }
   // An unrelated retrieved page is not a citation proving the previous answer.

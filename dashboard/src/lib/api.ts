@@ -6,6 +6,8 @@
   return 'http://localhost:8787';
 }
 
+import type { KnowledgeInventory, KnowledgeSourceDetail, KnowledgePreview } from './knowledge-sources';
+
 export class ApiError extends Error {
   status: number;
   code?: string;
@@ -67,7 +69,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   headers.set('Content-Type', 'application/json');
   if (needsCsrf(path, options.method)) headers.set('X-CSRF-Token', await getCsrfToken());
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timeout = window.setTimeout(() => controller.abort(), path.endsWith('/knowledge/preview') ? 60_000 : REQUEST_TIMEOUT_MS);
   let res: Response;
   try {
     res = await fetch(`${getBaseUrl()}${path}`, { credentials: 'include', headers, ...options, signal: controller.signal });
@@ -439,6 +441,25 @@ export class ApiClient {
   getKnowledgeStatus(websiteId: string) {
     return request(`/api/websites/${websiteId}/knowledge/status`);
   }
+
+  getKnowledgeSources(websiteId: string) { return request<KnowledgeInventory>(`/api/websites/${websiteId}/knowledge/sources`); }
+  getKnowledgeSource(websiteId: string, sourceId: string) { return request<KnowledgeSourceDetail>(`/api/websites/${websiteId}/knowledge/sources/${sourceId}`); }
+  addKnowledgePage(websiteId: string, url: string, refresh = true) {
+    return request<{ id: string }>(`/api/websites/${websiteId}/knowledge/sources/page`, { method: 'POST', body: JSON.stringify({ url, refresh }) });
+  }
+  addKnowledgeText(websiteId: string, title: string, content: string) {
+    return request(`/api/websites/${websiteId}/knowledge/sources/text`, { method: 'POST', body: JSON.stringify({ title, content }) });
+  }
+  uploadKnowledgeFile(websiteId: string, name: string, data: string) {
+    return request(`/api/websites/${websiteId}/knowledge/sources/upload`, { method: 'POST', body: JSON.stringify({ name, data }) });
+  }
+  updateKnowledgeSource(websiteId: string, sourceId: string, body: { enabled?: boolean; priority?: number; title?: string; content?: string; restore?: boolean }) {
+    return request(`/api/websites/${websiteId}/knowledge/sources/${sourceId}`, { method: 'PATCH', body: JSON.stringify(body) });
+  }
+  deleteKnowledgeSource(websiteId: string, sourceId: string) { return request(`/api/websites/${websiteId}/knowledge/sources/${sourceId}`, { method: 'DELETE' }); }
+  refreshKnowledgeSource(websiteId: string, sourceId: string) { return request(`/api/websites/${websiteId}/knowledge/sources/${sourceId}/refresh`, { method: 'POST' }); }
+  setKnowledgeRefresh(websiteId: string, refreshHours: number) { return request(`/api/websites/${websiteId}/knowledge/source-settings`, { method: 'PATCH', body: JSON.stringify({ refreshHours }) }); }
+  previewKnowledge(websiteId: string, question: string) { return request<KnowledgePreview>(`/api/websites/${websiteId}/knowledge/preview`, { method: 'POST', body: JSON.stringify({ question }) }); }
 
   getKnowledgeBuilds(websiteId: string) {
     return request(`/api/websites/${websiteId}/knowledge/builds`);

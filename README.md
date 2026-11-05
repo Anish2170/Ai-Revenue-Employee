@@ -8,6 +8,7 @@ The project is designed as a production-ready v1.0 SaaS foundation: a Next.js da
 
 - Guided onboarding for adding websites and configuring the assistant.
 - Knowledge Build pipeline for crawling a site and preparing retrieval context.
+- Reviewable knowledge sources with PDF/text uploads, single-page refresh, source priorities, exclusions, answer testing, and optional daily/weekly page checks.
 - AI Chat with business-aware responses grounded in website knowledge.
 - Website Actions that identify useful CTAs and route visitors to the right page.
 - Lead Capture for high-intent visitors and inline contact collection.
@@ -204,6 +205,7 @@ Add production screenshots here after deployment:
 ## Developer Documentation
 
 - [Developer Guide](docs/DEVELOPER_GUIDE.md)
+- [Knowledge Source Management](docs/KNOWLEDGE_SOURCE_MANAGEMENT.md)
 - [Contributing](CONTRIBUTING.md)
 - [Changelog](CHANGELOG.md)
 - [Render Deployment](backend/RENDER_DEPLOYMENT.md)

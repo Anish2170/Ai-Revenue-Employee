@@ -28,7 +28,7 @@ function material(content: string): Material[] {
     }
     return result;
 }
-function conflicts(all: RetrievedChunk[], plan: QueryPlan): EvidenceConflict[] {
+function conflicts(all: RetrievedChunk[], plan: QueryPlan, allTopics = false): EvidenceConflict[] {
     const groups = new Map<string, Array<{
         fact: Material;
         chunk: RetrievedChunk;
@@ -41,7 +41,7 @@ function conflicts(all: RetrievedChunk[], plan: QueryPlan): EvidenceConflict[] {
           ...contactRecords(chunk).filter(record => matchesContact(plan.originalQuery, record)).map(record => ({ kind: 'contact' as const, subject: record.subject, value: record.value }))]) {
             const terms = topicTerms(fact.subject);
             const relevant = fact.kind === 'contact' || terms.length > 0 && (subjectTokens.length ? terms.every(t => subjectTokens.includes(t)) : terms.some(t => queryTokens.includes(t)) || !queryTokens.length && plan.needs.includes('price')) || fact.kind === 'refund' && plan.needs.includes('refund');
-            if (!relevant || plan.needs.length && !plan.needs.includes(fact.kind) && !(fact.kind === 'service' && plan.needs.includes('booking')))
+            if (!allTopics && (!relevant || plan.needs.length && !plan.needs.includes(fact.kind) && !(fact.kind === 'service' && plan.needs.includes('booking'))))
                 continue;
             const key = fact.kind + ':' + terms.slice().sort().join(' '), rows = groups.get(key) ?? [];
             rows.push({ fact, chunk });
@@ -50,6 +50,8 @@ function conflicts(all: RetrievedChunk[], plan: QueryPlan): EvidenceConflict[] {
     }
     return [...groups.values()].filter(rows => new Set(rows.map(r => r.fact.value)).size > 1).slice(0, 10).map(rows => ({ kind: rows[0].fact.kind, subject: rows[0].fact.subject, sourceIds: [...new Set(rows.map(r => r.chunk.id))].slice(0, 20), urls: [...new Set(rows.map(r => r.chunk.url))].slice(0, 20) }));
 }
+/** Candidate differences require review; different plans/dates may be valid. */
+export function findSourceConflicts(all: RetrievedChunk[], plan: QueryPlan) { return conflicts(all, plan, true); }
 export function selectRetrieval(all: RetrievedChunk[], plan: QueryPlan, options: {
     hybrid?: boolean;
     topK: number;
@@ -65,13 +67,22 @@ export function selectRetrieval(all: RetrievedChunk[], plan: QueryPlan, options:
             origin = new URL(options.sourceUrl).origin;
     }
     catch { }
-    const scoped = all.filter(chunk => { let valid = true; try {
+    let scoped = all.filter(chunk => { let valid = true; try {
         valid = !origin || new URL(chunk.url, options.sourceUrl).origin === origin;
     }
     catch {
         valid = false;
     } if (!valid)
         omitted.push({ id: chunk.id, reason: 'source_origin_mismatch' }); return valid; });
+    // Priority resolves only conflicting facts about the same subject. It must
+    // never make an unrelated preferred document displace relevant evidence.
+    const overridden = new Set<string>();
+    for (const conflict of conflicts(scoped, plan)) {
+        const rows = scoped.filter(chunk => conflict.sourceIds.includes(chunk.id));
+        const highest = Math.max(...rows.map(chunk => chunk.sourcePriority ?? 0));
+        for (const row of rows) if ((row.sourcePriority ?? 0) < highest) overridden.add(row.id);
+    }
+    scoped = scoped.filter(chunk => { if (overridden.has(chunk.id)) { omitted.push({ id: chunk.id, reason: 'lower_source_priority' }); return false; } return true; });
     const bm25 = options.hybrid ? lexicalRanking(scoped, plan.originalQuery) : new Map<string, number>();
     const maximumBm25 = Math.max(1, ...bm25.values());
     const conflictList = conflicts(scoped, plan), subjects = plan.subjects.map(topicTerms), queryTerms = topicTerms(plan.originalQuery);

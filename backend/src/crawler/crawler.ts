@@ -14,6 +14,8 @@ import type { CrawlEntry, CrawlManifest } from './crawlManifest.js';
 import type { CrawledPage } from '../context/types.js';
 import { extractActionsFromHtml, selectActionDiscoveryCandidates, type RawDiscoveredAction } from '../business-actions/actionDiscovery.js';
 export interface CrawlOptions {
+    /** Refresh exactly this page; do not discover linked pages or sitemaps. */
+    singlePage?: boolean;
     mode?: 'auto' | 'manual';
     maxPages?: number;
     concurrency?: number;
@@ -71,7 +73,7 @@ export async function crawl(startUrl: string, opts: CrawlOptions = {}, deps: Cra
     let attempts = 0, network = 0, renders = 0, sitemapCalls = 0, acceptedChars = 0;
     let robots: RobotsPolicy = { allows: () => true, sitemaps: [], delayMs: 0 };
     const add = (raw: string, depth: number) => { const url = normalizeUrl(raw, start); if (!url || new URL(url).origin !== origin)
-        return; if (entries.has(url)) {
+        return; if (opts.singlePage && url !== start) return; if (entries.has(url)) {
         const prior = entries.get(url)!;
         prior.depth = Math.min(prior.depth, depth);
         return;
@@ -179,7 +181,7 @@ export async function crawl(startUrl: string, opts: CrawlOptions = {}, deps: Cra
             }
         };
         if (!limits.has('robots_unavailable')) {
-            for (const sitemap of robots.sitemaps.length ? robots.sitemaps : [origin + '/sitemap.xml'])
+            for (const sitemap of opts.singlePage ? [] : robots.sitemaps.length ? robots.sitemaps : [origin + '/sitemap.xml'])
                 await readSitemap(sitemap);
             add(start, 0);
             // Review is a frozen inventory. Seed it so removed links cannot silently disappear.

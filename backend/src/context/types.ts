@@ -44,6 +44,9 @@ export interface CrawledPage {
 
 /** Metadata attached to every chunk (ready for filtering / multi-lang / incremental). */
 export interface ChunkMetadata {
+  knowledgeSourceId?: string;
+  sourcePriority?: number;
+  sourceKind?: 'PAGE' | 'TEXT' | 'FILE';
   /** Repeated factual footer copies share one embedding, with source traceability. */
   sourceAliases?: Array<{url:string;title:string;heading:string}>;
   id: string;

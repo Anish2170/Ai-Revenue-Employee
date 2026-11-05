@@ -24,6 +24,8 @@ import { websiteRouter } from './websites/website.routes.js';
 import { instructionRouter } from './instructions/instruction.routes.js';
 import { widgetRouter } from './widgets/widget.routes.js';
 import { knowledgeRouter } from './knowledge/knowledge.routes.js';
+import { knowledgeSourcesRouter } from './knowledge/sources.routes.js';
+import { startSourceWorker, stopSourceWorker } from './knowledge/sources.worker.js';
 import { knowledgeDebugRouter } from './knowledge/knowledge-debug.routes.js';
 import { analyticsRouter } from './analytics/analytics.routes.js';
 import { conversationRouter, widgetConversationRouter } from './conversations/conversation.routes.js';
@@ -60,6 +62,9 @@ app.use(
   }),
 );
 app.use(corsMiddleware);
+app.use('/api/websites/:id/knowledge/sources/upload', express.json({ limit: '7mb' }));
+app.use('/api/websites/:id/knowledge/sources/text', express.json({ limit: '1mb' }));
+app.use('/api/websites/:id/knowledge/sources/:sourceId', express.json({ limit: '1mb' }));
 app.use(express.json({ limit: '64kb' }));
 app.use(cookieParser());
 app.use(requestLogging);
@@ -124,6 +129,7 @@ app.use(websiteRouter);
 app.use(instructionRouter);
 app.use(widgetRouter);
 app.use(knowledgeRouter);
+app.use(knowledgeSourcesRouter);
 app.use(knowledgeDebugRouter);
 app.use(conversationRouter);
 app.use(businessActionRouter);
@@ -137,6 +143,7 @@ validateProductionConfig();
 // Load the persisted knowledge snapshot before accepting traffic.
 await loadOnBoot();
 startKnowledgeBuildWorker();
+startSourceWorker();
 
 const server = app.listen(config.port, config.host, () => {
   console.info('[startup] AI Revenue Employee backend ready', {
@@ -160,6 +167,7 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
   }, 10000);
   forceExit.unref();
   stopKnowledgeBuildWorker();
+  stopSourceWorker();
 
   server.close(async (err) => {
     if (err) console.error('[shutdown] server close failed', err instanceof Error ? err.message : String(err));

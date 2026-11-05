@@ -18,6 +18,7 @@ import type { RetrievedChunk } from '../context/types.js';
 function eventsFor(text: string, chunks: RetrievedChunk[], websiteUrl?: string): ChatStreamEvent[] {
   const events: ChatStreamEvent[] = [{ type: 'token', text }], seen = new Set<string>();
   for (const chunk of chunks) {
+    if (chunk.sourceKind === 'TEXT' || chunk.sourceKind === 'FILE') continue;
     const url = safeChatSourceUrl(chunk.url, websiteUrl);
     if (url && !seen.has(url)) { seen.add(url); events.push({ type: 'source', source: { title: chunk.title || chunk.heading || 'Source', url } }); }
   }
@@ -40,7 +41,7 @@ export async function* naturalChatReply(input: ChatStreamInput): AsyncIterable<C
     input = { ...input, tenant: { ...input.tenant, businessActions: actions } };
   }
   let key: string | null = null;
-  try { key = await chatCacheKey(input, intent, language); } catch { /* Cache failure cannot block chat. */ }
+  if (!input.onContextResolved) try { key = await chatCacheKey(input, intent, language); } catch { /* Cache failure cannot block chat. */ }
   const cached = readChatAnswer(key);
   if (cached) {
     checkCancelled(input.signal);
@@ -53,6 +54,7 @@ export async function* naturalChatReply(input: ChatStreamInput): AsyncIterable<C
   const context = trustedChatContext(await getBusinessContext({ query, tenant: input.tenant, behaviour: input.behaviour,
     history: users.slice(0, -1), purpose: 'chat', signal: input.signal }));
   context.websiteId = input.tenant?.websiteId;
+  input.onContextResolved?.(context);
   let plan = buildChatSafetyPlan(context, answerQuery(query, context.retrieval), language, input.leadCaptureAvailable === true, intent);
   plan.leadOffer &&= input.allowLeadInvitation === true;
   if (messages.some(m => /no thanks|not interested|do not contact|don't contact|nahi chahiye|नहीं चाहिए|[\w.+-]+@[\w.-]+\.[a-z]{2,}/iu.test(m.content))

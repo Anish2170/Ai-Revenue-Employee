@@ -18,6 +18,7 @@ import { prisma } from '../db/prisma.js';
 import type { VectorStore } from './types.js';
 import type { KnowledgeSnapshot, PageType } from '../context/types.js';
 import type { SiteLink } from '../types.js';
+import { composeSourceDocuments } from '../knowledge/sourceComposition.js';
 
 export interface LoadedMeta {
   scopeApproval?: KnowledgeSnapshot['scopeApproval'];
@@ -72,7 +73,7 @@ function incompatibleReason(snap: KnowledgeSnapshot): string | null {
 }
 
 /** Get or lazily load the store for a website. */
-export async function getWebsiteStore(websiteId: string, options: { requireFreshVersion?: boolean } = {}): Promise<{ store: VectorStore; meta: LoadedMeta | null }> {
+export async function getBaseWebsiteStore(websiteId: string, options: { requireFreshVersion?: boolean } = {}): Promise<{ store: VectorStore; meta: LoadedMeta | null }> {
   const cached=stores.get(websiteId);
   let latest;
   try{latest=hasDatabase?await prisma.knowledgeSnapshot.findFirst({where:{websiteId,status:'READY'},orderBy:{createdAt:'desc'}}):null;}
@@ -124,6 +125,24 @@ export async function getWebsiteStore(websiteId: string, options: { requireFresh
   }
 
   stores.set(websiteId, { store, meta, lastAccessed: Date.now(), snapshotIdentity: latest?`${latest.id}:${latest.storageKey}`:identity });
+  return { store, meta };
+}
+
+/** Compose independent source versions on every request, so exclusions and
+ * updates propagate to all API instances without relying on local caches. */
+export async function getWebsiteStore(websiteId: string, options: { requireFreshVersion?: boolean } = {}): Promise<{ store: VectorStore; meta: LoadedMeta | null }> {
+  const base = await getBaseWebsiteStore(websiteId, options);
+  if (!hasDatabase) return base;
+  const website = await prisma.website.findFirst({ where: { id: websiteId, deletedAt: null, organization: { deletedAt: null } }, select: { url: true, organizationId: true } });
+  if (!website) return { store: new MemoryVectorStore(), meta: null };
+  const origin = new URL(website.url).origin;
+  const sources = await prisma.knowledgeSource.findMany({ where: { websiteId, organizationId: website.organizationId, origin }, select: {
+    id: true, origin: true, kind: true, url: true, enabled: true, priority: true, deletedAt: true, chunks: true, embeddingModel: true, checkedAt: true,
+  } });
+  const baseMatches = base.meta && new URL(base.meta.sourceUrl).origin === origin;
+  const store = new MemoryVectorStore();
+  store.import(composeSourceDocuments(baseMatches ? base.store.export() : [], sources, origin, config.gemini.embeddingModel));
+  const meta = baseMatches ? base.meta : store.size() ? { sourceUrl: website.url, siteLinks: [], pages: [], createdAt: new Date().toISOString(), embeddingModel: config.gemini.embeddingModel } : null;
   return { store, meta };
 }
 

@@ -7,6 +7,7 @@ import { KnowledgeBuildProgress } from '@/components/knowledge-build-progress';
 import { KnowledgeScopeReview } from '@/components/knowledge-scope-review';
 import { KnowledgeCrawlDetails } from '@/components/knowledge-crawl-details';
 import { CrawlBudgetControls } from '@/components/crawl-budget-controls';
+import { KnowledgeSources } from '@/components/knowledge-sources';
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyRecord = Record<string, any>;
 
@@ -62,6 +63,8 @@ export function KnowledgeTab({ websiteId, websiteUrl, onReady }: { websiteId: st
           <p className="text-[var(--text-muted)] text-sm">No knowledge base built yet. Crawl your website below to get started.</p>
         )}
       </Card>
+
+      <KnowledgeSources key={websiteId} websiteId={websiteId} version={`${status?.snapshot?.id ?? ''}:${currentBuild?.status ?? ''}`} />
 
       {status?.lastBuild && (
         <Card>

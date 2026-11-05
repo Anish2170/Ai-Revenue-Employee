@@ -45,6 +45,7 @@ model Organization {
   websites             Website[]
   knowledgeSnapshots   KnowledgeSnapshot[]
   knowledgeBuilds      KnowledgeBuild[]
+  knowledgeSources     KnowledgeSource[]
   analyticsVisitors    AnalyticsVisitor[]
   analyticsSessions    AnalyticsSession[]
   analyticsEvents      AnalyticsEvent[]
@@ -120,6 +121,7 @@ model Website {
   url             String
   industry        String?
   primaryLanguage String    @default("English")
+  knowledgeRefreshHours Int @default(0)
   description     String?
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
@@ -130,6 +132,7 @@ model Website {
   widget               Widget?
   snapshots            KnowledgeSnapshot[]
   builds               KnowledgeBuild[]
+  knowledgeSources     KnowledgeSource[]
   analyticsVisitors    AnalyticsVisitor[]
   analyticsSessions    AnalyticsSession[]
   analyticsEvents      AnalyticsEvent[]
@@ -142,6 +145,44 @@ model Website {
   conversationMemories ConversationMemory[]
 
   @@index([organizationId])
+}
+
+/// Independent source versions survive website rebuilds. Published chunks remain
+/// available while a replacement is queued, processing, or failed.
+model KnowledgeSource {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @db.Uuid
+  websiteId      String   @db.Uuid
+  origin         String
+  key            String
+  kind           String
+  url            String?
+  title          String
+  enabled        Boolean  @default(true)
+  priority       Int      @default(0)
+  status         String   @default("READY")
+  content        String   @default("")
+  contentHash    String   @default("")
+  chunks         Json     @default("[]")
+  embeddingModel String   @default("")
+  pendingContent String?
+  pendingFile    String?
+  fileName       String?
+  error          String?
+  revision       Int      @default(0)
+  leaseToken     String?
+  leaseExpiresAt DateTime?
+  checkedAt      DateTime?
+  publishedAt    DateTime?
+  nextCheckAt    DateTime @default(now())
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  deletedAt      DateTime?
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  website Website @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  @@unique([websiteId, origin, key])
+  @@index([status, nextCheckAt])
+  @@index([websiteId, origin])
 }
 
 /// Replaces business-instructions.json. 1:1 with Website.

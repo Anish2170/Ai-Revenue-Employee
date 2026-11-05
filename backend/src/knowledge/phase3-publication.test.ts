@@ -7,6 +7,10 @@ const snapshotModel={async findFirst({where}:any){if(dbDown)throw Error('synthet
 const buildModel={async findFirst({where}:any){return jobs.find(row=>matches(row,where))??null;},async updateMany({where,data}:any){let count=0;for(const row of jobs)if(matches(row,where)){Object.assign(row,data);count++;}return {count};}};
 (globalThis as any).prisma={knowledgeSnapshot:snapshotModel,knowledgeBuild:buildModel,async $transaction(fn:any){const backup=structuredClone({rows,jobs});try{return await fn(this);}catch(error){rows=backup.rows;jobs=backup.jobs;throw error;}},async $queryRaw(){return [{id:'site',url:'https://fixture.test'}];}};
 const {config}=await import('../config/index.js');
+Object.assign((globalThis as any).prisma, {
+  website: { async findFirst() { return { url: 'https://fixture.test', organizationId: 'org' }; } },
+  knowledgeSource: { async findMany() { return []; } },
+});
 const {ingest,IncompleteBuildError}=await import('../services/ingestService.js');
 const {publishKnowledgeBuild,validateKnowledgeSnapshot,LeaseLostError}=await import('./publication.js');
 const {ensureKnowledgeSnapshot}=await import('./knowledge.worker.js');
