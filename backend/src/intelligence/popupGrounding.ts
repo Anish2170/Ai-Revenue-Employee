@@ -1,11 +1,12 @@
 import { creativeTitle, creativeBody, type CopyLanguage } from './creativePopupCopy.js';
 import type { BusinessInstructions } from '../context/types.js';
 import type { StrategyKnowledgeResult } from './knowledgeRetrieval.js';
+import { buildPopupCopyBrief, type PopupCopyBrief, type PopupPersonalizationContext } from './popupPersonalization.js';
 
 export interface PopupEvidence { chunkId: string; page: string; url: string; statement: string }
 export interface GroundedCopy { text: string; evidence: PopupEvidence[] }
-export interface PopupCopyPlan { titles: string[]; bodies: GroundedCopy[]; conflicts: string[]; mode: 'source_bound_v1'; language: CopyLanguage }
-export interface PopupGroundingContext { pagePath?: string }
+export interface PopupCopyPlan { titles: string[]; bodies: GroundedCopy[]; conflicts: string[]; mode: 'source_bound_v1'; language: CopyLanguage; brief?: PopupCopyBrief }
+export interface PopupGroundingContext extends PopupPersonalizationContext {}
 interface Fact { key: string; value: string; variants: string[]; evidence: PopupEvidence }
 
 // This is an explicit authoring contract, not a claim that arbitrary natural
@@ -33,9 +34,10 @@ export function normalizePopupCopy(text: string): string {
 
 export function buildPopupCopyPlan(knowledge: StrategyKnowledgeResult, instructions: BusinessInstructions, context: PopupGroundingContext = {}): PopupCopyPlan {
   const language: CopyLanguage = 'english';
-  const titles = [...TITLES];
+  const brief = context.strategy ? buildPopupCopyBrief(knowledge, instructions, context) : undefined;
+  const titles = [...(brief?.titles ?? []), ...TITLES];
   const invitations = INVITATIONS;
-  const bodies: GroundedCopy[] = invitations.map(text => ({ text, evidence: [] }));
+  const bodies: GroundedCopy[] = [...(brief?.invitations ?? []), ...invitations].map(text => ({ text, evidence: [] }));
   const facts: Fact[] = [];
   const opaque: string[] = [];
   if (knowledge.knowledgeAvailable) for (const chunk of knowledge.chunks) {
@@ -65,7 +67,7 @@ export function buildPopupCopyPlan(knowledge: StrategyKnowledgeResult, instructi
     }
     if (bodies.length >= 23) break;
   }
-  return { mode: 'source_bound_v1', language, titles, bodies, conflicts };
+  return { mode: 'source_bound_v1', language, titles, bodies, conflicts, brief };
 }
 
 /** English predicates/qualifiers are parsed below; proper Latin-script entity

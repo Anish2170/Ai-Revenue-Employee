@@ -16,6 +16,7 @@ import { validatePopupResponse, type PopupResponseValidationResult } from './res
 import { validatePreLlmSafety, type PreLlmSafetyResult } from './safetyLayer.js';
 import type { BusinessObjective, SalesDecision } from './types.js';
 import { abortable, checkCancelled, deadlineScope } from '../llm/cancellation.js';
+import type { PopupPersonalizationContext } from './popupPersonalization.js';
 
 export type PopupPipelineStage =
   | 'strategy'
@@ -27,6 +28,8 @@ export type PopupPipelineStage =
   | 'popup_generation';
 
 export interface GenerateSafePopupInput {
+  recentInterests?: PopupPersonalizationContext['recentInterests'];
+  previousPopups?: PopupPersonalizationContext['previousPopups'];
   /** A genuine paused form gets support, never a competing sales CTA. */
   formAssistance?: boolean;
   pagePath?: string;
@@ -111,6 +114,7 @@ async function runPipeline(input: GenerateSafePopupInput, opts: GenerateSafePopu
   if (!safety.ok) return stop('safety', safety.reasons.join(','), trace, null);
 
   stages.push('prompt');
+  const groundingContext = { pagePath: input.pagePath, strategy: strategy.kind, formAssistance: input.formAssistance, recentInterests: input.recentInterests, previousPopups: input.previousPopups };
   const prompt = popupPromptBuilder.build({
     business: { name: input.business.name, objectiveKey: input.objective.key },
     instructions: input.instructions,
@@ -118,7 +122,7 @@ async function runPipeline(input: GenerateSafePopupInput, opts: GenerateSafePopu
     knowledge,
     businessActions: input.businessActions ?? [],
     websiteId: input.websiteId,
-    groundingContext: { pagePath: input.pagePath },
+    groundingContext,
   });
 
   stages.push('llm');
@@ -130,7 +134,7 @@ async function runPipeline(input: GenerateSafePopupInput, opts: GenerateSafePopu
   stages.push('response_validation');
   const actions = opts.refreshActions ? await abortable(opts.refreshActions(), opts.signal) : input.businessActions ?? [];
   checkCancelled(opts.signal);
-  const responseValidation = validatePopupResponse({ llm, strategy, knowledge, instructions: input.instructions, enabledActions: actions, websiteId: input.websiteId, groundingContext: { pagePath: input.pagePath } });
+  const responseValidation = validatePopupResponse({ llm, strategy, knowledge, instructions: input.instructions, enabledActions: actions, websiteId: input.websiteId, groundingContext });
   trace.responseValidation = responseValidation;
   if (!responseValidation.ok) {
     const popup = generatePopup({ validation: responseValidation, strategy });

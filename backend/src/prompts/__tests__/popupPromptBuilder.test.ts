@@ -68,6 +68,7 @@ test('popupPromptBuilder: builds required structured sections', () => {
 
   assert.deepEqual(titles, [
     'Business',
+    'Page and Opportunity',
     'Visitor',
     'Behaviour',
     'Intent',

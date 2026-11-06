@@ -6,7 +6,7 @@
  * model; optional action IDs must match the enabled business configuration.
  */
 import type { BusinessActionConfig } from '../business-actions/action.types.js';
-import { buildPopupCopyPlan, checkPopupGrounding, type PopupEvidence, type PopupGroundingContext } from './popupGrounding.js';
+import { buildPopupCopyPlan, checkPopupGrounding, normalizePopupCopy, type PopupEvidence, type PopupGroundingContext } from './popupGrounding.js';
 import { popupCompatibleActions, resolvePopupAction, type PopupActionContext } from './popupActionPolicy.js';
 import type { BusinessInstructions } from '../context/types.js';
 import {
@@ -21,6 +21,7 @@ import {
 import type { ConversationStrategy, ConversationStrategyKind } from './conversationStrategy.js';
 import type { StrategyKnowledgeResult } from './knowledgeRetrieval.js';
 import type { PopupLlmResult } from './popupLlmAdapter.js';
+import { repeatsPopupBody } from './popupRepetition.js';
 
 export interface ValidatedPopupLanguage {
   title: string;
@@ -55,7 +56,10 @@ export type PopupResponseRejectReason =
   | 'business_policy'
   | 'invented_pricing'
   | 'invented_guarantee'
-  | 'unsupported_claim';
+  | 'unsupported_claim'
+  | 'generic_copy'
+  | 'irrelevant_copy'
+  | 'repeated_copy';
 
 export interface PopupResponseValidationInput {
   llm: PopupLlmResult;
@@ -115,10 +119,18 @@ export function validatePopupResponse(input: PopupResponseValidationInput): Popu
   const parsed = parseRawPopup(input.llm.raw);
   if (!parsed.ok) return reject(parsed.reasons, null, defaultActionDebug(null, false));
 
-  const grounding = checkPopupGrounding(parsed.popup.title, parsed.popup.body, buildPopupCopyPlan(input.knowledge, input.instructions, input.groundingContext));
+  const plan = buildPopupCopyPlan(input.knowledge, input.instructions, input.groundingContext);
+  const grounding = checkPopupGrounding(parsed.popup.title, parsed.popup.body, plan);
   const popup = { ...parsed.popup, body: grounding.body };
   if (grounding.ok && popup.body.length > MAX_POPUP_BODY_LENGTH) return reject(['schema_violation'], popup, defaultActionDebug(popup.primaryAction ?? null, false));
   const reasons: PopupResponseRejectReason[] = [];
+  if (grounding.ok && plan.brief) {
+    const body = normalizePopupCopy(popup.body);
+    if (['would you like help understanding our services?', 'our team can help with your questions.', 'our team can help answer questions about the next step.', 'want help choosing the next step?', 'would you like help finding the relevant information?'].includes(body)) reasons.push('generic_copy');
+    if ((input.groundingContext?.previousPopups ?? []).slice(-2).some(previous => repeatsPopupBody(previous.body, popup.body))) reasons.push('repeated_copy');
+    if (input.groundingContext?.formAssistance && !/\bform\b/i.test(popup.body)) reasons.push('irrelevant_copy');
+    else if (!grounding.evidence.length && !input.groundingContext?.formAssistance && plan.brief.topicPattern && !plan.brief.topicPattern.test(popup.body)) reasons.push('irrelevant_copy');
+  }
   const actionResolution = resolvePopupActions(popup, input.strategy, input.enabledActions ?? [], input.instructions, { websiteId: input.websiteId, websiteUrl: input.instructions.websiteUrl, businessName: input.instructions.businessName });
   const validatedPopup = actionResolution.popup;
 

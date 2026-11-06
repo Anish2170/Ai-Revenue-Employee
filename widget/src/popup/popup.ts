@@ -34,6 +34,11 @@ export function renderPopup(
   const brand = el('div', 'aire-popup__brand');
   brand.appendChild(el('span', 'aire-popup__dot'));
   brand.appendChild(el('span', undefined, 'AI Assistant'));
+  const purposes: Record<string, string> = {
+    pricing: 'Pricing questions', comparison: 'Compare your options', booking: 'Plan your next step',
+    support: 'Here to help', educational: 'Explore what fits', trust: 'Get clarity', lead: 'Start a conversation',
+  };
+  const purpose = decision.popupType && purposes[decision.popupType] ? el('div', 'aire-popup__purpose', purposes[decision.popupType]) : null;
 
   const titleText = decision.title?.trim();
   const bodyText = decision.body?.trim() || decision.message || '';
@@ -44,6 +49,7 @@ export function renderPopup(
   const secondaryCta = decision.secondaryActionConfig ? popupButton(decision.secondaryActionConfig.label, 'secondary') : null;
 
   card.append(close, brand);
+  if (purpose) card.appendChild(purpose);
   if (title) card.appendChild(title);
   card.appendChild(msg);
   if (primaryCta || secondaryCta) {

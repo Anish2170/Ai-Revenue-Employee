@@ -1,7 +1,7 @@
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { sessionStore } from '../intelligence/session/visitorSession.js';
-import { reservePopup, completePopup, transitionPopup, type PopupContext } from '../intelligence/popupLifecycle.js';
+import { reservePopup, completePopup, recentPopupCopy, transitionPopup, type PopupContext } from '../intelligence/popupLifecycle.js';
 let next = 0;
 const message = { title: 'Review published pricing', body: 'Explore published prices and plan conditions before choosing your next step.', actionKey: 'URL:https://fixture.example/pricing' };
 function fixture(t: TestContext) {
@@ -25,6 +25,24 @@ test('different IDs cannot repeat identical visible content after navigation and
   const f = fixture(t), first = f.ready(); assert.ok(first.ok); f.display(first.c); f.advance();
   const second = f.ready(); assert.notEqual(first.c.id, second.c.id); assert.equal(second.ok, false);
   assert.equal(f.session.priorInterruptions, 1);
+});
+
+test('history contains shown copy only and blocks a heading/destination change around the same body', t => {
+  const f = fixture(t), first = f.ready();
+  assert.deepEqual(recentPopupCopy(f.session), []);
+  f.display(first.c);
+  assert.deepEqual(recentPopupCopy(f.session), [{ title: message.title, body: message.body }]);
+  f.advance();
+  assert.equal(f.ready({ ...message, title: 'Another heading', actionKey: 'CHAT:' }).ok, false);
+});
+
+test('history is isolated by visitor session and includes uncertain claims conservatively', t => {
+  const a = fixture(t), b = fixture(t), first = a.ready();
+  a.display(first.c, false);
+  assert.equal(recentPopupCopy(a.session).length, 1);
+  assert.deepEqual(recentPopupCopy(b.session), []);
+  transitionPopup(a.session, first.c.id, a.context().pageInstanceId, 'release');
+  assert.deepEqual(recentPopupCopy(a.session), []);
 });
 test('minor copy variation with the same destination is suppressed regardless of strategy', t => {
   const f = fixture(t), first = f.ready(); f.display(first.c); f.advance();

@@ -3,12 +3,15 @@ import type { VisitorSession } from './session/visitorSession.js';
 import { sessionStore } from './session/visitorSession.js';
 import { SALES_POLICY } from './config/salesPolicy.config.js';
 import { sessionCooldownRemainingMs } from './popupTrace.js';
-import { popupFingerprint, repeatsPopup, type PopupContent, type PopupFingerprint } from './popupRepetition.js';
+import { popupFingerprint, repeatsPopup, repeatsPopupBody, type PopupContent, type PopupFingerprint } from './popupRepetition.js';
+import type { RecentPopupCopy } from './popupPersonalization.js';
 
 export const POPUP_LIFECYCLE = { generationMs: 12_000, candidateMs: 15_000, claimMs: 3_000, maxAttempts: 6, minAttemptGapMs: 5_000 } as const;
 export interface PopupContext { pageInstanceId: string; pageStartedAt: number; version: number; blockedReason?: string | null; formStalled?: boolean }
 export interface PopupDeliveryMetadata { version: 2; popupId: string; decisionId: string; pageInstanceId: string; contextVersion: number; expiresAt: number; formAssistance: boolean }
 export interface PopupCandidate {
+  /** Validated copy, memory-only and bounded by the session generation budget. */
+  copy?: RecentPopupCopy;
   content?: PopupFingerprint;
   rejectionReason?: 'duplicate_content';
   id: string;
@@ -93,9 +96,10 @@ export function completePopup(session: VisitorSession, candidate: PopupCandidate
   expire(life);
   if (candidate.status !== 'generating' || candidate.controller.signal.aborted || life.context.blockedReason || life.context.pageInstanceId !== candidate.pageInstanceId || life.context.version !== candidate.contextVersion) return false;
   if (copy) {
+    candidate.copy = { title: copy.title?.slice(0, 80), body: copy.body.slice(0, 320) };
     candidate.content = popupFingerprint(copy);
     if (life.candidates.some(prior => prior !== candidate && (prior.status === 'displayed' || prior.unconfirmedClaim)
-      && prior.content && repeatsPopup(prior.content, candidate.content!))) {
+      && ((prior.copy && repeatsPopupBody(prior.copy.body, copy.body)) || (prior.content && repeatsPopup(prior.content, candidate.content!))))) {
       candidate.status = 'released'; candidate.rejectionReason = 'duplicate_content';
       candidate.controller.abort(new Error('Repeated popup content'));
       return false;
@@ -105,6 +109,12 @@ export function completePopup(session: VisitorSession, candidate: PopupCandidate
   candidate.expiresAt = Date.now() + POPUP_LIFECYCLE.candidateMs;
   life.failures = 0;
   return true;
+}
+
+export function recentPopupCopy(session: VisitorSession): RecentPopupCopy[] {
+  return (session.popupLifecycle?.candidates ?? [])
+    .filter(candidate => candidate.status === 'displayed' || candidate.unconfirmedClaim)
+    .flatMap(candidate => candidate.copy ? [{ ...candidate.copy }] : []).slice(-2);
 }
 
 export function failPopup(session: VisitorSession, candidate: PopupCandidate): void {

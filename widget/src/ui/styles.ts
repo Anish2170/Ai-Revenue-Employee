@@ -77,6 +77,15 @@ button { cursor: pointer; border: none; background: none; }
   transform-origin: bottom right;
 }
 .aire-popup.aire-leaving { animation: aire-pop-out .25s ease forwards; }
+.aire-popup__purpose { color: var(--aire-accent); font-size: 11px; font-weight: 700; margin: 0 34px 8px 0; }
+.aire-popup[data-popup-type="pricing"] { border-top: 4px solid var(--aire-accent); }
+.aire-popup[data-popup-type="comparison"] .aire-popup__actions { padding-top: 14px; border-top: 1px solid var(--aire-soft-border); }
+.aire-popup[data-popup-type="comparison"] .aire-popup__cta { flex: 1; justify-content: center; }
+.aire-popup[data-popup-type="booking"] .aire-popup__cta:not(.aire-popup__cta--secondary) { width: 100%; justify-content: space-between; }
+.aire-popup[data-popup-type="booking"] .aire-popup__actions { flex-direction: column; }
+.aire-popup[data-popup-type="support"] { border-left: 4px solid var(--aire-accent); padding: 18px; }
+.aire-popup[data-popup-type="support"] .aire-popup__purpose { display: inline-flex; padding: 5px 9px; border-radius: 6px; background: var(--aire-surface); }
+.aire-popup[data-popup-type="trust"] .aire-popup__purpose { padding-left: 10px; border-left: 2px solid var(--aire-accent); }
 .aire-popup__close {
   position: absolute;
   top: 12px;

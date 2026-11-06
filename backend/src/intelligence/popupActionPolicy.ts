@@ -16,7 +16,7 @@ const ALIASES: Record<string, string[]> = { support: ['contact_support'], contac
 // "Pricing & Financing" names a navigation section; it promises no rates,
 // eligibility or offer. Accept only this exact additional label, with all
 // destination, provenance, tenant and material-claim checks still required.
-const SAFE_LABEL = /^(?:(?:view|see|check|compare|explore|browse|shop) (?:our |the )?(?:pricing|prices|plans|fees|collection|products|catalog|catalogue|services)|(?:book|schedule|request|arrange) (?:a |an )?(?:appointment|consultation|demo|site visit|fitness assessment|assessment)|(?:contact|talk to) (?:us|sales|support|our team)|(?:get )?support|learn more|read more|documentation|(?:get )?help|buy now|shop now|get in touch|pricing(?: & financing)?|contact|appointment|book demo|call now|call us|email us|whatsapp)$/i;
+const SAFE_LABEL = /^(?:(?:view|see|check|compare|explore|browse|shop) (?:our |the )?(?:pricing|prices|plans|fees|collection|products|catalog|catalogue|services|practice areas|programs|fitness programs|legal services)|(?:book|schedule|request|arrange) (?:a |an )?(?:appointment|consultation|demo|site visit|fitness assessment|assessment)|(?:contact|talk to) (?:us|sales|support|our team)|(?:get )?support|learn more|read more|documentation|(?:get )?help|buy now|shop now|get in touch|pricing(?: & financing)?|contact|appointment|book demo|call now|call us|email us|whatsapp)$/i;
 
 function purpose(text: string): PopupActionPurpose | null {
   const words = text.toLowerCase().replace(/[_/-]+/g, ' ');
@@ -24,7 +24,7 @@ function purpose(text: string): PopupActionPurpose | null {
   if (/\b(demo|demonstration)\b/.test(words)) return 'demo';
   if (/\b(pricing|prices?|plans?|fees|costs?)\b/.test(words)) return 'pricing';
   if (/\b(collection|products?|shop|catalog|catalogue|buy|purchase)\b/.test(words)) return 'product';
-  if (/\b(learn|documentation|docs|explore|read more|information|services|about)\b/.test(words)) return 'learn';
+  if (/\b(learn|documentation|docs|explore|read more|information|services|about|practice areas?|programs?)\b/.test(words)) return 'learn';
   if (/\b(support|help|assistance)\b/.test(words)) return 'support';
   if (/\b(contact|sales|call|email|whatsapp)\b/.test(words)) return 'contact';
   return null;
@@ -40,7 +40,7 @@ function configuredPurpose(id: string): PopupActionPurpose | null {
   if (/^(?:view|discover)_collection(?:_|$)|^(?:products|collection|shop|buy)(?:_|$)/.test(id)) return 'product';
   if (/^(?:support|contact_support|help)(?:_|$)/.test(id)) return 'support';
   if (/^(?:contact|call|email|whatsapp)(?:_|$)/.test(id)) return 'contact';
-  if (/^(?:learn_more|documentation|docs|case_studies)(?:_|$)/.test(id)) return 'learn';
+  if (/^(?:learn_more|documentation|docs|case_studies|practice_areas|view_services|view_programs|explore_programs)(?:_|$)/.test(id)) return 'learn';
   return null;
 }
 export function actionPurpose(action: BusinessActionConfig, context: PopupActionContext = {}): PopupActionPurpose | null {

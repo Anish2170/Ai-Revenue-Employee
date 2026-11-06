@@ -36,7 +36,7 @@ import { logger } from '../logging/logger.js';
 import { safeIdentifier } from '../logging/sanitize.js';
 import { z } from 'zod';
 import { failPopupGeneration } from '../intelligence/popupGenerationFailure.js';
-import { completePopup, failPopup, observePopupContext, reservePopup, transitionPopup, type PopupContext, type PopupDeliveryMetadata } from '../intelligence/popupLifecycle.js';
+import { completePopup, failPopup, observePopupContext, recentPopupCopy, reservePopup, transitionPopup, type PopupContext, type PopupDeliveryMetadata } from '../intelligence/popupLifecycle.js';
 
 export const eventsRouter = Router();
 
@@ -346,6 +346,14 @@ eventsRouter.post('/events', eventsLimiter, async (req, res) => {
             businessActions,
             formAssistance: popupContext.formStalled,
             pagePath: body.pageUrl ?? body.pagePath,
+            previousPopups: recentPopupCopy(visitorSession),
+            recentInterests: [...new Set(visitorSession.events.slice(-12).flatMap(event => {
+              if (event.zone === 'pricing') return ['pricing'];
+              if (event.zone === 'trust' || event.zone === 'faq') return ['trust'];
+              if (event.zone === 'contact' || event.zone === 'cta') return ['booking'];
+              if (event.zone === 'product') return ['services'];
+              return [];
+            }))],
           }, { signal: candidate.controller.signal, ...(websiteId ? { refreshActions: () => getEnabledBusinessActions(websiteId!, { skipSeed: true }) } : {}) });
 
           if (sprint42.ok && sprint42.popup.ok) {

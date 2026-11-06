@@ -13,3 +13,8 @@ export function repeatsPopup(a: PopupFingerprint, b: PopupFingerprint): boolean 
   const shared = a.tokens.filter(token => b.tokens.includes(token)).length;
   return Math.min(a.tokens.length, b.tokens.length) >= 5 && shared / new Set([...a.tokens, ...b.tokens]).size >= .8;
 }
+
+/** Changing the heading or destination does not make the same body useful again. */
+export function repeatsPopupBody(left: string, right: string): boolean {
+  return repeatsPopup(popupFingerprint({ body: left, actionKey: '' }), popupFingerprint({ body: right, actionKey: '' }));
+}

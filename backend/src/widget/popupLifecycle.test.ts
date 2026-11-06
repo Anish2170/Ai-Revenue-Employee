@@ -139,7 +139,7 @@ test('F06: real production pipeline uses support strategy and validated support 
     instructions: { businessName: 'Test', tone: 'helpful', alwaysBookDemo: false, avoidDiscounts: true, language: 'English' },
     businessActions: [{ actionId: 'support', label: 'Get help', destinationType: 'CHAT', destination: '', enabled: true }] },
     { knowledge: { retrieveFn: async () => ({ chunks: [{ id: 'support', url: '/help', page: '/help', pageType: 'other', section: 'help', heading: 'Help', title: 'Help', language: 'English', hash: 'test', lastCrawled: new Date().toISOString(), content: 'Our team can help with your questions.', score: 0.9 }], scores: [0.9] }) },
-      llm: { available: () => true, generateStructured: async () => ({ title: 'Need help?', body: 'Our team can help with your questions.', primaryAction: 'support', secondaryAction: '', tone: 'supportive', popupType: 'support' }) } });
+      llm: { available: () => true, generateStructured: async () => ({ title: 'A hand with this form?', body: 'Would you like help with a step in this form?', primaryAction: 'support', secondaryAction: '', tone: 'supportive', popupType: 'support' }) } });
   assert.equal(result.ok, true); assert.equal(result.trace.strategy?.kind, 'Support');
   if (result.ok) assert.equal(result.popup.popup.primaryAction, 'support');
 });
