@@ -35,7 +35,7 @@ import type { AnalyticsContext, AnalyticsTenant } from '../analytics/analytics.s
 import { logger } from '../logging/logger.js';
 import { safeIdentifier } from '../logging/sanitize.js';
 import { z } from 'zod';
-import { failureCategory } from '../llm/provider/errors.js';
+import { failPopupGeneration } from '../intelligence/popupGenerationFailure.js';
 import { completePopup, failPopup, observePopupContext, reservePopup, transitionPopup, type PopupContext, type PopupDeliveryMetadata } from '../intelligence/popupLifecycle.js';
 
 export const eventsRouter = Router();
@@ -429,8 +429,7 @@ eventsRouter.post('/events', eventsLimiter, async (req, res) => {
             });
           }
         } catch (err) {
-          failPopup(visitorSession, candidate);
-          const detail = candidate.controller.signal.aborted ? 'popup_cancelled' : failureCategory(err) === 'timeout' ? 'popup_timeout' : 'popup_generation_failed';
+          const detail = failPopupGeneration(visitorSession, candidate, err);
           popupTrace(body.sessionId, '8_popup_generation', { passed: false, popupGenerated: false, stoppedAt: 'pipeline_error', reason: detail });
           popupTrace(body.sessionId, '9_popup_delivery_to_widget', { passed: false, delivered: false, reason: detail });
           enqueueAnalyticsEvent(analyticsTenant, analyticsContext, { category: 'POPUP', eventName: 'popup_suppressed', reason: detail, label: 'pipeline_error' });
