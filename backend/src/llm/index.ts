@@ -6,9 +6,11 @@ import { createOpenAIProvider } from './provider/openai.js';
 import { failureCategory, isRetryable } from './provider/errors.js';
 import type { EmbedTaskType, LLMProvider, StreamRequest, StructuredRequest } from './provider/types.js';
 import { abortable, checkCancelled, deadlineScope } from './cancellation.js';
+import { replayStructured } from '../popup-replay/runtime.js';
 
 let primary: LLMProvider | null = null;
 let fallback: LLMProvider | null = null;
+const structured = (provider: LLMProvider, req: StructuredRequest) => replayStructured(provider.id, req, value => provider.generateStructured(value));
 
 function primaryProvider(): LLMProvider {
   if (primary) return primary;
@@ -65,7 +67,7 @@ async function generateDecisionInternal(req: StructuredRequest): Promise<unknown
   checkCancelled(req.signal);
   if (primaryUnconfigured()) {
     logFailover(req, { fallbackUsed: true, failureCategory: 'primary_unconfigured', retryCount: 0 });
-    return abortable(fallbackProvider().generateStructured(req), req.signal);
+    return abortable(structured(fallbackProvider(), req), req.signal);
   }
   // Proactive requests have one shared deadline. Give the primary at most half
   // the remaining time, leaving useful time for one non-overlapping fallback.
@@ -75,24 +77,24 @@ async function generateDecisionInternal(req: StructuredRequest): Promise<unknown
     const primaryBudget = Math.min(4000, Math.max(0, remaining / 2));
     const primaryScope = deadlineScope(req.signal, primaryBudget);
     let failure: unknown;
-    try { return await abortable(primaryProvider().generateStructured({ ...req, signal: primaryScope.signal, deadlineAt: Date.now() + primaryBudget }), primaryScope.signal); }
+    try { return await abortable(structured(primaryProvider(), { ...req, signal: primaryScope.signal, deadlineAt: Date.now() + primaryBudget }), primaryScope.signal); }
     catch (error) { failure = error; }
     finally { primaryScope.close(); }
     checkCancelled(req.signal);
     if (!isRetryable(failure) || Date.now() >= req.deadlineAt) throw failure;
     logFailover(req, { fallbackUsed: true, failureCategory: failureCategory(failure), retryCount: 0 });
-    return abortable(fallbackProvider().generateStructured(req), req.signal);
+    return abortable(structured(fallbackProvider(), req), req.signal);
   }
   let last: unknown;
   for (let attempt = 0; attempt <= config.llm.primaryRetries; attempt++) {
     checkCancelled(req.signal);
-    try { return await abortable(primaryProvider().generateStructured(req), req.signal); }
+    try { return await abortable(structured(primaryProvider(), req), req.signal); }
     catch (error) { checkCancelled(req.signal); last = error; if (!isRetryable(error) || failureCategory(error) === 'rate_limit' || attempt === config.llm.primaryRetries) break; await abortable(delay(attempt), req.signal); }
   }
   if (!isRetryable(last)) throw last;
   logFailover(req, { fallbackUsed: true, failureCategory: failureCategory(last), retryCount: config.llm.primaryRetries });
   checkCancelled(req.signal);
-  return abortable(fallbackProvider().generateStructured(req), req.signal);
+  return abortable(structured(fallbackProvider(), req), req.signal);
 }
 
 export async function* streamChat(req: StreamRequest): AsyncIterable<string> {

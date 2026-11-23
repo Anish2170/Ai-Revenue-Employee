@@ -1,0 +1,9 @@
+{
+  "name": "ai-employee-popup-replay-runner",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": { "start": "node src/cli.mjs", "test": "node --test tests/*.test.mjs" },
+  "dependencies": { "playwright": "1.65.0" }
+}

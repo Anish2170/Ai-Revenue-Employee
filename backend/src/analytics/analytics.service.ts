@@ -1,6 +1,7 @@
 import { prisma } from '../db/prisma.js';
 import { hasDatabase } from '../config/index.js';
 import type { AnalyticsEventCategory } from '@prisma/client';
+import { currentReplay } from '../popup-replay/runtime.js';
 
 export interface AnalyticsTenant {
   organizationId: string;
@@ -93,7 +94,7 @@ export function enqueueAnalyticsEvents(
   context: AnalyticsContext,
   events: AnalyticsEventInput[],
 ): void {
-  if (!hasDatabase || !tenant || events.length === 0) return;
+  if (currentReplay() || !hasDatabase || !tenant || events.length === 0) return;
 
   for (const event of events) {
     if (queue.length >= MAX_QUEUE) queue.shift();

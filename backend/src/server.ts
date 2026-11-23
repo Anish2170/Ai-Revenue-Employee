@@ -36,6 +36,9 @@ import { knowledgeReady, loadOnBoot } from './vectorstore/index.js';
 import { startKnowledgeBuildWorker, stopKnowledgeBuildWorker } from './knowledge/knowledge.worker.js';
 import { installSanitizedConsole } from './logging/logger.js';
 import { requestLogging } from './middleware/requestLogging.js';
+import { replayWidgetMiddleware } from './popup-replay/middleware.js';
+import { replayOwnerRouter, replayRunnerRouter } from './popup-replay/routes.js';
+import { sweepReplayArtifacts } from './popup-replay/service.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const publicDir = join(__dirname, '..', 'public');
@@ -64,6 +67,7 @@ app.use(
 app.use(corsMiddleware);
 app.use('/api/websites/:id/knowledge/sources/upload', express.json({ limit: '7mb' }));
 app.use('/api/websites/:id/knowledge/sources/text', express.json({ limit: '1mb' }));
+app.use('/api/popup-replay/runner/runs/:runId/complete', express.json({ limit: '1mb' }));
 app.use('/api/websites/:id/knowledge/sources/:sourceId', express.json({ limit: '1mb' }));
 app.use(express.json({ limit: '64kb' }));
 app.use(cookieParser());
@@ -97,6 +101,8 @@ app.get('/health', (_req, res) => {
 });
 
 // --- Public widget routes (no auth, siteId-scoped) ---
+app.use(replayWidgetMiddleware);
+app.use(replayRunnerRouter);
 app.use(publicIdentityRouter);
 app.use(engageRouter);
 app.use(eventsRouter);
@@ -134,6 +140,7 @@ app.use(knowledgeDebugRouter);
 app.use(conversationRouter);
 app.use(businessActionRouter);
 app.use(leadRouter);
+app.use(replayOwnerRouter);
 
 app.use(notFound);
 app.use(errorHandler);
@@ -144,6 +151,8 @@ validateProductionConfig();
 await loadOnBoot();
 startKnowledgeBuildWorker();
 startSourceWorker();
+const replaySweep = setInterval(() => { if (hasDatabase) void sweepReplayArtifacts().catch(() => console.warn('[popup-replay] Cleanup will retry.')); }, 60000);
+replaySweep.unref();
 
 const server = app.listen(config.port, config.host, () => {
   console.info('[startup] AI Revenue Employee backend ready', {
@@ -168,6 +177,7 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
   forceExit.unref();
   stopKnowledgeBuildWorker();
   stopSourceWorker();
+  clearInterval(replaySweep);
 
   server.close(async (err) => {
     if (err) console.error('[shutdown] server close failed', err instanceof Error ? err.message : String(err));

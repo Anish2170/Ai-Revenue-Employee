@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
 
 const REDACTED = '[REDACTED]';
-const sensitiveKey = /^(?:password|token|secret|apiKey|accessKey|secretAccessKey|authorization|cookie|set-cookie|csrf|visitorToken|sessionToken|refreshToken|geminiApiKey|databaseUrl|connectionString|prompt|messages|contents|knowledge|chunks|conversation)$/i;
-const sensitiveText = /((?:password|token|secret|api[_-]?key|access[_-]?key|secret[_-]?access[_-]?key|authorization|cookie|set-cookie|csrf|visitor[_-]?token|session[_-]?token|refresh[_-]?token|gemini[_-]?api[_-]?key|database[_-]?url|connection[_-]?string)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi;
+const sensitiveKey = /^(?:password|token|secret|apiKey|accessKey|secretAccessKey|authorization|cookie|set-cookie|csrf|visitorToken|sessionToken|refreshToken|geminiApiKey|databaseUrl|connectionString|prompt|messages|contents|knowledge|chunks|conversation|pairingCode|runToken|x-popup-replay|pairingHash|tokenHash|leaseHash)$/i;
+const sensitiveText = /((?:password|token|secret|api[_-]?key|access[_-]?key|secret[_-]?access[_-]?key|authorization|cookie|set-cookie|csrf|visitor[_-]?token|session[_-]?token|refresh[_-]?token|gemini[_-]?api[_-]?key|database[_-]?url|connection[_-]?string|pairing[_-]?code|run[_-]?token|x-popup-replay)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi;
 const bearerToken = /\bbearer\s+[^\s,;]+/gi;
 const urlCredentials = /([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+(?::[^\s/@]+)?@/gi;
 const knownSecrets = new Set<string>();

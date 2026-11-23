@@ -11,7 +11,7 @@ type Site = { id: string; name: string; url: string };
 type NavLink = { href: string; label: string; icon: Parameters<typeof Icon>[0]['name'] };
 const MAIN: NavLink[] = [{ href: '/overview', label: 'Overview', icon: 'home' }, { href: '/activity', label: 'Activity', icon: 'activity' }, { href: '/leads', label: 'Leads', icon: 'person_add' }, { href: '/analytics', label: 'Analytics', icon: 'insights' }];
 const CONFIGURE: NavLink[] = [{ href: '/websites', label: 'Sites', icon: 'language' }, { href: '/websites', label: 'Knowledge', icon: 'database' }, { href: '/website-actions', label: 'Actions', icon: 'ads_click' }];
-const ADVANCED: NavLink[] = [{ href: '/ai-decision-log', label: 'Decision log', icon: 'psychology' }, { href: '/knowledge-debug', label: 'Knowledge diagnostics', icon: 'search_check' }];
+const ADVANCED: NavLink[] = [{ href: '/ai-decision-log', label: 'Decision log', icon: 'psychology' }, { href: '/popup-test-lab', label: 'Popup Test Lab', icon: 'ads_click' }, { href: '/knowledge-debug', label: 'Knowledge diagnostics', icon: 'search_check' }];
 const SITE_KEY = 'dashboard:selectedWebsiteId';
 
 function workspaceError(error: unknown) {

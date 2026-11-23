@@ -10,7 +10,7 @@ import type { Request } from 'express';
 import { config, hasDatabase } from '../config/index.js';
 import { prisma } from '../db/prisma.js';
 
-const allowedHeaders = ['Content-Type', 'Authorization', 'X-CSRF-Token'];
+const allowedHeaders = ['Content-Type', 'Authorization', 'X-CSRF-Token', 'X-Popup-Replay'];
 const WEBSITE_ORIGIN_CACHE_TTL_MS = 60_000;
 
 let cachedWebsiteOrigins = new Set<string>();

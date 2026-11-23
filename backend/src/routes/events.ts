@@ -36,6 +36,7 @@ import { logger } from '../logging/logger.js';
 import { safeIdentifier } from '../logging/sanitize.js';
 import { z } from 'zod';
 import { failPopupGeneration } from '../intelligence/popupGenerationFailure.js';
+import { currentReplay, traceReplay, traceReplaySoon } from '../popup-replay/runtime.js';
 import { completePopup, failPopup, observePopupContext, recentPopupCopy, reservePopup, transitionPopup, type PopupContext, type PopupDeliveryMetadata } from '../intelligence/popupLifecycle.js';
 
 export const eventsRouter = Router();
@@ -145,6 +146,10 @@ function enqueuePopupDecisionLog(
     decisionId?: string;
   },
 ): void {
+  if (currentReplay()) {
+    traceReplaySoon({ kind: 'decision', decisionId: detail.decisionId, decision: detail.decision, reason: detail.suppressionReason ?? detail.reason ?? null, confidence: decision?.trace.confidence.score, speakScore: decision?.speakScore, behavior: decision?.trace.behaviour.dominant, intent: decision?.trace.intent.goal, strategy: strategyKind(detail.pipeline), popupType: detail.popup?.popupType, popup: detail.popup ? { title: detail.popup.title, body: detail.popup.body, action: detail.popup.action } : null, llmUsed: llmUsed(detail.pipeline), validationPassed: validationPassed(detail.pipeline), stoppedAt: detail.pipeline?.ok === false ? detail.pipeline.stoppedAt : null });
+    return;
+  }
   if (!tenant) return;
   const behaviour = formatBehaviour(decision);
   const intent = formatIntent(decision);
@@ -265,6 +270,7 @@ eventsRouter.post('/events', eventsLimiter, async (req, res) => {
       instructions,
       clientState: body.clientState,
     });
+    if (currentReplay()) await traceReplay({ kind: 'signals', accepted: result.accepted, status: result.status, signalTypes: body.events.map(event => ({ type: event.type, zone: event.zone, ts: event.ts })).slice(-20), blockedReason: popupContext?.blockedReason, confidence: result.shadowDecision?.trace.confidence.score, behavior: result.shadowDecision?.trace.behaviour.dominant, intent: result.shadowDecision?.trace.intent.goal, action: result.shadowDecision?.action, reason: result.shadowDecision?.suppressedBy });
 
     let sprint42: SafePopupPipelineResult | undefined = undefined;
     let popupArtifact: ReturnType<typeof publicPopup> | undefined = undefined;
@@ -493,10 +499,12 @@ eventsRouter.post('/popup/lifecycle', eventsLimiter, async (req, res) => {
     if (!session || (session.siteId !== null && session.siteId !== body.siteId)) return res.json({ ok: false, reason: 'session_unavailable' });
     if (body.operation === 'context') {
       if (!body.context || body.context.pageInstanceId !== body.pageInstanceId) return res.status(400).json({ ok: false });
+      await traceReplay({ kind: 'context', blockedReason: body.context.blockedReason, formStalled: body.context.formStalled });
       return res.json({ ok: observePopupContext(session, body.context) });
     }
     if (!body.popupId) return res.status(400).json({ ok: false });
     const result = transitionPopup(session, body.popupId, body.pageInstanceId, body.operation, body.context);
+    await traceReplay({ kind: 'lifecycle', operation: body.operation, ok: result.ok, popupId: body.popupId });
     if (result.ok) {
       const eventName = { claim: 'popup_delivered', displayed: 'popup_displayed', release: 'popup_not_displayed', clicked: 'popup_clicked', dismissed: 'popup_dismissed' }[body.operation];
       const analyticsTenant = tenant ? { organizationId: tenant.organizationId, websiteId: tenant.websiteId } : null;

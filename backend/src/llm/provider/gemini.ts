@@ -10,6 +10,7 @@
  */
 import { GoogleGenAI, Type } from '@google/genai';
 import { config } from '../../config/index.js';
+import { reserveReplayExternal } from '../../popup-replay/runtime.js';
 import type {
   ChatTurn,
   EmbedTaskType,
@@ -193,6 +194,7 @@ export function createGeminiProvider(modelOverride = config.llm.fallback.model):
 
       const embedOne = async (text: string): Promise<number[]> => {
         checkCancelled(options?.signal);
+        await reserveReplayExternal('embedding', embeddingModel, text);
         const res = await abortable(ai.models.embedContent({
           model: embeddingModel,
           contents: text,
@@ -205,6 +207,7 @@ export function createGeminiProvider(modelOverride = config.llm.fallback.model):
         checkCancelled(options?.signal);
         const batch = texts.slice(i, i + BATCH);
         try {
+          await reserveReplayExternal('embedding', embeddingModel, batch.join('\n'));
           const res = await abortable(ai.models.embedContent({
             model: embeddingModel,
             contents: batch,

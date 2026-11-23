@@ -1,7 +1,7 @@
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { config } from '../config/index.js';
 
-export type PublicWidgetIdentity = { siteId: string; visitorId: string; sessionId: string; exp: number };
+export type PublicWidgetIdentity = { siteId: string; visitorId: string; sessionId: string; exp: number; replayRunId?: string };
 
 function encode(value: unknown): string {
   return Buffer.from(JSON.stringify(value)).toString('base64url');
@@ -16,6 +16,13 @@ export function issuePublicWidgetIdentity(siteId: string, visitorToken?: unknown
   // or trust a caller-supplied visitorId. Keep the original 30-day retention bound.
   const previous = verifyPublicWidgetIdentity(visitorToken, siteId);
   const identity = { siteId, visitorId: previous?.visitorId ?? randomUUID(), sessionId: randomUUID(), exp: previous?.exp ?? Date.now() + 30 * 24 * 60 * 60 * 1000 };
+  const payload = encode(identity);
+  return { identity, token: `${payload}.${signature(payload)}` };
+}
+
+/** Only the verified owner replay middleware may invoke this issuer. */
+export function issueReplayWidgetIdentity(siteId: string, replayRunId: string) {
+  const identity: PublicWidgetIdentity = { siteId, visitorId: randomUUID(), sessionId: randomUUID(), exp: Date.now() + 180000, replayRunId };
   const payload = encode(identity);
   return { identity, token: `${payload}.${signature(payload)}` };
 }

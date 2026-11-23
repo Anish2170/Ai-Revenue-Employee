@@ -1,5 +1,6 @@
 import { prisma } from '../db/prisma.js';
 import { hasDatabase } from '../config/index.js';
+import { currentReplay } from '../popup-replay/runtime.js';
 import type { AnalyticsTenant, AnalyticsContext, AnalyticsEventInput } from './analytics.service.js';
 
 export interface AiDecisionLogInput extends AnalyticsContext {
@@ -43,7 +44,7 @@ const MAX_QUEUE = 10_000;
 let draining = false;
 
 export function enqueueAiDecisionLog(tenant: AnalyticsTenant | null | undefined, input: AiDecisionLogInput): void {
-  if (!hasDatabase || !tenant) return;
+  if (currentReplay() || !hasDatabase || !tenant) return;
   push({ type: 'create', tenant, input });
 }
 
@@ -52,7 +53,7 @@ export function enqueueAiDecisionOutcomes(
   context: AnalyticsContext,
   events: AnalyticsEventInput[],
 ): void {
-  if (!hasDatabase || !tenant || events.length === 0) return;
+  if (currentReplay() || !hasDatabase || !tenant || events.length === 0) return;
   for (const event of events) {
     if (outcomePatch(event.eventName)) push({ type: 'outcome', tenant, context, event });
   }

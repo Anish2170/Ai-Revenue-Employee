@@ -571,6 +571,22 @@ async function responseError(res: Response): Promise<ApiError> {
 
 export const api = new ApiClient();
 
+export const popupReplayApi = {
+  inventory: () => request<import('./popup-replay').ReplayInventory>('/api/popup-replay'),
+  pair: (name: string) => request<{ pairingCode: string; pairingExpiresAt: string }>('/api/popup-replay/runners', { method: 'POST', body: JSON.stringify({ name }) }),
+  revoke: (id: string) => request(`/api/popup-replay/runners/${id}/revoke`, { method: 'POST', body: '{}' }),
+  create: (input: { websiteId: string; runnerId: string; count: number; scenarios: string[]; surface: string; budgetMicros: number }) => request<{ id: string }>('/api/popup-replay/batches', { method: 'POST', body: JSON.stringify(input) }),
+  batch: (id: string) => request<import('./popup-replay').ReplayBatch>(`/api/popup-replay/batches/${id}`),
+  control: (id: string, operation: 'stop' | 'resume') => request(`/api/popup-replay/batches/${id}/control`, { method: 'POST', body: JSON.stringify({ operation }) }),
+  rate: (id: string, rating: string) => request(`/api/popup-replay/runs/${id}/rating`, { method: 'PATCH', body: JSON.stringify({ rating }) }),
+  screenshot: async (id: string) => {
+    const response = await fetch(`${getBaseUrl()}/api/popup-replay/runs/${id}/screenshot`, { credentials: 'include', cache: 'no-store' });
+    if (!response.ok) throw new ApiError(response.status, 'Screenshot unavailable.');
+    return response.blob();
+  },
+  backendUrl: getBaseUrl,
+};
+
 
 
 

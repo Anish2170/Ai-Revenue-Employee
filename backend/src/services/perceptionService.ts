@@ -19,6 +19,7 @@ import { perceive } from '../intelligence/perceive.js';
 import { objectiveFromInstructions, DEFAULT_OBJECTIVE } from '../intelligence/businessObjective.js';
 import { config } from '../config/index.js';
 import { SALES_POLICY } from '../intelligence/config/salesPolicy.config.js';
+import { currentReplay } from '../popup-replay/runtime.js';
 import { sessionCooldownRemainingMs, popupTrace } from '../intelligence/popupTrace.js';
 import type { BusinessInstructions } from '../context/types.js';
 import type { BusinessObjective, SalesDecision, Surface } from '../intelligence/types.js';
@@ -91,7 +92,9 @@ export function ingestEvents(opts: IngestOptions): IngestResult {
   if (clean.length === 0) return { status: 'ignored', accepted: 0, dropped };
 
   // 3. Bot filtering over the full accumulated session (+ client signals).
-  const verdict = classifyBot(session.events, opts.botSignal ?? {});
+  // Owner QA sessions are explicitly automation, not disguised human traffic.
+  // Event cadence/burst checks still apply; ordinary bot filtering is unchanged.
+  const verdict = classifyBot(session.events, currentReplay() ? {} : opts.botSignal ?? {});
   if (verdict.isBot) {
     sessionStore.markBot(opts.sessionId);
     return { status: 'bot', accepted: clean.length, dropped: [...dropped, `bot:${verdict.reason}`] };

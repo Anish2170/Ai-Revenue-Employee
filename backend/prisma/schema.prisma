@@ -57,6 +57,8 @@ model Organization {
   visitors             Visitor[]
   conversationMemories ConversationMemory[]
   auditLogs            AuditLog[]
+  popupReplayRunners   PopupReplayRunner[]
+  popupReplayBatches   PopupReplayBatch[]
 }
 
 enum MemberRole {
@@ -130,6 +132,7 @@ model Website {
   organization         Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   instruction          BusinessInstruction?
   widget               Widget?
+  popupReplayBatches   PopupReplayBatch[]
   snapshots            KnowledgeSnapshot[]
   builds               KnowledgeBuild[]
   knowledgeSources     KnowledgeSource[]
@@ -145,6 +148,69 @@ model Website {
   conversationMemories ConversationMemory[]
 
   @@index([organizationId])
+}
+
+/// Owner-authorized local workers. Pairing codes and bearer tokens are hashed.
+model PopupReplayRunner {
+  id             String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  createdBy      String @db.Uuid
+  name           String
+  pairingHash    String? @unique
+  pairingExpiresAt DateTime?
+  tokenHash      String? @unique
+  expiresAt      DateTime
+  lastSeenAt     DateTime?
+  revokedAt      DateTime?
+  createdAt      DateTime @default(now())
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  batches        PopupReplayBatch[]
+  @@index([organizationId, createdAt])
+}
+
+model PopupReplayBatch {
+  id             String @id @default(uuid()) @db.Uuid
+  organizationId String @db.Uuid
+  websiteId      String @db.Uuid
+  runnerId       String @db.Uuid
+  createdBy      String @db.Uuid
+  status         String @default("QUEUED")
+  budgetMicros   Int @default(1000000)
+  reservedMicros Int @default(0)
+  externalCalls  Int @default(0)
+  config         Json
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  expiresAt      DateTime
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  runner         PopupReplayRunner @relation(fields: [runnerId], references: [id], onDelete: Cascade)
+  website        Website @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  runs           PopupReplayRun[]
+  @@index([organizationId, createdAt])
+  @@index([runnerId, status])
+}
+
+model PopupReplayRun {
+  id             String @id @default(uuid()) @db.Uuid
+  batchId        String @db.Uuid
+  ordinal        Int
+  scenario       String
+  surface        String
+  externalCalls  Int @default(0)
+  status         String @default("QUEUED")
+  leaseHash      String?
+  leaseExpiresAt DateTime?
+  visitorId      String? @unique
+  sessionId      String? @unique
+  trace          Json @default("[]")
+  result         Json?
+  screenshot     Bytes?
+  rating         String?
+  startedAt      DateTime?
+  finishedAt     DateTime?
+  batch          PopupReplayBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  @@unique([batchId, ordinal])
+  @@index([batchId, status])
 }
 
 /// Independent source versions survive website rebuilds. Published chunks remain
