@@ -37,6 +37,7 @@ import { safeIdentifier } from '../logging/sanitize.js';
 import { z } from 'zod';
 import { failPopupGeneration } from '../intelligence/popupGenerationFailure.js';
 import { currentReplay, traceReplay, traceReplaySoon } from '../popup-replay/runtime.js';
+import { replayKnowledgeTrace } from '../popup-replay/knowledgeTrace.js';
 import { completePopup, failPopup, observePopupContext, recentPopupCopy, reservePopup, transitionPopup, type PopupContext, type PopupDeliveryMetadata } from '../intelligence/popupLifecycle.js';
 
 export const eventsRouter = Router();
@@ -142,12 +143,30 @@ function enqueuePopupDecisionLog(
     suppressionReason?: string | null;
     finalOutcome: string;
     pipeline?: SafePopupPipelineResult;
+    page?: string;
     popup?: ReturnType<typeof publicPopup>;
     decisionId?: string;
   },
 ): void {
   if (currentReplay()) {
-    traceReplaySoon({ kind: 'decision', decisionId: detail.decisionId, decision: detail.decision, reason: detail.suppressionReason ?? detail.reason ?? null, confidence: decision?.trace.confidence.score, speakScore: decision?.speakScore, behavior: decision?.trace.behaviour.dominant, intent: decision?.trace.intent.goal, strategy: strategyKind(detail.pipeline), popupType: detail.popup?.popupType, popup: detail.popup ? { title: detail.popup.title, body: detail.popup.body, action: detail.popup.action } : null, llmUsed: llmUsed(detail.pipeline), validationPassed: validationPassed(detail.pipeline), stoppedAt: detail.pipeline?.ok === false ? detail.pipeline.stoppedAt : null });
+    const knowledge = detail.pipeline?.trace.knowledge;
+    traceReplaySoon({
+      kind: 'decision',
+      decisionId: detail.decisionId,
+      decision: detail.decision,
+      reason: detail.suppressionReason ?? detail.reason ?? null,
+      confidence: decision?.trace.confidence.score,
+      speakScore: decision?.speakScore,
+      behavior: decision?.trace.behaviour.dominant,
+      intent: decision?.trace.intent.goal,
+      strategy: strategyKind(detail.pipeline),
+      popupType: detail.popup?.popupType,
+      popup: detail.popup ? { title: detail.popup.title, body: detail.popup.body, action: detail.popup.action } : null,
+      llmUsed: llmUsed(detail.pipeline),
+      validationPassed: validationPassed(detail.pipeline),
+      stoppedAt: detail.pipeline?.ok === false ? detail.pipeline.stoppedAt : null,
+      ...(knowledge ? { knowledge: replayKnowledgeTrace(knowledge, detail.page) } : {}),
+    });
     return;
   }
   if (!tenant) return;
@@ -373,7 +392,7 @@ eventsRouter.post('/events', eventsLimiter, async (req, res) => {
               const reason = candidate.rejectionReason ?? 'candidate_obsolete';
               if (candidate.rejectionReason) {
                 enqueueAnalyticsEvent(analyticsTenant, analyticsContext, { category: 'POPUP', eventName: 'popup_suppressed', reason, eventId: `${candidate.id}:duplicate_content`, decisionId: candidate.id });
-                enqueuePopupDecisionLog(analyticsTenant, analyticsContext, result.shadowDecision, { decisionId: candidate.id, decision: 'Suppressed', reason, popupSuppressed: true, suppressionReason: reason, finalOutcome: 'Suppressed', pipeline: sprint42 });
+                enqueuePopupDecisionLog(analyticsTenant, analyticsContext, result.shadowDecision, { decisionId: candidate.id, decision: 'Suppressed', reason, popupSuppressed: true, suppressionReason: reason, finalOutcome: 'Suppressed', pipeline: sprint42, page: body.pageUrl ?? body.pagePath });
               }
               return res.json({ status: result.status, reason });
             }
@@ -403,6 +422,7 @@ eventsRouter.post('/events', eventsLimiter, async (req, res) => {
               popupSuppressed: false,
               finalOutcome: 'Generated',
               pipeline: sprint42,
+              page: body.pageUrl ?? body.pagePath,
               popup: popupArtifact,
               decisionId: candidate.id,
             });
@@ -435,6 +455,7 @@ eventsRouter.post('/events', eventsLimiter, async (req, res) => {
               suppressionReason: sprint42.reason,
               finalOutcome: 'Suppressed',
               pipeline: sprint42,
+              page: body.pageUrl ?? body.pagePath,
             });
             devPopupLog('popup_suppressed', {
               reason: sprint42.reason,
