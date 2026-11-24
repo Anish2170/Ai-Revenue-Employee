@@ -160,7 +160,10 @@ export function planRetrieval(query: string, chunks: RetrievedChunk[], options: 
 } = {}): QueryPlan {
     const known = labels(chunks), pageUrl = pageIdentity(options.page, options.sourceUrl), needs = requestedNeeds(query);
     let subjects = matchingLabels(query, known), topicSource: QueryPlan['topicSource'] = subjects.length ? 'explicit' : 'none';
-    const broadTopic = options.purpose !== 'popup' && Boolean(broadCatalogQuery(query));
+    const catalog = broadCatalogQuery(query);
+    const broadTopic = Boolean(catalog && (options.purpose !== 'popup' || (
+        catalog === 'price' && pageUrl && chunks.some(chunk => chunk.pageType === 'pricing' && normalizeUrl(chunk.url) === pageUrl)
+    )));
     // A catalog question must not become one plan because its category word
     // (for example "membership") happens to occur in that plan's name.
     if (broadTopic) { subjects = []; topicSource = 'none'; }

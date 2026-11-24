@@ -7,6 +7,8 @@ import { buildConversationStrategy } from '../conversationStrategy.js';
 import { buildStrategyKnowledgeQuery, retrieveStrategyKnowledge } from '../knowledgeRetrieval.js';
 import { SCENARIOS } from './fixtures.js';
 import type { RetrievedChunk } from '../../context/types.js';
+import { planRetrieval } from '../../context/retrievalPlan.js';
+import { selectRetrieval } from '../../context/retrievalSelection.js';
 
 function priceStrategy() {
   const scenario = SCENARIOS.find((s) => s.name === 'price-wall');
@@ -50,6 +52,44 @@ test('knowledgeRetrieval: query is built from strategy and safe summaries', () =
   assert.match(query, /pricing/);
   assert.equal(query.includes('content_dwell'), false);
   assert.equal(query.includes('pricing_focus'), false);
+});
+
+test('pricing page browsing retrieves published fees without mistaking strategy keywords for an offering', async () => {
+  const sourceUrl = 'https://example.test';
+  const context = { pagePath: '/pricing', sourceUrl };
+  const documents = [
+    chunk({ id: 'package', heading: 'Formation & Setup', content: 'Formation & Setup\nStartup Catalyst\nEssential corporate formation.\n$2,500\n/ flat fee\nDelaware C-Corp filing' }),
+    chunk({ id: 'faq', heading: 'Value', page: '/about', url: `${sourceUrl}/about`, pageType: 'about', content: 'We value long-term relationships.' }),
+  ];
+  const search = (query: string) => selectRetrieval(documents, planRetrieval(query, documents, {
+    purpose: 'popup', page: { path: context.pagePath }, sourceUrl,
+  }), { topK: 5, threshold: 0.6, maxChars: 9000, sourceUrl });
+  const legacyQuery = 'collect_lead ReducePriceAnxiety discuss_pricing PriceSensitive EvaluatePrice warm high pricing plans cost value faq Page topic: pricing';
+  assert.deepEqual(search(legacyQuery).chunks, []);
+
+  const result = await retrieveStrategyKnowledge(priceStrategy(), { ...context, retrieveFn: async query => search(query) });
+  assert.equal(result.unavailableReason, null);
+  assert.deepEqual(result.chunks.map(row => row.id), ['package']);
+  assert.match(result.chunks[0].content, /\$2,500\n\/ flat fee/);
+});
+
+test('a pricing page popup still stops when its sources disagree on the price', async () => {
+  const sourceUrl = 'https://example.test';
+  const documents = [
+    chunk({ id: 'published', heading: 'Startup Catalyst', content: 'Startup Catalyst costs $2,500.' }),
+    chunk({ id: 'conflicting', heading: 'Startup Catalyst', content: 'Startup Catalyst costs $3,500.' }),
+  ];
+
+  const result = await retrieveStrategyKnowledge(priceStrategy(), {
+    pagePath: '/pricing', sourceUrl,
+    retrieveFn: async query => selectRetrieval(documents, planRetrieval(query, documents, {
+      purpose: 'popup', page: { path: '/pricing' }, sourceUrl,
+    }), { topK: 5, threshold: 0.6, maxChars: 9000, sourceUrl }),
+  });
+
+  assert.equal(result.unavailableReason, 'conflicting_knowledge');
+  assert.deepEqual(result.chunks, []);
+  assert.match(buildStrategyKnowledgeQuery(priceStrategy(), { pagePath: '/pricing?select=gc', sourceUrl }), /ReducePriceAnxiety/);
 });
 
 test('knowledgeRetrieval: forwards query and website id to existing RAG boundary', async () => {

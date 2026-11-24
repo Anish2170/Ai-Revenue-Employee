@@ -80,6 +80,13 @@ export async function retrieveStrategyKnowledge(
 }
 
 export function buildStrategyKnowledgeQuery(strategy: ConversationStrategy,context:{pagePath?:string;sourceUrl?:string}={}): string {
+  const page = pageIdentity({ url: context.pagePath }, context.sourceUrl ?? 'https://page-context.invalid');
+  if (strategy.kind === 'ReducePriceAnxiety' && page) {
+    const url = new URL(page);
+    // Browsing a standalone fees page signals interest in the catalog. It
+    // does not identify an individual offer or variant.
+    if (!url.search && /^\/(?:pricing|fees|rates)$/i.test(url.pathname)) return 'What are the prices?';
+  }
   const terms = strategyTerms(strategy);
   const parts = [
     strategy.business.objectiveKey,
@@ -92,7 +99,6 @@ export function buildStrategyKnowledgeQuery(strategy: ConversationStrategy,conte
     ...terms,
   ];
 
-  const page=pageIdentity({url:context.pagePath},context.sourceUrl??'https://page-context.invalid');
   let topic='';if(page){const url=new URL(page);try{topic=decodeURIComponent(url.pathname).replace(/[-_/]/g,' ')+' '+[...url.searchParams.values()].join(' ');}catch{}}
   return Array.from(new Set(parts.map((p) => p.trim()).filter(Boolean))).join(' ').slice(0,400)+(topic.trim()?` Page topic: ${topic.trim().slice(0,180)}`:'');
 }
